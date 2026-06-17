@@ -60,6 +60,31 @@ export async function getContentMedia(contentSid: string): Promise<string | null
   }
 }
 
+// Resolve a template's body TEXT from its Content SID, so logged messages show the
+// real message in our inbox instead of a bare "[template]" placeholder. Returns
+// null for templates with no text body (pure-media).
+export async function getContentBody(contentSid: string): Promise<string | null> {
+  try {
+    const data: any = await twilioGet(`https://content.twilio.com/v1/Content/${contentSid}`);
+    const types = data?.types || {};
+    for (const key of Object.keys(types)) {
+      const b = types[key]?.body;
+      if (typeof b === "string" && b.trim()) return b;
+    }
+    return null;
+  } catch {
+    return null; // never block a send on a body lookup
+  }
+}
+
+// Substitute {{1}},{{2}},... placeholders in a template body with content variables
+// (keyed "1","2",...). Unknown placeholders are left as-is. Empty input -> "".
+export function renderTemplateBody(body: string | null, vars?: Record<string, string> | null): string {
+  if (!body) return "";
+  if (!vars) return body;
+  return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (m, n) => (vars[n] != null ? String(vars[n]) : m));
+}
+
 // Read a message's current status from Twilio. Used to reconcile rows whose SID
 // was created via Twilio's own scheduler (our cron never sends those, so their DB
 // status would otherwise freeze at 'scheduled' even after Twilio sends/fails/cancels).

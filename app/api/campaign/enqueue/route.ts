@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { getContentMedia } from "@/lib/twilio";
+import { getContentMedia, getContentBody, renderTemplateBody } from "@/lib/twilio";
 import { dripBatchTimes, sendAtForIndex } from "@/lib/drip";
 
 export const runtime = "nodejs";
@@ -36,6 +36,9 @@ export async function POST(req: NextRequest) {
     // Header image is constant for the whole template — resolve once so every
     // queued row shows the creative in the inbox.
     const templateMedia = await getContentMedia(contentSid).catch(() => null);
+    // Resolve the template's real text once too, so the inbox shows the actual
+    // message (per-recipient variables substituted below), not a "[template]" stub.
+    const templateBody = await getContentBody(contentSid).catch(() => null);
 
     // Normalise to digit-only wa keys, keep input order, drop dupes/too-short.
     const seen = new Set<string>();
@@ -102,7 +105,7 @@ export async function POST(req: NextRequest) {
     const msgRows = toQueue.map((r, i) => ({
       conversation: convByPhone.get(r.wa)!.id,
       direction: "out",
-      body: r.body || "[template]",
+      body: renderTemplateBody(templateBody, r.vars) || r.body || "[template]",
       status: "scheduled",
       scheduled_at: sendAtForIndex(i, perBatch, times),
       campaign: campaignId,

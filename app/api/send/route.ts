@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendWhatsApp, sendTemplate, sendMediaWhatsApp, getContentMedia } from "@/lib/twilio";
+import { sendWhatsApp, sendTemplate, sendMediaWhatsApp, getContentMedia, getContentBody, renderTemplateBody } from "@/lib/twilio";
 import { logConversationToPipedrive } from "@/lib/pipedriveSync";
 
 // POST free-form: { phone, body }
@@ -12,8 +12,12 @@ export async function POST(req: NextRequest) {
     if (!phone || (!body && !contentSid && !mediaUrl)) {
       return NextResponse.json({ error: "phone and body (or contentSid / mediaUrl) required" }, { status: 400 });
     }
-    // What we store/show in the inbox bubble
-    const displayBody = contentSid ? (label || "[template]") : (body || (mediaUrl ? "[media]" : ""));
+    // What we store/show in the inbox bubble: prefer the template's real rendered
+    // text (so it isn't a "[template]" stub), then an explicit label, then the body.
+    const templateBody = contentSid ? await getContentBody(contentSid).catch(() => null) : null;
+    const displayBody = contentSid
+      ? (renderTemplateBody(templateBody, variables) || label || "[template]")
+      : (body || (mediaUrl ? "[media]" : ""));
     const e164 = String(phone).replace(/[^0-9+]/g, "");
     const wa = e164.replace("+", "");
     const db = supabaseAdmin();

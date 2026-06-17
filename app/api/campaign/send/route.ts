@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendTemplate, getContentMedia } from "@/lib/twilio";
+import { sendTemplate, getContentMedia, getContentBody, renderTemplateBody } from "@/lib/twilio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
     // Resolve the template's header image once (constant for the whole batch) so
     // every logged message shows the creative in our inbox, not just text.
     const templateMedia = await getContentMedia(contentSid);
+    const templateBody = await getContentBody(contentSid).catch(() => null);
 
     // Skip opted-out (blocked), dead (invalid), AND anyone EVER already sent this
     // template (any campaign, any status — a failed send still counts). The last
@@ -65,7 +66,7 @@ export async function POST(req: NextRequest) {
         const realStatus = tw.status || (sendAt ? "scheduled" : "queued");
         // Prefer the per-recipient rendered body so the inbox shows what THIS
         // contact actually received ("Hi Igor"), not a shared generic label.
-        const body = r.body || label || "[template]";
+        const body = renderTemplateBody(templateBody, r.vars) || r.body || label || "[template]";
         const { data: conv } = await db
           .from("conversations")
           .upsert({ wa_phone: wa, last_body: body, last_at: new Date().toISOString() }, { onConflict: "wa_phone" })

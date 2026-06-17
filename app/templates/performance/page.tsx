@@ -2,6 +2,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Icon, IC, PageHead, Skeleton } from "@/lib/ui";
+import { TWILIO_ERRORS } from "@/lib/twilioErrors";
 
 export default function TemplatePerformance() {
   const [tpls, setTpls] = useState<any[]>([]);
@@ -107,6 +108,20 @@ function TemplateCard({ t }: { t: any }) {
         ))}
       </div>
 
+      {s.failed > 0 && topErrors(s.errors).length > 0 && (
+        <div style={{ marginTop: 14, padding: "11px 13px", borderRadius: "var(--r)", background: "var(--chip)", border: "1px solid var(--border)" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)", marginBottom: 7 }}>Why {s.failed.toLocaleString()} didn&apos;t arrive</div>
+          <div style={{ display: "grid", gap: 5 }}>
+            {topErrors(s.errors).map(([code, n]) => (
+              <div key={code} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5, color: "var(--ink-2)" }}>
+                <span style={{ minWidth: 0 }}>{code === "none" ? "No reason reported by Twilio" : (TWILIO_ERRORS[code] || `Twilio error ${code}`)}{code !== "none" && <span style={{ color: "var(--ink-3)" }}> · {code}</span>}</span>
+                <b style={{ color: "var(--ink)", flexShrink: 0 }}>{n.toLocaleString()}</b>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 9, marginTop: 14, padding: "11px 13px", borderRadius: "var(--r)", background: d.bg, border: `1px solid ${d.border}` }}>
         <Icon d={d.icon} s={16} />
         <div style={{ fontSize: 12.5, lineHeight: 1.5, color: d.color }}>
@@ -118,6 +133,9 @@ function TemplateCard({ t }: { t: any }) {
 }
 
 const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
+// Top failure reasons (code -> count), busiest first, for the "why it failed" list.
+const topErrors = (errors: Record<string, number> = {}): [string, number][] =>
+  Object.entries(errors).sort((a, b) => b[1] - a[1]).slice(0, 4);
 // Reply rate is the money metric: green if good (10%+), amber if okay (3%+), grey otherwise.
 const replyColor = (r: number) => (r >= 10 ? "var(--green-ink)" : r >= 3 ? "var(--amber-ink)" : "var(--ink-3)");
 
@@ -127,8 +145,19 @@ function diagnose(s: any): { leak: string; color: string; bg: string; border: st
   const readOfDelivered = s.delivered ? Math.round((s.read / s.delivered) * 100) : 0;
   const amber = { color: "var(--amber-ink)", bg: "var(--amber-bg)", border: "var(--amber-border)", icon: IC.bolt };
   const green = { color: "var(--green-ink)", bg: "var(--green-bg)", border: "var(--green-border)", icon: IC.check };
-  if (s.deliveryRate < 90)
-    return { ...amber, color: "var(--red-ink)", bg: "var(--red-bg)", border: "var(--red-border)", leak: "Delivery low", action: "Likely dead numbers or sender health. Send to clean mobiles only and warm up the number within daily caps." };
+  const red = { color: "var(--red-ink)", bg: "var(--red-bg)", border: "var(--red-border)", icon: IC.bolt };
+  if (s.deliveryRate < 90) {
+    // Name the real dominant reason from the error codes, not a guess.
+    const buckets = [
+      { n: s.errLocked || 0, leak: "Sender was locked by Meta", action: "Most failures are 63051 - Meta had the sender locked. Confirm the lock is lifted before resending; if not, the sender must be re-registered." },
+      { n: s.errThrottled || 0, leak: "Over-messaging live users", action: "Most failures are 63049 - Meta capped these real users for too many marketing messages. Space sends out and stop re-blasting the same list." },
+      { n: s.errDead || 0, leak: "Dead numbers on the list", action: "Most failures are 63024/63003 - not WhatsApp users. Clean these off the list so they stop dragging delivery down." },
+      { n: s.errHold || 0, leak: "Temporary Meta hold", action: "Most failures are 63032 - a short Meta experiment hold on these users. Retry later in small batches." },
+    ].sort((a, b) => b.n - a.n);
+    const top = buckets[0];
+    if (top.n > 0) return { ...red, leak: top.leak, action: top.action };
+    return { ...red, leak: "Delivery low", action: "Receipts came back failed with no error code. Open Insights for the raw Twilio reasons, then send to clean mobiles only." };
+  }
   if (readOfDelivered < 50)
     return { ...amber, leak: "Read low", action: "Timing or sender trust. Send 10:00-13:00 or 17:00-20:00 GST, use an image header and the brand name." };
   if (s.replyRate < 3)

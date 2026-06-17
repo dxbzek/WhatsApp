@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
+import { DEAD_NUMBER_CODES } from "@/lib/twilioErrors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,11 +16,11 @@ export async function GET() {
     const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
 
     // Page through outbound template messages.
-    const out: { content_sid: string; conversation: string; status: string | null; created_at: string }[] = [];
+    const out: { content_sid: string; conversation: string; status: string | null; created_at: string; error_code: string | null }[] = [];
     for (let from = 0; ; from += 1000) {
       const { data, error } = await db
         .from("messages")
-        .select("content_sid, conversation, status, created_at")
+        .select("content_sid, conversation, status, created_at, error_code")
         .not("content_sid", "is", null)
         .eq("direction", "out")
         // Only count messages Twilio actually attempted to send. Three statuses were
@@ -60,13 +61,19 @@ export async function GET() {
 
     for (const m of out) {
       const sid = m.content_sid;
-      const s = (stats[sid] ||= { sent: 0, delivered: 0, read: 0, failed: 0 });
+      const s = (stats[sid] ||= { sent: 0, delivered: 0, read: 0, failed: 0, errors: {} as Record<string, number> });
       convsSeen[sid] ||= new Set();
       convsReplied[sid] ||= new Set();
       s.sent++;
       if (m.status === "read") { s.read++; s.delivered++; }
       else if (m.status === "delivered") s.delivered++;
-      else if (m.status === "failed" || m.status === "undelivered") s.failed++;
+      else if (m.status === "failed" || m.status === "undelivered") {
+        s.failed++;
+        // Tally the real Twilio/Meta reason so the card explains WHY it failed
+        // (sender lock vs over-messaging vs dead number) instead of guessing.
+        const code = m.error_code ? String(m.error_code) : "none";
+        s.errors[code] = (s.errors[code] || 0) + 1;
+      }
 
       convsSeen[sid].add(m.conversation);
       const t = new Date(m.created_at).getTime();
@@ -81,6 +88,13 @@ export async function GET() {
       stats[sid].deliveryRate = stats[sid].sent ? Math.round((stats[sid].delivered / stats[sid].sent) * 100) : 0;
       stats[sid].failedRate = stats[sid].sent ? Math.round((stats[sid].failed / stats[sid].sent) * 100) : 0;
       stats[sid].readRate = stats[sid].sent ? Math.round((stats[sid].read / stats[sid].sent) * 100) : 0;
+      // Bucket the failure reasons the same way the Insights page does, so both
+      // screens tell the same story: locked sender, marketing throttle, or dead.
+      const e: Record<string, number> = stats[sid].errors;
+      stats[sid].errLocked = e["63051"] || 0;
+      stats[sid].errThrottled = e["63049"] || 0;
+      stats[sid].errHold = e["63032"] || 0;
+      stats[sid].errDead = Object.keys(e).filter((c) => DEAD_NUMBER_CODES.has(c)).reduce((n, c) => n + e[c], 0);
       stats[sid].replyRate = seen ? Math.round((stats[sid].replied / seen) * 100) : 0;
     }
 

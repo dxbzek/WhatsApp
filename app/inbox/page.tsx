@@ -9,7 +9,7 @@ type UIConv = {
   id: string; name: string; phone: string; waPhone?: string;
   tag: "Hot" | "Warm" | ""; lead?: string; unread: number; time: string; community: string;
   live: boolean; loaded: boolean; messages: UIMsg[]; blocked?: boolean;
-  lastBody?: string; lastDirection?: string;
+  lastBody?: string; lastDirection?: string; replied?: boolean;
 };
 
 const LEADS = [

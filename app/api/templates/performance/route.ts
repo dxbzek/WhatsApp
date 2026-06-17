@@ -22,10 +22,14 @@ export async function GET() {
         .select("content_sid, conversation, status, created_at")
         .not("content_sid", "is", null)
         .eq("direction", "out")
-        // Only count messages actually handed to Twilio. Drip campaigns pre-create
-        // their queue as status='scheduled' rows; counting those as "Sent" inflates
-        // the denominator and makes delivery rate read far lower than reality.
-        .neq("status", "scheduled")
+        // Only count messages Twilio actually attempted to send. Three statuses were
+        // never transmitted to a recipient and must NOT count as "Sent":
+        //   scheduled — drip queue rows pre-created, not yet handed to Twilio
+        //   canceled  — killed before send (e.g. the account-suspension abort)
+        //   skipped   — auto-skipped because the number was already reached
+        // Counting them inflates the denominator and makes delivery rate read far
+        // lower than reality, and leaves ghost recipients unaccounted in the funnel.
+        .not("status", "in", "(scheduled,canceled,skipped)")
         .gte("created_at", since)
         .order("created_at", { ascending: true })
         .range(from, from + 999);
@@ -75,6 +79,7 @@ export async function GET() {
       stats[sid].conversations = seen;
       stats[sid].replied = convsReplied[sid].size;
       stats[sid].deliveryRate = stats[sid].sent ? Math.round((stats[sid].delivered / stats[sid].sent) * 100) : 0;
+      stats[sid].failedRate = stats[sid].sent ? Math.round((stats[sid].failed / stats[sid].sent) * 100) : 0;
       stats[sid].readRate = stats[sid].sent ? Math.round((stats[sid].read / stats[sid].sent) * 100) : 0;
       stats[sid].replyRate = seen ? Math.round((stats[sid].replied / seen) * 100) : 0;
     }

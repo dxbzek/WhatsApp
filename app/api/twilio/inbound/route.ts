@@ -47,8 +47,13 @@ export async function POST(req: NextRequest) {
   await db.from("messages").insert({
     conversation: conv!.id, direction: "in", body: displayBody, status: "received", twilio_sid: sid, media_url: mediaUrl || null,
   });
-  // mark the conversation unread + last message inbound
-  await db.from("conversations").update({ unread: true, last_direction: "in", last_status: "received" }).eq("id", conv!.id);
+  // mark the conversation unread + last message inbound. `replied` is a sticky
+  // flag (never unset) so the inbox Replied tab shows everyone who has ever
+  // written back, even after we answer them and the last message flips outbound.
+  await db.from("conversations").update({
+    unread: true, last_direction: "in", last_status: "received",
+    replied: true, last_inbound_at: new Date().toISOString(),
+  }).eq("id", conv!.id);
 
   const text = body.trim().toLowerCase();
 

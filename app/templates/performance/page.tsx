@@ -54,7 +54,8 @@ export default function TemplatePerformance() {
           {rows.map((t) => <TemplateCard key={t.sid} t={t} />)}
 
           <div className="hint" style={{ marginTop: 12 }}>
-            Delivered and Read come from WhatsApp receipts; reply counts conversations that messaged back after the send.
+            Sent counts only messages actually handed to Twilio (canceled and skipped rows are excluded). Failed = undelivered + failed
+            receipts; Delivered and Read come from WhatsApp receipts; reply counts conversations that messaged back after the send.
             Each bar is a share of how many were sent. Benchmarks: delivery 90%+, read 60%+ of delivered, reply 3%+ (good 10%+).
           </div>
         </>
@@ -70,6 +71,7 @@ function TemplateCard({ t }: { t: any }) {
   const d = diagnose(s);
   const stages = [
     { label: "Sent", n: s.sent, color: "var(--ink-2)", note: "100%" },
+    { label: "Failed", n: s.failed, color: "var(--red-ink)", note: `${s.failedRate}% of sent` },
     { label: "Delivered", n: s.delivered, color: "var(--green-dot)", note: `${s.deliveryRate}% of sent` },
     { label: "Read", n: s.read, color: "var(--blue)", note: `${pct(s.read, s.delivered)}% of delivered` },
     { label: "Replied", n: s.replied, color: "var(--green-ink)", note: `${pct(s.replied, s.delivered)}% of delivered` },

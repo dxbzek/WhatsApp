@@ -24,11 +24,28 @@ export async function POST(req: NextRequest) {
     // every logged message shows the creative in our inbox, not just text.
     const templateMedia = await getContentMedia(contentSid);
 
-    // Skip opted-out (blocked) AND known-invalid (dead WhatsApp) numbers.
+    // Skip opted-out (blocked), dead (invalid), AND anyone EVER already sent this
+    // template (any campaign, any status — a failed send still counts). The last
+    // one is the hard never-resend guard that stops double-sending.
     const phones = recipients.map((r: any) => String(r.phone).replace(/[^0-9+]/g, "").replace("+", ""));
-    const { data: suppressed } = await db.from("conversations").select("wa_phone, status").in("wa_phone", phones).in("status", ["blocked", "invalid"]);
-    const blockedSet = new Set((suppressed || []).filter((b: any) => b.status === "blocked").map((b: any) => b.wa_phone));
-    const invalidSet = new Set((suppressed || []).filter((b: any) => b.status === "invalid").map((b: any) => b.wa_phone));
+    const { data: convRows } = await db.from("conversations").select("id, wa_phone, status").in("wa_phone", phones);
+    const idByPhone = new Map<string, string>();
+    const blockedSet = new Set<string>();
+    const invalidSet = new Set<string>();
+    for (const c of convRows || []) {
+      idByPhone.set((c as any).wa_phone, (c as any).id);
+      if ((c as any).status === "blocked") blockedSet.add((c as any).wa_phone);
+      if ((c as any).status === "invalid") invalidSet.add((c as any).wa_phone);
+    }
+    const convIdList = Array.from(idByPhone.values());
+    const sentConvIds = new Set<string>();
+    for (let i = 0; i < convIdList.length; i += 300) {
+      const { data } = await db.from("messages").select("conversation")
+        .eq("direction", "out").eq("content_sid", contentSid).in("conversation", convIdList.slice(i, i + 300));
+      for (const m of data || []) sentConvIds.add((m as any).conversation);
+    }
+    const alreadySentSet = new Set<string>();
+    for (const [wa, id] of idByPhone) if (sentConvIds.has(id)) alreadySentSet.add(wa);
 
     const results: any[] = [];
     for (const r of recipients) {
@@ -38,6 +55,7 @@ export async function POST(req: NextRequest) {
       if (!wa || wa.length < 8) { results.push({ phone: r.phone, status: "invalid" }); continue; }
       if (blockedSet.has(wa)) { results.push({ phone: e164, status: "skipped_blacklist" }); continue; }
       if (invalidSet.has(wa)) { results.push({ phone: e164, status: "skipped_invalid" }); continue; }
+      if (alreadySentSet.has(wa)) { results.push({ phone: e164, status: "skipped_already_sent" }); continue; }
 
       try {
         const tw = await sendTemplate(e164, contentSid, r.vars || undefined, sendAt || undefined, from || undefined);

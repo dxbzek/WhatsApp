@@ -60,24 +60,32 @@ export async function POST(req: NextRequest) {
       for (const c of data || []) convByPhone.set((c as any).wa_phone, { id: (c as any).id, status: (c as any).status });
     }
 
-    // Idempotency: skip anyone already queued/sent in THIS campaign (so a retry
-    // of this endpoint, or a partial earlier run, never double-messages).
-    const alreadyInCampaign = new Set<string>();
-    for (let from = 0; ; from += 1000) {
-      const { data } = await db.from("messages").select("conversation, status").eq("campaign", campaignId).range(from, from + 999);
-      // failed/canceled rows are re-queueable on a re-send; everything else
-      // (scheduled/sent/delivered/...) means this contact is already handled.
-      for (const m of data || []) if (!["failed", "canceled"].includes((m as any).status)) alreadyInCampaign.add((m as any).conversation);
-      if (!data || data.length < 1000) break;
+    // HARD never-resend guard. Never send a template to a number it was EVER
+    // already sent — ANY campaign, ANY status. A failed/undelivered send still
+    // counts as "sent" (Meta sees it), so retrying it is exactly the double-send
+    // that tanks the quality rating. This is the permanent fix: build the set of
+    // candidate conversations that already have an outbound message on THIS
+    // content_sid, and exclude them below.
+    const candidateConvIds = Array.from(
+      new Set(ordered.map((r) => convByPhone.get(r.wa)?.id).filter(Boolean) as string[])
+    );
+    const alreadySentTemplate = new Set<string>();
+    for (let i = 0; i < candidateConvIds.length; i += 300) {
+      const { data } = await db.from("messages")
+        .select("conversation")
+        .eq("direction", "out").eq("content_sid", contentSid)
+        .in("conversation", candidateConvIds.slice(i, i + 300));
+      for (const m of data || []) alreadySentTemplate.add((m as any).conversation);
     }
 
-    // Filter to the recipients we'll actually queue (not suppressed, not already
-    // in this campaign), preserving order so the drip pacing is contiguous.
+    // Filter to the recipients we'll actually queue: not opted-out, not a dead
+    // number, and never previously sent this template. Order preserved so the
+    // drip pacing stays contiguous.
     const toQueue = ordered.filter((r) => {
       const conv = convByPhone.get(r.wa);
       if (!conv) return false;
       if (conv.status === "blocked" || conv.status === "invalid") return false;
-      if (alreadyInCampaign.has(conv.id)) return false;
+      if (alreadySentTemplate.has(conv.id)) return false;
       return true;
     });
     const skipped = ordered.length - toQueue.length;

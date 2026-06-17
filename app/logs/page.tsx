@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { Icon, IC, PageHead, Skeleton } from "@/lib/ui";
+import { Pager } from "@/lib/Pager";
 import { errorCause } from "@/lib/twilioErrors";
 
 type Row = {
@@ -22,12 +23,19 @@ const FILTERS: { id: FilterKey; label: string }[] = [
   { id: "replies", label: "Replies" },
 ];
 
+const PAGE_SIZE = 50;
+
 export default function Logs() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [tpl, setTpl] = useState<Record<string, string>>({}); // content_sid -> template name
   const [filter, setFilter] = useState<FilterKey>("all");
   const [q, setQ] = useState("");
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [page, setPage] = useState(1);
+
+  // Any filter/search change jumps back to the first page so you're never
+  // stranded on an empty page that no longer exists for the new result set.
+  useEffect(() => { setPage(1); }, [filter, q]);
 
   async function load() {
     const data = await fetch("/api/messages?view=log&limit=400").then((r) => r.json()).then((d) => d.messages).catch(() => null);
@@ -60,6 +68,10 @@ export default function Logs() {
       return true;
     });
   }, [rows, filter, q, tpl]);
+
+  const totalPages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = shown.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   return (
     <div className="page"><div className="maxw">
@@ -104,22 +116,25 @@ export default function Logs() {
           <div>{rows.length === 0 ? "No messages logged yet." : "No log entries match this filter."}</div>
         </div>
       ) : (
-        <div className="panel" style={{ borderTop: "1px solid var(--border)", borderRadius: "var(--r-lg)" }}>
-          <table className="ttable">
-            <thead>
-              <tr>
-                <th style={{ width: 132 }}>Time</th>
-                <th style={{ width: 54 }}>Dir</th>
-                <th>Contact</th>
-                <th>Detail</th>
-                <th style={{ width: 200 }}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((r) => <LogRow key={r.id} r={r} tplName={tpl[r.content_sid || ""]} />)}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="panel" style={{ borderTop: "1px solid var(--border)", borderRadius: "var(--r-lg)" }}>
+            <table className="ttable">
+              <thead>
+                <tr>
+                  <th style={{ width: 132 }}>Time</th>
+                  <th style={{ width: 54 }}>Dir</th>
+                  <th>Contact</th>
+                  <th>Detail</th>
+                  <th style={{ width: 200 }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.map((r) => <LogRow key={r.id} r={r} tplName={tpl[r.content_sid || ""]} />)}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={safePage} totalPages={totalPages} total={shown.length} onPage={setPage} />
+        </>
       )}
     </div></div>
   );

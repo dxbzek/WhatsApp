@@ -1,7 +1,10 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Icon, IC, PageHead, Skeleton, Avatar } from "@/lib/ui";
+import { Pager } from "@/lib/Pager";
 import { formatPhone } from "@/lib/format";
+
+const PAGE_SIZE = 50;
 
 type Conv = { id: string; wa_phone: string; name: string | null; status: string; last_at: string | null };
 
@@ -20,6 +23,8 @@ export default function Suppressed() {
   const [rows, setRows] = useState<Conv[] | null>(null);
   const [filter, setFilter] = useState<"all" | "blocked" | "invalid">("all");
   const [busy, setBusy] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  useEffect(() => { setPage(1); }, [filter]); // new filter -> back to page 1
 
   async function load() {
     const data = await fetch("/api/conversations?view=suppressed").then((r) => r.json()).then((d) => d.conversations).catch(() => null);
@@ -40,6 +45,10 @@ export default function Suppressed() {
   const blocked = (rows || []).filter((c) => c.status === "blocked").length;
   const invalid = (rows || []).filter((c) => c.status === "invalid").length;
   const counts: Record<string, number> = { all: (rows || []).length, blocked, invalid };
+
+  const totalPages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = shown.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   return (
     <div className="page"><div className="maxw">
@@ -62,7 +71,7 @@ export default function Suppressed() {
           <table className="ttable">
             <thead><tr><th>Contact</th><th>Reason</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {shown.map((c) => {
+              {pageRows.map((c) => {
                 const m = META[c.status] || { label: c.status, tone: "var(--ink-3)", note: "" };
                 const name = c.name || formatPhone(c.wa_phone);
                 return (
@@ -100,6 +109,7 @@ export default function Suppressed() {
           </div>
         )}
       </div>
+      {rows !== null && <Pager page={safePage} totalPages={totalPages} total={shown.length} onPage={setPage} unit="contacts" />}
     </div></div>
   );
 }

@@ -31,15 +31,15 @@ export const TWILIO_ERRORS: Record<string, string> = {
   "63018": "Rate limit exceeded - too many messages too fast",
   "63021": "Channel rejected the content (invalid/blocked)",
   "63022": "Invalid WhatsApp sender (vname) certificate",
-  "63024": "Invalid recipient - not a WhatsApp user / hasn't accepted WhatsApp terms",
+  "63024": "Invalid message recipient (not a valid WhatsApp user / Meta restriction)",
   "63026": "Failed to create the content",
   "63031": "Sender and recipient numbers are the same",
-  "63032": "Recipient hasn't opted in / 24h window closed",
+  "63032": "WhatsApp limitation - cannot send to this user right now (e.g. Meta experiment hold)",
   "63033": "Meta couldn't deliver (recipient-side issue)",
   "63041": "Template not found or parameter mismatch",
-  "63049": "Meta chose not to deliver this marketing message (per-user marketing limit)",
-  "63051": "Template paused by Meta for low quality",
-  "63052": "Template disabled by Meta for low quality",
+  "63049": "Meta chose not to deliver this WhatsApp marketing message (per-user marketing limit)",
+  "63051": "WhatsApp sender or account is LOCKED by Meta (policy/security/inactivity — sender must be re-registered before it can send)",
+  "63052": "Legacy WhatsApp template system used (end-of-life warning)",
 };
 
 export function errorCause(code: string | number | null | undefined): string {

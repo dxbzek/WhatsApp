@@ -6,11 +6,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// Template-level failures: Meta paused/disabled the TEMPLATE for low quality, so
-// every send on it fails regardless of recipient. That's a content signal, not a
-// per-number deliverability signal — exclude from the delivery-rate denominator
-// and surface separately. (Mirrors lib/twilioErrors descriptions for 63051/63052.)
-const TEMPLATE_PAUSED_CODES = new Set(["63051", "63052"]);
+// Account/sender-lock failures: 63051 means Meta LOCKED the WhatsApp sender or
+// account (the suspension), so EVERY send fails regardless of recipient. That's a
+// global-outage signal, not a per-number deliverability signal — exclude from the
+// delivery-rate denominator and surface separately. (See lib/twilioErrors 63051.)
+const ACCOUNT_LOCKED_CODES = new Set(["63051"]);
 // Meta's per-user marketing throttle: a real non-delivery to a LIVE, valid number
 // (over-messaging), so it DOES count against the rate — but we also surface it.
 const MARKETING_THROTTLE_CODE = "63049";
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
     const byDay: Record<string, { out: number; in: number }> = {};
     let outbound = 0, inbound = 0, delivered = 0, read = 0, failed = 0,
       undelivered = 0, notOnWhatsApp = 0, queued = 0, total = 0,
-      neverSent = 0, templatePaused = 0, marketingThrottled = 0;
+      neverSent = 0, accountLocked = 0, marketingThrottled = 0;
 
     // Page through the window. Only the columns we aggregate, so this stays light
     // even over a wide range.
@@ -84,11 +84,11 @@ export async function GET(req: NextRequest) {
 
         const code = m.error_code ? String(m.error_code) : null;
 
-        // Template paused/disabled by Meta — a content-level failure that hits
-        // every recipient on the template, not a per-number delivery signal.
-        // Keep it out of the rate; report it on its own.
-        if (code && TEMPLATE_PAUSED_CODES.has(code)) {
-          templatePaused++;
+        // Sender/account locked by Meta (the suspension) — fails every send
+        // regardless of recipient, so it's a global-outage signal, not per-number
+        // deliverability. Keep it out of the rate; report it on its own.
+        if (code && ACCOUNT_LOCKED_CODES.has(code)) {
+          accountLocked++;
           byErr[code] = (byErr[code] || 0) + 1;
           continue;
         }
@@ -123,7 +123,7 @@ export async function GET(req: NextRequest) {
       range: { from: fromDate.toISOString(), to: toDate.toISOString() },
       totals: {
         total, outbound, validOutbound, notOnWhatsApp, inbound, queued,
-        neverSent, templatePaused, marketingThrottled,
+        neverSent, accountLocked, marketingThrottled,
         delivered, read, failed, undelivered,
         deliveryRate, deliveryRateValid, readRate, failRate, capped,
       },

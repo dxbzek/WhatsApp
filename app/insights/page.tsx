@@ -8,7 +8,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
 const toInput = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 const QUICK: [string, number][] = [["24h", 24], ["7d", 168], ["30d", 720], ["90d", 2160]];
 
-type Totals = { outbound: number; validOutbound: number; notOnWhatsApp: number; deliveryRate: number; deliveryRateValid: number; readRate: number; inbound: number; failed: number; undelivered: number; failRate: number };
+type Totals = { outbound: number; validOutbound: number; notOnWhatsApp: number; deliveryRate: number; deliveryRateValid: number; readRate: number; inbound: number; failed: number; undelivered: number; failRate: number; neverSent?: number; templatePaused?: number; marketingThrottled?: number };
 type TplRow = { name: string; sent: number; replyRate: number };
 
 // One authoritative source of error-code labels (lib/twilioErrors), shared with
@@ -143,6 +143,15 @@ export default function Insights() {
         <div className="kpi"><div className="kl">Reply rate</div><div className="kv">{kv(replyRate, "%")}</div><div className="ks">marketing · 90d</div></div>
         <div className="kpi"><div className="kl">Leads to Pipedrive</div><div className="kv">{leads === null ? dash : leads.toLocaleString()}</div></div>
       </div>
+
+      {totals && ((totals.templatePaused ?? 0) > 0 || (totals.marketingThrottled ?? 0) > 0 || (totals.neverSent ?? 0) > 0) && (
+        <div className="note" style={{ display: "flex", flexWrap: "wrap", gap: 16, fontSize: 13, color: "var(--ink-3)", margin: "2px 0 14px", padding: "8px 12px", background: "var(--chip)", borderRadius: 8 }}>
+          {((totals.templatePaused ?? 0) > 0 || (totals.neverSent ?? 0) > 0) && <span style={{ color: "var(--ink-2)" }}>Excluded from the rate (never reached a real attempt):</span>}
+          {(totals.templatePaused ?? 0) > 0 && <span><b style={{ color: "var(--ink-1)" }}>{totals.templatePaused!.toLocaleString()}</b> template paused by Meta (63051/63052)</span>}
+          {(totals.neverSent ?? 0) > 0 && <span><b style={{ color: "var(--ink-1)" }}>{totals.neverSent!.toLocaleString()}</b> never sent (canceled/skipped)</span>}
+          {(totals.marketingThrottled ?? 0) > 0 && <span style={{ color: "var(--amber-dot, var(--ink-2))" }}>Counted as failed: <b style={{ color: "var(--ink-1)" }}>{totals.marketingThrottled!.toLocaleString()}</b> Meta marketing throttle (63049 · over-messaging live numbers)</span>}
+        </div>
+      )}
 
       <div className="grid-2">
         <div className="card">

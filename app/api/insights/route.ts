@@ -6,6 +6,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+// Template-level failures: Meta paused/disabled the TEMPLATE for low quality, so
+// every send on it fails regardless of recipient. That's a content signal, not a
+// per-number deliverability signal — exclude from the delivery-rate denominator
+// and surface separately. (Mirrors lib/twilioErrors descriptions for 63051/63052.)
+const TEMPLATE_PAUSED_CODES = new Set(["63051", "63052"]);
+// Meta's per-user marketing throttle: a real non-delivery to a LIVE, valid number
+// (over-messaging), so it DOES count against the rate — but we also surface it.
+const MARKETING_THROTTLE_CODE = "63049";
+
 // Messaging insights computed from OUR messages table — the same source the
 // campaign log trusts — not Twilio's list API. The Twilio API was capped at a
 // few thousand rows (undercounting volume), slow, and its error-code buckets
@@ -28,7 +37,8 @@ export async function GET(req: NextRequest) {
     const byErr: Record<string, number> = {};
     const byDay: Record<string, { out: number; in: number }> = {};
     let outbound = 0, inbound = 0, delivered = 0, read = 0, failed = 0,
-      undelivered = 0, notOnWhatsApp = 0, queued = 0, total = 0;
+      undelivered = 0, notOnWhatsApp = 0, queued = 0, total = 0,
+      neverSent = 0, templatePaused = 0, marketingThrottled = 0;
 
     // Page through the window. Only the columns we aggregate, so this stays light
     // even over a wide range.
@@ -64,16 +74,35 @@ export async function GET(req: NextRequest) {
           queued++;
           continue;
         }
+        // Never actually sent: canceled (killed before send, e.g. a suspension)
+        // or skipped (suppressed — blocked/invalid — before send). These never
+        // hit Twilio/Meta, so counting them as failed attempts is wrong.
+        if (status === "canceled" || status === "skipped") {
+          neverSent++;
+          continue;
+        }
+
+        const code = m.error_code ? String(m.error_code) : null;
+
+        // Template paused/disabled by Meta — a content-level failure that hits
+        // every recipient on the template, not a per-number delivery signal.
+        // Keep it out of the rate; report it on its own.
+        if (code && TEMPLATE_PAUSED_CODES.has(code)) {
+          templatePaused++;
+          byErr[code] = (byErr[code] || 0) + 1;
+          continue;
+        }
+
         outbound++;
         if (status === "delivered") delivered++;
         else if (status === "read") read++;
         else if (status === "failed") failed++;
         else if (status === "undelivered") undelivered++;
 
-        if (m.error_code) {
-          const k = String(m.error_code);
-          byErr[k] = (byErr[k] || 0) + 1;
-          if (DEAD_NUMBER_CODES.has(k)) notOnWhatsApp++;
+        if (code) {
+          byErr[code] = (byErr[code] || 0) + 1;
+          if (DEAD_NUMBER_CODES.has(code)) notOnWhatsApp++;
+          if (code === MARKETING_THROTTLE_CODE) marketingThrottled++;
         }
       }
       if (rows.length < 1000) break;
@@ -94,6 +123,7 @@ export async function GET(req: NextRequest) {
       range: { from: fromDate.toISOString(), to: toDate.toISOString() },
       totals: {
         total, outbound, validOutbound, notOnWhatsApp, inbound, queued,
+        neverSent, templatePaused, marketingThrottled,
         delivered, read, failed, undelivered,
         deliveryRate, deliveryRateValid, readRate, failRate, capped,
       },

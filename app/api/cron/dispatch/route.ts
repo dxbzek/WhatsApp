@@ -78,6 +78,18 @@ async function run(req: NextRequest) {
     await new Promise((r) => setTimeout(r, RECONCILE_THROTTLE_MS));
   }
 
+  // Quiet-hours guard: NEVER send outside 09:00-20:00 Dubai (05:00-16:00 UTC),
+  // no matter what scheduled_at says. The enqueue step already schedules into
+  // this window, but a backlog whose scheduled_at fell in the past (e.g. rows
+  // frozen during an outage/suspension) would otherwise all fire at once the
+  // moment the cron next runs — including 3am. Overnight marketing reads as spam
+  // to Meta and tanks the quality rating. Reconcile + orphan recovery above are
+  // status-only (no outbound sends) so they're safe to run any hour.
+  const utcHour = new Date(now).getUTCHours();
+  if (utcHour < 5 || utcHour >= 16) {
+    return NextResponse.json({ reconciled, claimed: 0, sent: 0, skipped: 0, failed: 0, held: "quiet_hours" });
+  }
+
   // Find due messages, then claim them atomically (the status guard means a
   // concurrent run only gets the rows it actually flipped).
   // CRITICAL: only rows WITHOUT a twilio_sid. Rows that already have one were

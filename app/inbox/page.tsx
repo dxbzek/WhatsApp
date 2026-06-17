@@ -44,6 +44,7 @@ function demoConvs(): UIConv[] {
   return CONVOS.map((c) => ({
     id: String(c.id), name: c.name, phone: c.phone, tag: c.tag, lead: c.tag === "Hot" ? "hot" : c.tag === "Warm" ? "warm" : "new",
     unread: c.unread, time: c.time, community: c.community, live: false, loaded: true,
+    replied: c.messages.some((m) => m.from === "in"),
     messages: c.messages.map((m, i) => ({ id: String(i), from: m.from, t: m.t, at: m.at })),
   }));
 }
@@ -53,7 +54,7 @@ export default function Inbox() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [q, setQ] = useState("");
-  const [tab, setTab] = useState<"all" | "unread" | "hot">("all");
+  const [tab, setTab] = useState<"all" | "unread" | "hot" | "replied">("all");
   const [showThread, setShowThread] = useState(false);
   const [tplOpen, setTplOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -98,7 +99,7 @@ export default function Inbox() {
         id: c.id, name: c.name || "+" + c.wa_phone, phone: formatPhone(c.wa_phone), waPhone: c.wa_phone,
         tag: tagOf(c.lead_status), lead: c.lead_status || "new", unread: c.unread ? 1 : 0, time: hhmm(c.last_at),
         community: c.community || "", live: true, loaded: false, messages: [], blocked: c.status === "blocked",
-        lastBody: c.last_body || "", lastDirection: c.last_direction || "",
+        lastBody: c.last_body || "", lastDirection: c.last_direction || "", replied: !!c.replied,
       }));
       setLive(true);
       setConvos((prev) => {
@@ -220,7 +221,7 @@ export default function Inbox() {
   }
 
   const list = convos
-    .filter((c) => (tab === "unread" ? c.unread > 0 && !c.blocked : tab === "hot" ? c.tag === "Hot" : true))
+    .filter((c) => (tab === "unread" ? c.unread > 0 && !c.blocked : tab === "hot" ? c.tag === "Hot" : tab === "replied" ? !!c.replied && !c.blocked : true))
     .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.toLowerCase()) || (c.waPhone || "").includes(q.replace(/[^0-9]/g, "")));
 
   return (
@@ -231,7 +232,7 @@ export default function Inbox() {
             <div className="conv-title">Inbox</div>
             <div className="list-search full"><Icon d={IC.search} s={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search conversations…" /></div>
             <div className="seg-tabs">
-              {([["all", "All"], ["unread", "Unread"], ["hot", "Hot"]] as const).map(([id, l]) => (
+              {([["all", "All"], ["unread", "Unread"], ["replied", "Replied"], ["hot", "Hot"]] as const).map(([id, l]) => (
                 <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>
               ))}
             </div>

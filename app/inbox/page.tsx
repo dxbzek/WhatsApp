@@ -54,7 +54,7 @@ export default function Inbox() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [q, setQ] = useState("");
-  const [tab, setTab] = useState<"all" | "unread" | "hot" | "replied">("all");
+  const [tab, setTab] = useState<"all" | "unread" | "hot" | "replied" | "optout">("all");
   const [showThread, setShowThread] = useState(false);
   const [tplOpen, setTplOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -221,7 +221,14 @@ export default function Inbox() {
   }
 
   const list = convos
-    .filter((c) => (tab === "unread" ? c.unread > 0 && !c.blocked : tab === "hot" ? c.tag === "Hot" : tab === "replied" ? !!c.replied && !c.blocked : true))
+    // Replied = anyone who messaged back (opt-outs included, but labelled on the row).
+    // Opt-outs get their own filter. Unread/Hot stay actionable-only (no opt-outs).
+    .filter((c) => (
+      tab === "unread" ? c.unread > 0 && !c.blocked
+        : tab === "hot" ? c.tag === "Hot" && !c.blocked
+        : tab === "replied" ? !!c.replied
+        : tab === "optout" ? !!c.blocked
+        : true))
     .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.toLowerCase()) || (c.waPhone || "").includes(q.replace(/[^0-9]/g, "")));
 
   return (
@@ -232,7 +239,7 @@ export default function Inbox() {
             <div className="conv-title">Inbox</div>
             <div className="list-search full"><Icon d={IC.search} s={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search conversations…" /></div>
             <div className="seg-tabs">
-              {([["all", "All"], ["unread", "Unread"], ["replied", "Replied"], ["hot", "Hot"]] as const).map(([id, l]) => (
+              {([["all", "All"], ["unread", "Unread"], ["replied", "Replied"], ["optout", "Opt-outs"], ["hot", "Hot"]] as const).map(([id, l]) => (
                 <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>
               ))}
             </div>
@@ -262,7 +269,14 @@ export default function Inbox() {
                     })()}</span>
                     {c.unread > 0 && <span className="unread">{c.unread}</span>}
                   </div>
-                  {(c.tag || c.community) && <div className="ci-tags"><TagDot tag={c.tag} /><span className="ci-comm">{c.community}</span></div>}
+                  {(c.tag || c.community || c.blocked) && (
+                    <div className="ci-tags">
+                      {c.blocked
+                        ? <span className="leadtag"><span className="d" style={{ background: "var(--ink-3)" }} />Opt-out</span>
+                        : <TagDot tag={c.tag} />}
+                      <span className="ci-comm">{c.community}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

@@ -23,6 +23,9 @@ export default function TemplatePerformance() {
   const totalSent = rows.reduce((n, t) => n + (t.s.sent || 0), 0);
   const totalReplied = rows.reduce((n, t) => n + (t.s.replied || 0), 0);
   const avgReply = totalSent ? Math.round((totalReplied / totalSent) * 100) : 0;
+  const totalDelivered = rows.reduce((n, t) => n + (t.s.delivered || 0), 0);
+  const totalLeads = rows.reduce((n, t) => n + (t.s.leads || 0), 0);
+  const avgLeadRate = totalDelivered ? Math.round((totalLeads / totalDelivered) * 100) : 0;
 
   return (
     <div className="page"><div className="maxw">
@@ -45,11 +48,12 @@ export default function TemplatePerformance() {
 
       {rows.length > 0 && (
         <>
-          <div className="kpis k4">
-            <div className="kpi"><div className="kl">Templates tracked</div><div className="kv">{rows.length}</div><div className="ks">sent · 90d</div></div>
+          <div className="kpis k5">
             <div className="kpi"><div className="kl">Total sent</div><div className="kv">{totalSent.toLocaleString()}</div><div className="ks">last 90 days</div></div>
-            <div className="kpi"><div className="kl">Replies</div><div className="kv">{totalReplied.toLocaleString()}</div><div className="ks">messaged back</div></div>
-            <div className="kpi"><div className="kl">Avg reply rate</div><div className="kv">{avgReply}%</div><div className="ks">across templates</div></div>
+            <div className="kpi"><div className="kl">Delivered</div><div className="kv">{totalDelivered.toLocaleString()}</div><div className="ks">reached a handset</div></div>
+            <div className="kpi"><div className="kl">Replies</div><div className="kv">{totalReplied.toLocaleString()}</div><div className="ks">{avgReply}% of sent</div></div>
+            <div className="kpi"><div className="kl">Leads</div><div className="kv">{totalLeads.toLocaleString()}</div><div className="ks">to Pipedrive</div></div>
+            <div className="kpi"><div className="kl">Lead rate</div><div className="kv">{avgLeadRate}%</div><div className="ks">of delivered</div></div>
           </div>
 
           {rows.map((t) => <TemplateCard key={t.sid} t={t} />)}
@@ -76,6 +80,7 @@ function TemplateCard({ t }: { t: any }) {
     { label: "Delivered", n: s.delivered, color: "var(--green-dot)", note: `${s.deliveryRate}% of sent` },
     { label: "Read", n: s.read, color: "var(--blue)", note: `${pct(s.read, s.delivered)}% of delivered` },
     { label: "Replied", n: s.replied, color: "var(--green-ink)", note: `${pct(s.replied, s.delivered)}% of delivered` },
+    { label: "Leads", n: s.leads || 0, color: "var(--amber-dot)", note: `${s.leadRate || 0}% of delivered` },
   ];
   const base = Math.max(1, s.sent);
   return (
@@ -85,12 +90,17 @@ function TemplateCard({ t }: { t: any }) {
           <span className="tkind text"><Icon d={IC.tmpl} s={16} /></span>
           <div className="nm" style={{ minWidth: 0 }}>
             <div className="t" title={t.name} style={{ maxWidth: "none" }}>{t.name}</div>
-            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 1 }}>{s.sent.toLocaleString()} sent · {s.replied.toLocaleString()} replied</div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 1 }}>{s.sent.toLocaleString()} sent · {s.replied.toLocaleString()} replied · {(s.leads || 0).toLocaleString()} leads</div>
           </div>
         </div>
-        <span className="badge" style={{ color: replyColor(s.replyRate), borderColor: replyColor(s.replyRate), background: "transparent", flexShrink: 0 }}>
-          <span className="bd" style={{ background: replyColor(s.replyRate) }} />{s.replyRate}% reply
-        </span>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <span className="badge" style={{ color: replyColor(s.replyRate), borderColor: replyColor(s.replyRate), background: "transparent" }}>
+            <span className="bd" style={{ background: replyColor(s.replyRate) }} />{s.replyRate}% reply
+          </span>
+          <span className="badge" style={{ color: leadColor(s.leadRate || 0), borderColor: leadColor(s.leadRate || 0), background: "transparent" }}>
+            <span className="bd" style={{ background: leadColor(s.leadRate || 0) }} />{(s.leads || 0).toLocaleString()} leads
+          </span>
+        </div>
       </div>
 
       <div style={{ display: "grid", gap: 9 }}>
@@ -138,6 +148,8 @@ const topErrors = (errors: Record<string, number> = {}): [string, number][] =>
   Object.entries(errors).sort((a, b) => b[1] - a[1]).slice(0, 4);
 // Reply rate is the money metric: green if good (10%+), amber if okay (3%+), grey otherwise.
 const replyColor = (r: number) => (r >= 10 ? "var(--green-ink)" : r >= 3 ? "var(--amber-ink)" : "var(--ink-3)");
+// Lead rate (of delivered) is the REAL outcome — leads tend to be a few %: green 5%+, amber 1%+, grey otherwise.
+const leadColor = (r: number) => (r >= 5 ? "var(--green-ink)" : r >= 1 ? "var(--amber-ink)" : "var(--ink-3)");
 
 // Find the first funnel stage that under-performs and return the playbook action for it.
 // Order matters: a leak early in the funnel (delivery) must be fixed before a later one.
@@ -162,6 +174,8 @@ function diagnose(s: any): { leak: string; color: string; bg: string; border: st
     return { ...amber, leak: "Read low", action: "Timing or sender trust. Send 10:00-13:00 or 17:00-20:00 GST, use an image header and the brand name." };
   if (s.replyRate < 3)
     return { ...amber, leak: "Reply low", action: "Weak hook, CTA or targeting. Front-load a value hook, keep one quick-reply CTA, tighten the audience." };
+  if (s.replied > 0 && (s.leads || 0) === 0)
+    return { ...amber, leak: "Replies aren't becoming leads", action: "People reply but none reached Pipedrive. Check the 'Interested' button / replies push to Pipedrive, and an agent follows up fast — this is where the money leaks." };
   if (s.replied > 0)
     return { ...green, leak: "Capture replies", action: "Engagement is healthy. Make sure replies route to Pipedrive and an agent calls within minutes." };
   return { ...green, leak: "Healthy", action: "Funnel looks good. Scale within warm-up caps and test one change at a time." };

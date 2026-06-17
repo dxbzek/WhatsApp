@@ -54,6 +54,21 @@ export async function GET() {
       if (!data || data.length < 1000) break;
     }
 
+    // Lead conversations = pushed to Pipedrive. This is the real outcome we care
+    // about (delivered -> reached a person, but LEAD = it actually turned into
+    // something an agent can work). Set of conversation ids that became a lead.
+    const leadConvs = new Set<string>();
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await db
+        .from("conversations")
+        .select("id")
+        .not("pipedrive_lead_id", "is", null)
+        .range(from, from + 999);
+      if (error) throw error;
+      for (const c of data as any[]) leadConvs.add(c.id);
+      if (!data || data.length < 1000) break;
+    }
+
     const stats: Record<string, any> = {};
     // Track distinct conversations + replied conversations per template.
     const convsSeen: Record<string, Set<string>> = {};
@@ -85,6 +100,13 @@ export async function GET() {
       const seen = convsSeen[sid].size;
       stats[sid].conversations = seen;
       stats[sid].replied = convsReplied[sid].size;
+      // Leads = distinct conversations that got this template AND are now a
+      // Pipedrive lead. Rate is of DELIVERED (the real conversion: of everyone
+      // who actually received it, how many turned into a lead).
+      let leads = 0;
+      for (const cid of convsSeen[sid]) if (leadConvs.has(cid)) leads++;
+      stats[sid].leads = leads;
+      stats[sid].leadRate = stats[sid].delivered ? Math.round((leads / stats[sid].delivered) * 100) : 0;
       stats[sid].deliveryRate = stats[sid].sent ? Math.round((stats[sid].delivered / stats[sid].sent) * 100) : 0;
       stats[sid].failedRate = stats[sid].sent ? Math.round((stats[sid].failed / stats[sid].sent) * 100) : 0;
       stats[sid].readRate = stats[sid].sent ? Math.round((stats[sid].read / stats[sid].sent) * 100) : 0;

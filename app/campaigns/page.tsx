@@ -842,7 +842,7 @@ export default function Campaigns() {
         <div className="sect">
           <div className="sect-t">Assign leads to</div>
           <div className="hint" style={{ marginTop: 0, marginBottom: 10 }}>
-            Pick which agents get this campaign’s interested leads. Replies are split round-robin across whoever you select — each gets the Pipedrive lead plus a WhatsApp ping. Leave empty to keep leads unassigned.
+            Pick which agents get this campaign’s interested leads. Replies are split round-robin across whoever you select. Each gets a WhatsApp ping with the lead’s number and your heads-up. Leave empty to keep leads unassigned.
           </div>
           {agents.length === 0 ? (
             <div className="hint" style={{ margin: 0 }}>No agents configured yet.</div>
@@ -879,7 +879,7 @@ export default function Campaigns() {
                 maxLength={140}
                 placeholder='Heads-up for the agent, e.g. "Buyers for off-market Palm villas under AED 25M"'
               />
-              <div className="hint" style={{ marginBottom: 0 }}>One line telling the agent what this campaign is about — it goes in their lead alert. Optional.</div>
+              <div className="hint" style={{ marginBottom: 0 }}>One line telling the agent what this campaign is about. It goes in their lead alert. Optional.</div>
             </>
           )}
         </div>

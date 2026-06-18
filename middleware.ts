@@ -5,7 +5,8 @@ import { verifySession, COOKIE } from "@/lib/auth";
 //  - /api/auth/*   : the login/logout endpoints themselves
 //  - /api/twilio/* : Twilio webhooks (inbound + status) reach us unauthenticated
 //  - /api/cron/*   : the drip dispatcher, poked by pg_cron (self-secured by CRON_SECRET)
-const PUBLIC_API = ["/api/auth/", "/api/twilio/", "/api/cron/"];
+//  - /api/leads/*  : Meta lead-form ingest from Zapier/Make (self-secured by LEAD_INGEST_SECRET)
+const PUBLIC_API = ["/api/auth/", "/api/twilio/", "/api/cron/", "/api/leads/"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

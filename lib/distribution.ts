@@ -1,19 +1,17 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp } from "@/lib/twilio";
-import { setLeadOwner } from "@/lib/pipedrive";
 
 // Auto-distribute an interested lead to one of the agents assigned to the
 // campaign it came from. Resolves the campaign from the contact's most recent
 // outbound template send, picks an agent (round-robin across the campaign's
-// agent_ids, or "all" = notify every assigned agent), sets the Pipedrive lead
-// owner, and WhatsApp-pings the agent(s). Best-effort end to end: any failure
-// is swallowed so it can never break the inbound webhook.
+// agent_ids, or "all" = notify every assigned agent), and WhatsApp-pings the
+// agent(s) the lead's number + campaign heads-up. Best-effort end to end: any
+// failure is swallowed so it can never break the inbound webhook.
 //
 // Returns the assigned agent name(s), or null when the campaign has no agents
 // (in which case the lead stays unassigned, exactly like before this feature).
 export async function distributeLead(opts: {
   conversationId: string;
-  leadId?: string | null;
   contactPhone: string; // +E.164
   contactName?: string;
 }): Promise<{ assigned: string[] } | null> {
@@ -60,12 +58,6 @@ export async function distributeLead(opts: {
       const idx = (camp.rr_pointer ?? 0) % ordered.length;
       targets = [ordered[idx]];
       await db.from("campaigns").update({ rr_pointer: (camp.rr_pointer ?? 0) + 1 }).eq("id", camp.id);
-    }
-
-    // Owner = the first target. Set it in Pipedrive if we know the user id.
-    const owner = targets[0];
-    if (opts.leadId && owner?.pipedrive_user_id) {
-      try { await setLeadOwner(opts.leadId, Number(owner.pipedrive_user_id)); } catch { /* non-fatal */ }
     }
 
     const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";

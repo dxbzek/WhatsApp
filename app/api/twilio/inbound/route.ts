@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp } from "@/lib/twilio";
 import { verifyTwilioWebhook } from "@/lib/twilioSignature";
-import { pushLeadFromWhatsApp } from "@/lib/pipedrive";
-import { logConversationToPipedrive } from "@/lib/pipedriveSync";
 import { distributeLead } from "@/lib/distribution";
 
 const ok200 = () => new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
@@ -81,19 +79,14 @@ export async function POST(req: NextRequest) {
   const NEG = /\bnot interested\b|\bno\b|\bwrong number\b|\bremove\b|\bstop\b/;
   let leadHot = !isOptOut && POS.test(text) && !NEG.test(text);
 
-  // Track whether we've already created a Pipedrive lead this request, so the
-  // interest-based safety net below doesn't double-push when a rule already did.
-  let pushedPipedrive = false;
-  let leadId: string | null = null;
-
   // Button / keyword auto-reply rules (set per-button when creating a template).
   // Match the tapped button text or typed keyword to an enabled rule.
   try {
     const { data: rules } = await db.from("auto_replies").select("*").eq("enabled", true);
     const rule = (rules || []).find((r: any) => (r.trigger || "").trim().toLowerCase() === text);
     if (rule) {
-      // A button wired to push a Pipedrive lead is itself a strong interest
-      // signal (e.g. "Interested", "Book a viewing") — treat it as hot.
+      // A button wired as an interest signal (e.g. "Interested", "Book a
+      // viewing") marks the lead hot.
       if (rule.push_pipedrive && !rule.block) leadHot = true;
       if (rule.block) {
         await db.from("conversations").update({ status: "blocked", unread: false }).eq("id", conv!.id);
@@ -105,56 +98,26 @@ export async function POST(req: NextRequest) {
           await db.from("conversations").update({ last_direction: "out", last_status: tw.status, last_body: rule.reply }).eq("id", conv!.id);
         } catch { /* 24h window may be closed; ignore */ }
       }
-      if (rule.push_pipedrive) {
-        try {
-          const r = await pushLeadFromWhatsApp({
-            phone: from,
-            name: profileName || undefined,
-            note: `Auto-pushed from ERE WhatsApp (tapped "${body.trim()}").`,
-          });
-          leadId = r?.leadId || null;
-          pushedPipedrive = true;
-        } catch { /* don't fail the webhook on Pipedrive errors */ }
-      }
     }
   } catch { /* never fail the inbound webhook */ }
 
-  // Surface interested leads as hot (done after the rules block so a
-  // push-to-Pipedrive button counts too). Hot is the top tier, so this only
-  // ever upgrades — it never downgrades a manually-set status.
+  // Surface interested leads as hot so they sit in the inbox Hot tab (the lead
+  // list), and route them to an agent. Hot is the top tier, so this only ever
+  // upgrades — it never downgrades a manually-set status.
   if (leadHot) {
     try { await db.from("conversations").update({ lead_status: "hot" }).eq("id", conv!.id); } catch { /* non-fatal */ }
-    // Safety net: ANY interested reply becomes a Pipedrive lead, even when no
-    // exact-match button rule is configured. Without this, an "I'm Interested"
-    // tap that doesn't match a rule trigger is flagged hot but never pushed —
-    // so the lead silently never reaches an agent (this leaked real leads).
-    if (!pushedPipedrive) {
-      try {
-        const r = await pushLeadFromWhatsApp({
-          phone: from,
-          name: profileName || undefined,
-          note: `Auto-pushed from ERE WhatsApp (interested reply: "${body.trim()}").`,
-        });
-        leadId = r?.leadId || null;
-      } catch { /* don't fail the webhook on Pipedrive errors */ }
-    }
 
     // Auto-distribute: route this lead to one of the agents assigned to the
-    // campaign it came from (Pipedrive owner + WhatsApp ping). No-op when the
-    // campaign has no agents configured, so it never breaks existing flows.
+    // campaign it came from (WhatsApp alert with the lead's number + the
+    // campaign heads-up). No-op when the campaign has no agents configured.
     try {
       await distributeLead({
         conversationId: conv!.id,
-        leadId,
         contactPhone: from,
         contactName: profileName || undefined,
       });
     } catch { /* non-fatal */ }
   }
-
-  // Keep the Pipedrive transcript note current (best-effort; only if linked).
-  // Wrapped so a Pipedrive hiccup can't 500 the webhook and trigger a retry.
-  try { await logConversationToPipedrive(conv!.id); } catch { /* non-fatal */ }
 
   // empty TwiML 200 so Twilio is happy
   return ok200();

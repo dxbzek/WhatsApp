@@ -76,6 +76,10 @@ create index if not exists idx_campaigns_created_at on campaigns(created_at desc
 -- Full migration in lib/migration_meta_lead_routing.sql. In short:
 --   conversations.source / source_ref / source_detail  -- "meta_lead_form" + listing ref + ad name
 --   lead_routes(ref, label, agent_ids[], distribution, rr_pointer, active)  -- per-listing agent pool
+-- Tracking (migration_meta_lead_tracking.sql):
+--   conversations.assigned_agent / routing_status      -- at-a-glance outcome
+--   lead_events(...)                                   -- permanent per-lead audit log
+--   env LEAD_FALLBACK_WA = safety-net WhatsApp pinged when a lead cannot reach its agent
 
 -- Realtime for the inbox UI
 alter publication supabase_realtime add table messages;

@@ -91,16 +91,36 @@ export async function POST(req: NextRequest) {
   });
 
   // Round-robin to the listing's agent pool and ping them with the Meta context.
+  // Always returns an outcome (never throws) so we can track every lead.
   const dist = await distributeMetaLead({ contactPhone: e164, contactName: leadName, ref, detail });
-  if (dist?.ref) {
-    await db.from("conversations").update({ source_ref: dist.ref }).eq("id", conv.id);
-  }
+  const alertStatus = dist.alertOk ? "sent" : dist.fallbackOk ? "fallback" : "none";
+
+  // Denormalise the outcome onto the conversation for at-a-glance inbox context.
+  await db.from("conversations").update({
+    source_ref: dist.ref ?? (ref || null),
+    assigned_agent: dist.assigned[0] ?? null,
+    routing_status: dist.status,
+  }).eq("id", conv.id);
+
+  // Append a permanent lead-tracking row (never overwritten, unlike the chat).
+  await db.from("lead_events").insert({
+    conversation: conv.id,
+    wa_phone: bare,
+    name: leadName,
+    ref: dist.ref ?? (ref || null),
+    detail: detail || null,
+    routing_status: dist.status,
+    assigned_agent: dist.assigned[0] ?? null,
+    alert_status: alertStatus,
+  });
 
   return NextResponse.json({
     ok: true,
     conversationId: conv.id,
-    assigned: dist?.assigned || [],
-    routed: !!dist,
+    status: dist.status,
+    assigned: dist.assigned,
+    routed: dist.status === "routed",
+    alert: alertStatus,
   });
 }
 

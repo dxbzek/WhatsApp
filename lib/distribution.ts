@@ -8,26 +8,44 @@ const LEAD_ALERT_CONTENT_SID = "HXc2cd73732854096291ff396e13c5cb73";
 
 type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: string | null; active?: boolean };
 
-// Ping each target agent with the lead. Prefer the approved template (works any
-// time); if it is rejected — e.g. still pending — fall back to free text, which
-// only delivers inside an open 24h window. Best-effort: a per-agent failure is
-// swallowed so one bad number never blocks the rest. Returns the names pinged.
-async function alertAgents(targets: Agent[], leadName: string, contactPhone: string, about: string): Promise<string[]> {
+// Send the lead-alert to one WhatsApp number. Prefer the approved template (works
+// any time); if it is rejected — e.g. still pending — fall back to free text,
+// which only delivers inside an open 24h window. Returns true if either send was
+// accepted by Twilio (so the caller can tell a real delivery failure from a hit).
+async function sendAlert(toWa: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
   const vars = { "1": leadName, "2": contactPhone, "3": about };
   const fallback =
     `New ERE lead from WhatsApp.\n\n` +
     `Name: ${leadName}\nNumber: ${contactPhone}\nCampaign: ${about}\n\n` +
     `They just came in. Call or message them now while it is hot.`;
-  const assigned: string[] = [];
-  for (const a of targets) {
-    try {
-      await sendTemplate(a.wa_number, LEAD_ALERT_CONTENT_SID, vars);
-    } catch {
-      try { await sendWhatsApp(a.wa_number, fallback); } catch { /* window may be closed */ }
-    }
-    assigned.push(a.name);
+  try {
+    await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, vars);
+    return true;
+  } catch {
+    try { await sendWhatsApp(toWa, fallback); return true; } catch { return false; }
   }
-  return assigned;
+}
+
+// Ping each target agent with the lead. Best-effort: a per-agent failure never
+// blocks the rest. Returns { name, ok } per agent so the caller knows whether the
+// alert actually reached at least one of them.
+async function alertAgents(targets: Agent[], leadName: string, contactPhone: string, about: string): Promise<{ name: string; ok: boolean }[]> {
+  const results: { name: string; ok: boolean }[] = [];
+  for (const a of targets) {
+    const ok = await sendAlert(a.wa_number, leadName, contactPhone, about);
+    results.push({ name: a.name, ok });
+  }
+  return results;
+}
+
+// Safety net: when a lead cannot reach its assigned agent (no route, no active
+// agents, or every agent alert failed), ping the fallback owner (LEAD_FALLBACK_WA)
+// so a lead is NEVER lost silently. Returns true if the fallback was notified.
+async function notifyFallback(reason: string, leadName: string, contactPhone: string, context: string): Promise<boolean> {
+  const to = (process.env.LEAD_FALLBACK_WA || "").trim();
+  if (!to) return false;
+  const about = `UNROUTED (${reason})${context ? ` — ${context}` : ""}. Reassign this lead.`;
+  return sendAlert(to, leadName, contactPhone, about);
 }
 
 // Pick the target agent(s) from an ordered pool: "all" notifies everyone (owner =
@@ -102,12 +120,22 @@ export async function distributeLead(opts: {
     const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
     // What the campaign is about — the per-campaign blurb if set, else the name.
     const about = (camp.blurb && camp.blurb.trim()) ? camp.blurb.trim() : `Campaign: ${camp.name}`;
-    const assigned = await alertAgents(targets, leadName, opts.contactPhone, about);
-    return { assigned };
+    const results = await alertAgents(targets, leadName, opts.contactPhone, about);
+    return { assigned: results.map((r) => r.name) };
   } catch {
     return null;
   }
 }
+
+// Outcome of routing a Meta lead — persisted to lead_events for tracking so no
+// lead falls through unnoticed.
+export type MetaLeadResult = {
+  status: "routed" | "no_route" | "no_active_agents" | "alert_failed" | "error";
+  ref: string | null;          // matched route ref, if any
+  assigned: string[];          // agent names pinged (empty if unrouted)
+  alertOk: boolean;            // an assigned agent's alert was accepted by Twilio
+  fallbackOk: boolean;         // the safety-net owner was notified (only on failure)
+};
 
 // Auto-distribute an inbound Meta ad lead (Instant Lead Form -> console) to the
 // agent pool configured for its listing. Resolves a lead_routes row by `ref`
@@ -116,15 +144,18 @@ export async function distributeLead(opts: {
 // form name). Round-robins across the route's active agents and pings them with
 // the lead's number + a "From Meta Ad" heads-up that names the listing.
 //
-// Best-effort end to end: any failure is swallowed so it can never break the lead
-// webhook. Returns the assigned agent name(s), or null when no route/agent matches
-// (the lead stays hot + unassigned in the inbox Hot tab, never silently dropped).
+// Always returns a MetaLeadResult (never throws) so the webhook can log the
+// outcome for every lead. On any failure path it pings the safety-net owner
+// (LEAD_FALLBACK_WA) so a lead is never lost silently; the lead also stays hot +
+// visible in the inbox Hot tab regardless.
 export async function distributeMetaLead(opts: {
   contactPhone: string; // +E.164
   contactName?: string;
   ref?: string;          // listing/ad code, e.g. "CAYAN-BH"
   detail?: string;       // ad / campaign / form name, for matching + context
-}): Promise<{ assigned: string[]; ref: string | null } | null> {
+}): Promise<MetaLeadResult> {
+  const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
+  const context = [opts.ref, opts.detail].filter(Boolean).join(" · ");
   try {
     const db = supabaseAdmin();
 
@@ -141,23 +172,41 @@ export async function distributeMetaLead(opts: {
       (wantRef && all.find((r) => String(r.ref).toLowerCase() === wantRef)) ||
       (detail && all.find((r) => detail.includes(String(r.ref).toLowerCase()))) ||
       null;
-    if (!route) return null;
+
+    // No matching route -> safety net.
+    if (!route) {
+      const fallbackOk = await notifyFallback("no_route", leadName, opts.contactPhone, context);
+      return { status: "no_route", ref: null, assigned: [], alertOk: false, fallbackOk };
+    }
 
     const ids: string[] = (route.agent_ids as string[]) || [];
     const ordered = await loadAgents(db, ids);
-    if (ordered.length === 0) return null;
+    // Route exists but nobody active to take it -> safety net.
+    if (ordered.length === 0) {
+      const fallbackOk = await notifyFallback("no_active_agents", leadName, opts.contactPhone, context);
+      return { status: "no_active_agents", ref: String(route.ref), assigned: [], alertOk: false, fallbackOk };
+    }
 
     const { targets, nextPointer } = pickTargets(ordered, route.distribution, route.rr_pointer ?? 0);
     if (route.distribution !== "all") {
       await db.from("lead_routes").update({ rr_pointer: nextPointer }).eq("ref", route.ref);
     }
 
-    const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
     const label = (route.label && String(route.label).trim()) || (opts.detail && opts.detail.trim()) || String(route.ref);
     const about = `From Meta Ad: ${label}`;
-    const assigned = await alertAgents(targets, leadName, opts.contactPhone, about);
-    return { assigned, ref: String(route.ref) };
+    const results = await alertAgents(targets, leadName, opts.contactPhone, about);
+    const assigned = results.map((r) => r.name);
+    const alertOk = results.some((r) => r.ok);
+
+    // Agent(s) chosen but no alert got through -> safety net so it is not silent.
+    if (!alertOk) {
+      const fallbackOk = await notifyFallback("alert_failed", leadName, opts.contactPhone, `${context} (agent: ${assigned.join(", ")})`);
+      return { status: "alert_failed", ref: String(route.ref), assigned, alertOk: false, fallbackOk };
+    }
+    return { status: "routed", ref: String(route.ref), assigned, alertOk: true, fallbackOk: false };
   } catch {
-    return null;
+    // Unexpected error -> still try the safety net, never throw into the webhook.
+    const fallbackOk = await notifyFallback("error", leadName, opts.contactPhone, context).catch(() => false);
+    return { status: "error", ref: null, assigned: [], alertOk: false, fallbackOk };
   }
 }

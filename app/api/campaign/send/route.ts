@@ -25,9 +25,16 @@ export async function POST(req: NextRequest) {
     const templateMedia = await getContentMedia(contentSid);
     const templateBody = await getContentBody(contentSid).catch(() => null);
 
-    // Skip opted-out (blocked), dead (invalid), AND anyone EVER already sent this
-    // template (any campaign, any status — a failed send still counts). The last
-    // one is the hard never-resend guard that stops double-sending.
+    // Skip opted-out (blocked), dead (invalid), and anyone we've ALREADY REACHED
+    // (or have in-flight) with this template. A send that only FAILED on our side
+    // (sender locked 63051, throttled 63049, rate-limited 90010, etc.) did NOT
+    // reach the contact, so it must NOT block a resend — that was the whole point
+    // of the post-restriction resend. Sends that bounced because the number isn't
+    // on WhatsApp (63024/63003) stay blocked, since resending just bounces again
+    // and hurts the sender's quality rating.
+    const REACHED = new Set(["delivered", "read", "sent"]);
+    const INFLIGHT = new Set(["queued", "sending", "scheduled", "accepted"]);
+    const DEAD_ERR = new Set(["63024", "63003"]); // number not on WhatsApp — never resend
     const phones = recipients.map((r: any) => String(r.phone).replace(/[^0-9+]/g, "").replace("+", ""));
     const { data: convRows } = await db.from("conversations").select("id, wa_phone, status").in("wa_phone", phones);
     const idByPhone = new Map<string, string>();
@@ -39,14 +46,19 @@ export async function POST(req: NextRequest) {
       if ((c as any).status === "invalid") invalidSet.add((c as any).wa_phone);
     }
     const convIdList = Array.from(idByPhone.values());
-    const sentConvIds = new Set<string>();
+    // Only conversations actually reached / in-flight / proven-dead get blocked.
+    const skipConvIds = new Set<string>();
     for (let i = 0; i < convIdList.length; i += 300) {
-      const { data } = await db.from("messages").select("conversation")
+      const { data } = await db.from("messages").select("conversation, status, error_code")
         .eq("direction", "out").eq("content_sid", contentSid).in("conversation", convIdList.slice(i, i + 300));
-      for (const m of data || []) sentConvIds.add((m as any).conversation);
+      for (const m of data || []) {
+        const st = (m as any).status as string;
+        const ec = (m as any).error_code != null ? String((m as any).error_code) : null;
+        if (REACHED.has(st) || INFLIGHT.has(st) || (ec && DEAD_ERR.has(ec))) skipConvIds.add((m as any).conversation);
+      }
     }
     const alreadySentSet = new Set<string>();
-    for (const [wa, id] of idByPhone) if (sentConvIds.has(id)) alreadySentSet.add(wa);
+    for (const [wa, id] of idByPhone) if (skipConvIds.has(id)) alreadySentSet.add(wa);
 
     const results: any[] = [];
     for (const r of recipients) {

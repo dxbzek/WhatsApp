@@ -538,7 +538,10 @@ export default function Campaigns() {
         }
         for (const r of d.results) {
           done++;
-          if (r.status === "skipped_blacklist" || r.status === "skipped_invalid") skipped++;
+          // Any skipped_* (blacklist, invalid/dead, already-reached) is a SKIP,
+          // never a send — otherwise the summary claims "queued" for messages
+          // that never went out.
+          if (typeof r.status === "string" && r.status.startsWith("skipped")) skipped++;
           else if (r.status === "failed" || r.status === "invalid") failed++;
           else if (r.status === "scheduled") scheduled++;
           else sent++;
@@ -571,7 +574,7 @@ export default function Campaigns() {
             : ` · ${ed.notInCrm} not in CRM (Sheet not configured).`;
         }
       } catch { /* ignore - export is best-effort */ }
-      setDoneMsg(`Queued ${sent}${sch} to Twilio · skipped ${skipped} (blacklisted) · failed ${failed}.${batchNote}${schedNote}${tail}${uncrmNote} Twilio is delivering now - real delivered/read rates are in Insights.`);
+      setDoneMsg(`Queued ${sent}${sch} to Twilio · skipped ${skipped} (already reached, dead number, or opted out) · failed ${failed}.${batchNote}${schedNote}${tail}${uncrmNote} ${sent > 0 ? "Twilio is delivering now - real delivered/read rates are in Insights." : "Nothing went out - every recipient was skipped."}`);
     } catch (e: any) {
       setErr(e.message);
     } finally {

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { RATES } from "@/lib/rates";
 import { formatPhone } from "@/lib/format";
 import { PageHead } from "@/lib/ui";
@@ -117,6 +118,24 @@ export default function Campaigns() {
   const [progress, setProgress] = useState<{ done: number; total: number; sent: number; skipped: number; failed: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [doneMsg, setDoneMsg] = useState<string | null>(null);
+  const [redirectIn, setRedirectIn] = useState<number | null>(null);
+  const router = useRouter();
+
+  // After a send completes (doneMsg set), auto-route to the campaign log so the
+  // user lands on the live delivery numbers. Counts down so the summary is
+  // readable first; cancellable if they want to stay and send another batch.
+  useEffect(() => {
+    if (!doneMsg) { setRedirectIn(null); return; }
+    setRedirectIn(4);
+    const tick = setInterval(() => {
+      setRedirectIn((n) => {
+        if (n === null) return null;
+        if (n <= 1) { clearInterval(tick); router.push("/campaigns/history"); return 0; }
+        return n - 1;
+      });
+    }, 1000);
+    return () => clearInterval(tick);
+  }, [doneMsg, router]);
   const [senders, setSenders] = useState<string[]>([]);
   const [sender, setSender] = useState("");
   const [optIn, setOptIn] = useState(false);
@@ -931,8 +950,20 @@ export default function Campaigns() {
         </button>
 
         {doneMsg && (
-          <div style={{ marginTop: 16 }}>
+          <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
             <Link href="/campaigns/history" className="card-link">View campaign log →</Link>
+            {redirectIn !== null && redirectIn > 0 && (
+              <span className="hint" style={{ margin: 0 }}>
+                Taking you to the log in {redirectIn}s ·{" "}
+                <button
+                  type="button"
+                  onClick={() => setRedirectIn(null)}
+                  style={{ background: "none", border: "none", padding: 0, color: "var(--brand, #2563eb)", cursor: "pointer", textDecoration: "underline", font: "inherit" }}
+                >
+                  stay here
+                </button>
+              </span>
+            )}
           </div>
         )}
       </div>

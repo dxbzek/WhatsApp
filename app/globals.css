@@ -395,9 +395,11 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 .wa-bubble .placeholder{color:#9aa3a8;}
 .wa-bubble .bfoot{font-size:11px;color:#8a9398;margin-top:5px;}
 .wa-bubble .btime{display:flex;justify-content:flex-end;gap:3px;font-size:10px;color:#8a9398;margin-top:3px;}
-.wa-replies{max-width:92%;margin-top:5px;display:flex;flex-direction:column;gap:4px;}
-.wa-reply{background:#fff;color:var(--wa-blue);text-align:center;padding:9px;border-radius:7px;font-size:13px;font-weight:500;box-shadow:0 1px .5px rgba(0,0,0,.13);display:flex;align-items:center;justify-content:center;gap:6px;}
-.wa-reply svg{width:13px;height:13px;}
+/* Template buttons render as small wrapping chips (not full-width rows) so they
+   read as buttons and never crowd out the message text above them. */
+.wa-replies{max-width:100%;margin-top:5px;display:flex;flex-wrap:wrap;gap:4px;}
+.wa-reply{background:#fff;color:var(--wa-blue);padding:3px 10px;border-radius:13px;font-size:11.5px;font-weight:500;box-shadow:0 1px .5px rgba(0,0,0,.13);display:inline-flex;align-items:center;gap:4px;white-space:nowrap;}
+.wa-reply svg{width:11px;height:11px;}
 
 /* template picker + campaign builder */
 .icon-btn.on{background:var(--blue-tint);color:var(--blue);}

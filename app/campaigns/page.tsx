@@ -463,28 +463,39 @@ export default function Campaigns() {
     ].join("\n\n");
     if (!confirm(summary)) return;
 
-    // DRIP → server-side queue. One enqueue call writes the whole schedule as
-    // 'scheduled' messages; the /api/cron/dispatch worker sends each batch as it
-    // comes due. No browser loop: this survives the tab closing and always keeps
-    // inside the 9am-8pm Dubai window.
-    if (mode === "drip") {
+    // SERVER-SIDE SEND (drip + now). Both write the recipients as 'scheduled'
+    // messages and let /api/cron/dispatch deliver them — there is no browser loop,
+    // so the send completes even if you close the tab or navigate away. "Now"
+    // queues everyone due immediately (the dispatcher still paces per its cap,
+    // which also avoids the 63049 marketing throttle); "drip" spreads across the
+    // day. Both stay inside the 9am-8pm Dubai window. Only "later" (Twilio-native
+    // scheduling) still uses the inline path below.
+    if (mode === "drip" || mode === "now") {
+      const isNow = mode === "now";
       setRunning(true);
       setProgress({ done: 0, total: recipients.length, sent: 0, skipped: 0, failed: 0 });
       try {
+        const finishIso = isNow ? new Date().toISOString() : new Date(dripFinishMs).toISOString();
         const cr = await fetch("/api/campaign/create", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: new Date(dripFinishMs).toISOString(), agentIds, distribution: "round_robin", blurb }),
+          body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: finishIso, agentIds, distribution: "round_robin", blurb }),
         });
         const cd = await cr.json();
         if (!cr.ok) throw new Error(cd.error || "Could not create the campaign.");
         const campaignId = cd.id;
 
+        // "Now" = one batch, all due immediately. "Drip" = paced per the UI.
         const er = await fetch("/api/campaign/enqueue", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ campaignId, contentSid: tplSid, sender: sender || undefined, recipients, perBatch, intervalMin, daytime: daytimeOnly }),
+          body: JSON.stringify({
+            campaignId, contentSid: tplSid, sender: sender || undefined, recipients,
+            perBatch: isNow ? recipients.length : perBatch,
+            intervalMin: isNow ? 1 : intervalMin,
+            daytime: isNow ? true : daytimeOnly,
+          }),
         });
         const ed = await er.json();
-        if (!er.ok) throw new Error(ed.error || "Could not schedule the drip.");
+        if (!er.ok) throw new Error(ed.error || (isNow ? "Could not queue the send." : "Could not schedule the drip."));
 
         // Compile not-in-CRM recipients to the Sheet (best-effort, never blocks).
         let uncrmNote = "";
@@ -498,7 +509,11 @@ export default function Campaigns() {
         } catch { /* ignore */ }
 
         const skipNote = ed.skipped ? ` · skipped ${ed.skipped} (blocked or already queued)` : "";
-        setDoneMsg(`Scheduled ${ed.enqueued} recipient(s). They send automatically between now and ${drip?.finishLabel}, inside 9am-8pm Dubai${skipNote}.${uncrmNote} You can close this tab — sending runs on the server. Track it in the campaign log.`);
+        setDoneMsg(
+          isNow
+            ? `Queued ${ed.enqueued} recipient(s) to send now${skipNote}.${uncrmNote} They go out over the next few minutes, paced to stay healthy, inside 9am-8pm Dubai. You can close this tab, sending runs on the server. Track it in the campaign log.`
+            : `Scheduled ${ed.enqueued} recipient(s). They send automatically between now and ${drip?.finishLabel}, inside 9am-8pm Dubai${skipNote}.${uncrmNote} You can close this tab, sending runs on the server. Track it in the campaign log.`
+        );
       } catch (e: any) {
         setErr(e.message);
       } finally {

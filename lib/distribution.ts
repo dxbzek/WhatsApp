@@ -1,5 +1,10 @@
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendWhatsApp } from "@/lib/twilio";
+import { sendWhatsApp, sendTemplate } from "@/lib/twilio";
+
+// Approved "lead alert" template (Utility). Lets us notify an agent any time,
+// not just inside their 24h WhatsApp window. Variables: {{1}} lead name,
+// {{2}} number, {{3}} campaign heads-up.
+const LEAD_ALERT_CONTENT_SID = "HXc2cd73732854096291ff396e13c5cb73";
 
 // Auto-distribute an interested lead to one of the agents assigned to the
 // campaign it came from. Resolves the campaign from the contact's most recent
@@ -63,15 +68,22 @@ export async function distributeLead(opts: {
     const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
     // What the campaign is about — the per-campaign blurb if set, else the name.
     const about = (camp.blurb && camp.blurb.trim()) ? camp.blurb.trim() : `Campaign: ${camp.name}`;
-    // Phone on its own line so it is tap-to-call / easy to copy in WhatsApp.
-    const msg =
-      `New lead 🔥 — ${leadName}\n\n` +
-      `${opts.contactPhone}\n` +
-      `${about}\n\n` +
-      `They just tapped Interested on our WhatsApp. Give them a call or message now while it is hot.`;
+    const vars = { "1": leadName, "2": opts.contactPhone, "3": about };
+    // Free-text version of the same alert, for the fallback path.
+    const fallback =
+      `New ERE lead from WhatsApp.\n\n` +
+      `Name: ${leadName}\nNumber: ${opts.contactPhone}\nCampaign: ${about}\n\n` +
+      `They just tapped Interested. Call or message them now while it is hot.`;
     const assigned: string[] = [];
     for (const a of targets) {
-      try { await sendWhatsApp(a.wa_number, msg); } catch { /* 24h window may be closed */ }
+      // Prefer the approved template (works any time). If it is rejected — e.g.
+      // still pending approval — fall back to free text, which delivers when the
+      // agent already has an open 24h window.
+      try {
+        await sendTemplate(a.wa_number, LEAD_ALERT_CONTENT_SID, vars);
+      } catch {
+        try { await sendWhatsApp(a.wa_number, fallback); } catch { /* window may be closed */ }
+      }
       assigned.push(a.name);
     }
     return { assigned };

@@ -119,7 +119,14 @@ export default function Campaigns() {
   const [err, setErr] = useState<string | null>(null);
   const [doneMsg, setDoneMsg] = useState<string | null>(null);
   const [redirectIn, setRedirectIn] = useState<number | null>(null);
+  const [agents, setAgents] = useState<{ id: string; name: string; wa_number: string }[]>([]);
+  const [agentIds, setAgentIds] = useState<string[]>([]);
   const router = useRouter();
+
+  // Load agents for the lead-distribution picker.
+  useEffect(() => {
+    fetch("/api/agents").then((r) => r.json()).then((d) => setAgents(d.agents || [])).catch(() => {});
+  }, []);
 
   // After a send completes (doneMsg set), auto-route to the campaign log so the
   // user lands on the live delivery numbers. Counts down so the summary is
@@ -465,7 +472,7 @@ export default function Campaigns() {
       try {
         const cr = await fetch("/api/campaign/create", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: new Date(dripFinishMs).toISOString() }),
+          body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: new Date(dripFinishMs).toISOString(), agentIds, distribution: "round_robin" }),
         });
         const cd = await cr.json();
         if (!cr.ok) throw new Error(cd.error || "Could not create the campaign.");
@@ -511,7 +518,7 @@ export default function Campaigns() {
       const cr = await fetch("/api/campaign/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: finishAtIso }),
+        body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: finishAtIso, agentIds, distribution: "round_robin" }),
       });
       const cd = await cr.json();
       if (cr.ok) campaignId = cd.id;
@@ -829,6 +836,41 @@ export default function Campaigns() {
               </div>
             ))}
           </div>
+        </div>
+
+        <div className="sect">
+          <div className="sect-t">Assign leads to</div>
+          <div className="hint" style={{ marginTop: 0, marginBottom: 10 }}>
+            Pick which agents get this campaign’s interested leads. Replies are split round-robin across whoever you select — each gets the Pipedrive lead plus a WhatsApp ping. Leave empty to keep leads unassigned.
+          </div>
+          {agents.length === 0 ? (
+            <div className="hint" style={{ margin: 0 }}>No agents configured yet.</div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {agents.map((a) => {
+                const on = agentIds.includes(a.id);
+                return (
+                  <div
+                    key={a.id}
+                    onClick={() => setAgentIds((cur) => on ? cur.filter((x) => x !== a.id) : [...cur, a.id])}
+                    className={`pick${on ? " on" : ""}`}
+                    style={{ flex: "1 1 140px", marginBottom: 0 }}
+                  >
+                    <div className="pk-radio" />
+                    <div className="pk-main">
+                      <div className="pk-t">{a.name}</div>
+                      <div className="pk-s">{formatPhone(a.wa_number)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {agentIds.length > 0 && (
+            <div className="hint" style={{ marginBottom: 0 }}>
+              {agentIds.length === 1 ? "All leads go to this agent." : `Round-robin across ${agentIds.length} agents.`}
+            </div>
+          )}
         </div>
 
         <div className="sect">

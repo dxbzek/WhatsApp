@@ -4,6 +4,7 @@ import { sendWhatsApp } from "@/lib/twilio";
 import { verifyTwilioWebhook } from "@/lib/twilioSignature";
 import { pushLeadFromWhatsApp } from "@/lib/pipedrive";
 import { logConversationToPipedrive } from "@/lib/pipedriveSync";
+import { distributeLead } from "@/lib/distribution";
 
 const ok200 = () => new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
@@ -83,6 +84,7 @@ export async function POST(req: NextRequest) {
   // Track whether we've already created a Pipedrive lead this request, so the
   // interest-based safety net below doesn't double-push when a rule already did.
   let pushedPipedrive = false;
+  let leadId: string | null = null;
 
   // Button / keyword auto-reply rules (set per-button when creating a template).
   // Match the tapped button text or typed keyword to an enabled rule.
@@ -105,11 +107,12 @@ export async function POST(req: NextRequest) {
       }
       if (rule.push_pipedrive) {
         try {
-          await pushLeadFromWhatsApp({
+          const r = await pushLeadFromWhatsApp({
             phone: from,
             name: profileName || undefined,
             note: `Auto-pushed from ERE WhatsApp (tapped "${body.trim()}").`,
           });
+          leadId = r?.leadId || null;
           pushedPipedrive = true;
         } catch { /* don't fail the webhook on Pipedrive errors */ }
       }
@@ -127,13 +130,26 @@ export async function POST(req: NextRequest) {
     // so the lead silently never reaches an agent (this leaked real leads).
     if (!pushedPipedrive) {
       try {
-        await pushLeadFromWhatsApp({
+        const r = await pushLeadFromWhatsApp({
           phone: from,
           name: profileName || undefined,
           note: `Auto-pushed from ERE WhatsApp (interested reply: "${body.trim()}").`,
         });
+        leadId = r?.leadId || null;
       } catch { /* don't fail the webhook on Pipedrive errors */ }
     }
+
+    // Auto-distribute: route this lead to one of the agents assigned to the
+    // campaign it came from (Pipedrive owner + WhatsApp ping). No-op when the
+    // campaign has no agents configured, so it never breaks existing flows.
+    try {
+      await distributeLead({
+        conversationId: conv!.id,
+        leadId,
+        contactPhone: from,
+        contactName: profileName || undefined,
+      });
+    } catch { /* non-fatal */ }
   }
 
   // Keep the Pipedrive transcript note current (best-effort; only if linked).

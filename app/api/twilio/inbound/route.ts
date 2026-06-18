@@ -80,6 +80,10 @@ export async function POST(req: NextRequest) {
   const NEG = /\bnot interested\b|\bno\b|\bwrong number\b|\bremove\b|\bstop\b/;
   let leadHot = !isOptOut && POS.test(text) && !NEG.test(text);
 
+  // Track whether we've already created a Pipedrive lead this request, so the
+  // interest-based safety net below doesn't double-push when a rule already did.
+  let pushedPipedrive = false;
+
   // Button / keyword auto-reply rules (set per-button when creating a template).
   // Match the tapped button text or typed keyword to an enabled rule.
   try {
@@ -106,6 +110,7 @@ export async function POST(req: NextRequest) {
             name: profileName || undefined,
             note: `Auto-pushed from ERE WhatsApp (tapped "${body.trim()}").`,
           });
+          pushedPipedrive = true;
         } catch { /* don't fail the webhook on Pipedrive errors */ }
       }
     }
@@ -116,6 +121,19 @@ export async function POST(req: NextRequest) {
   // ever upgrades — it never downgrades a manually-set status.
   if (leadHot) {
     try { await db.from("conversations").update({ lead_status: "hot" }).eq("id", conv!.id); } catch { /* non-fatal */ }
+    // Safety net: ANY interested reply becomes a Pipedrive lead, even when no
+    // exact-match button rule is configured. Without this, an "I'm Interested"
+    // tap that doesn't match a rule trigger is flagged hot but never pushed —
+    // so the lead silently never reaches an agent (this leaked real leads).
+    if (!pushedPipedrive) {
+      try {
+        await pushLeadFromWhatsApp({
+          phone: from,
+          name: profileName || undefined,
+          note: `Auto-pushed from ERE WhatsApp (interested reply: "${body.trim()}").`,
+        });
+      } catch { /* don't fail the webhook on Pipedrive errors */ }
+    }
   }
 
   // Keep the Pipedrive transcript note current (best-effort; only if linked).

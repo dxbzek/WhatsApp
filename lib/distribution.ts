@@ -35,7 +35,7 @@ export async function distributeLead(opts: {
 
     const { data: camp } = await db
       .from("campaigns")
-      .select("id, name, agent_ids, distribution, rr_pointer")
+      .select("id, name, blurb, agent_ids, distribution, rr_pointer")
       .eq("id", lastOut.campaign)
       .maybeSingle();
     const ids: string[] = (camp?.agent_ids as string[]) || [];
@@ -68,12 +68,17 @@ export async function distributeLead(opts: {
       try { await setLeadOwner(opts.leadId, Number(owner.pipedrive_user_id)); } catch { /* non-fatal */ }
     }
 
-    const who = opts.contactName && opts.contactName !== opts.contactPhone
-      ? `${opts.contactName} (${opts.contactPhone})`
-      : opts.contactPhone;
+    const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
+    // What the campaign is about — the per-campaign blurb if set, else the name.
+    const about = (camp.blurb && camp.blurb.trim()) ? camp.blurb.trim() : `Campaign: ${camp.name}`;
+    // Phone on its own line so it is tap-to-call / easy to copy in WhatsApp.
+    const msg =
+      `New lead 🔥 — ${leadName}\n\n` +
+      `${opts.contactPhone}\n` +
+      `${about}\n\n` +
+      `They just tapped Interested on our WhatsApp. Give them a call or message now while it is hot.`;
     const assigned: string[] = [];
     for (const a of targets) {
-      const msg = `New ERE lead\n\n${who} just replied Interested to "${camp.name}".\n\nThey are in Pipedrive as a Hot lead. Please follow up now.`;
       try { await sendWhatsApp(a.wa_number, msg); } catch { /* 24h window may be closed */ }
       assigned.push(a.name);
     }

@@ -121,6 +121,7 @@ export default function Campaigns() {
   const [redirectIn, setRedirectIn] = useState<number | null>(null);
   const [agents, setAgents] = useState<{ id: string; name: string; wa_number: string }[]>([]);
   const [agentIds, setAgentIds] = useState<string[]>([]);
+  const [blurb, setBlurb] = useState("");
   const router = useRouter();
 
   // Load agents for the lead-distribution picker.
@@ -472,7 +473,7 @@ export default function Campaigns() {
       try {
         const cr = await fetch("/api/campaign/create", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: new Date(dripFinishMs).toISOString(), agentIds, distribution: "round_robin" }),
+          body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: new Date(dripFinishMs).toISOString(), agentIds, distribution: "round_robin", blurb }),
         });
         const cd = await cr.json();
         if (!cr.ok) throw new Error(cd.error || "Could not create the campaign.");
@@ -518,7 +519,7 @@ export default function Campaigns() {
       const cr = await fetch("/api/campaign/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: finishAtIso, agentIds, distribution: "round_robin" }),
+        body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: finishAtIso, agentIds, distribution: "round_robin", blurb }),
       });
       const cd = await cr.json();
       if (cr.ok) campaignId = cd.id;
@@ -867,9 +868,19 @@ export default function Campaigns() {
             </div>
           )}
           {agentIds.length > 0 && (
-            <div className="hint" style={{ marginBottom: 0 }}>
-              {agentIds.length === 1 ? "All leads go to this agent." : `Round-robin across ${agentIds.length} agents.`}
-            </div>
+            <>
+              <div className="hint" style={{ marginBottom: 6 }}>
+                {agentIds.length === 1 ? "All leads go to this agent." : `Round-robin across ${agentIds.length} agents.`}
+              </div>
+              <input
+                value={blurb}
+                onChange={(e) => setBlurb(e.target.value)}
+                className="input"
+                maxLength={140}
+                placeholder='Heads-up for the agent, e.g. "Buyers for off-market Palm villas under AED 25M"'
+              />
+              <div className="hint" style={{ marginBottom: 0 }}>One line telling the agent what this campaign is about — it goes in their lead alert. Optional.</div>
+            </>
           )}
         </div>
 

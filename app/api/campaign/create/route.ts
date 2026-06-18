@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
         finish_at: b.finishAt || null,
         agent_ids: agentIds,
         distribution: b.distribution === "all" ? "all" : "round_robin",
+        blurb: typeof b.blurb === "string" && b.blurb.trim() ? b.blurb.trim() : null,
       })
       .select("id")
       .single();

@@ -22,14 +22,16 @@ export default function CampaignHistory() {
   const [toast, setToast] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
 
   async function load() {
-    const data = await fetch("/api/campaigns?view=log&limit=100").then((r) => r.json()).then((d) => d.campaigns).catch(() => null);
+    // cache: no-store + a cache-buster so the 20s poll always shows the live DB,
+    // never a stale browser/edge-cached snapshot (which made the log "fake" live).
+    const data = await fetch(`/api/campaigns?view=log&limit=100&t=${Date.now()}`, { cache: "no-store" }).then((r) => r.json()).then((d) => d.campaigns).catch(() => null);
     setRows((data as Campaign[]) || []);
   }
   async function refreshAll() {
     // Reconcile active campaigns' counts from delivery receipts, then reload + funnel.
     await fetch("/api/campaign/refresh", { method: "POST" }).catch(() => {});
     await load();
-    fetch("/api/campaign/funnel").then((r) => r.json()).then((d) => setFunnels(d.funnel || {})).catch(() => {});
+    fetch(`/api/campaign/funnel?t=${Date.now()}`, { cache: "no-store" }).then((r) => r.json()).then((d) => setFunnels(d.funnel || {})).catch(() => {});
     setUpdatedAt(Date.now());
   }
   useEffect(() => { refreshAll(); }, []); // eslint-disable-line

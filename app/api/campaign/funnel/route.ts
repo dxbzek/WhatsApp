@@ -3,7 +3,11 @@ import { supabaseAdmin } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
 export const maxDuration = 60;
+
+const NO_STORE = { "Cache-Control": "no-store, max-age=0, must-revalidate" };
 
 type Agg = { sent: number; delivered: number; read: number; failed: number; scheduled: number; reasons: Record<string, number> };
 
@@ -62,8 +66,8 @@ export async function GET() {
         readRate: a.delivered ? Math.round((a.read / a.delivered) * 100) : 0,
       };
     }
-    return NextResponse.json({ funnel });
+    return NextResponse.json({ funnel }, { headers: NO_STORE });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "Failed to compute funnel" }, { status: 500 });
+    return NextResponse.json({ error: e.message || "Failed to compute funnel" }, { status: 500, headers: NO_STORE });
   }
 }

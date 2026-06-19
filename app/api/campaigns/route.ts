@@ -3,7 +3,15 @@ import { supabaseAdmin } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
 export const maxDuration = 60;
+
+// Always-fresh JSON: the campaign log polls this every 20s, so any caching (browser
+// or Vercel edge) makes it "fake" live — showing a stale snapshot while the timestamp
+// ticks. no-store guarantees every poll hits the live DB.
+const noStore = (body: any, status = 200) =>
+  NextResponse.json(body, { status, headers: { "Cache-Control": "no-store, max-age=0, must-revalidate" } });
 
 // Read campaigns through the service role, behind the app login gate, so RLS can
 // deny anon on the campaigns table. (Campaign mutations already live under
@@ -18,7 +26,7 @@ export async function GET(req: NextRequest) {
       const { data, error } = await db.from("campaigns").select("id,status")
         .in("status", ["sending", "scheduled"]);
       if (error) throw new Error(error.message);
-      return NextResponse.json({ campaigns: data || [] });
+      return noStore({ campaigns: data || [] });
     }
 
     if (view === "activeProgress") {
@@ -31,7 +39,7 @@ export async function GET(req: NextRequest) {
         .order("created_at", { ascending: false });
       if (cErr) throw new Error(cErr.message);
       const ids = new Set((camps || []).map((c: any) => c.id));
-      if (!camps?.length) return NextResponse.json({ campaigns: [] });
+      if (!camps?.length) return noStore({ campaigns: [] });
 
       // Per-campaign status tallies. RPC returns grouped (campaign,status,error_code,n).
       const tally: Record<string, { delivered: number; read: number; failed: number; scheduled: number; reached: number; handed: number }> = {};
@@ -58,7 +66,7 @@ export async function GET(req: NextRequest) {
           deliveryRate: resolved ? Math.round((t.delivered / resolved) * 100) : null,
         };
       });
-      return NextResponse.json({ campaigns: out });
+      return noStore({ campaigns: out });
     }
 
     // default: log — most recent campaigns with their rollup counts.
@@ -66,8 +74,8 @@ export async function GET(req: NextRequest) {
     const { data, error } = await db.from("campaigns").select("*")
       .order("created_at", { ascending: false }).limit(limit);
     if (error) throw new Error(error.message);
-    return NextResponse.json({ campaigns: data || [] });
+    return noStore({ campaigns: data || [] });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "Failed to load campaigns" }, { status: 500 });
+    return noStore({ error: e.message || "Failed to load campaigns" }, 500);
   }
 }

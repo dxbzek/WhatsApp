@@ -120,7 +120,9 @@ export async function GET() {
       stats[sid].deliveryRate = reachable ? Math.round((stats[sid].delivered / reachable) * 100) : 0;
       stats[sid].deadRate = stats[sid].sent ? Math.round((stats[sid].dead / stats[sid].sent) * 100) : 0;
       stats[sid].failedRate = stats[sid].sent ? Math.round((stats[sid].failed / stats[sid].sent) * 100) : 0;
-      stats[sid].readRate = stats[sid].sent ? Math.round((stats[sid].read / stats[sid].sent) * 100) : 0;
+      // Read rate is of DELIVERED — a message that never arrived can't be read,
+      // so measuring it against sent (which includes failures) fakes it down.
+      stats[sid].readRate = stats[sid].delivered ? Math.round((stats[sid].read / stats[sid].delivered) * 100) : 0;
       // Bucket the failure reasons the same way the Insights page does, so both
       // screens tell the same story: locked sender, marketing throttle, or dead.
       const e: Record<string, number> = stats[sid].errors;
@@ -128,7 +130,10 @@ export async function GET() {
       stats[sid].errThrottled = e["63049"] || 0;
       stats[sid].errHold = e["63032"] || 0;
       stats[sid].errDead = Object.keys(e).filter((c) => DEAD_NUMBER_CODES.has(c)).reduce((n, c) => n + e[c], 0);
-      stats[sid].replyRate = seen ? Math.round((stats[sid].replied / seen) * 100) : 0;
+      // Reply rate is of DELIVERED, not of every conversation we attempted —
+      // failed/undelivered sends never reached anyone, so they don't belong in
+      // the denominator of an engagement KPI.
+      stats[sid].replyRate = stats[sid].delivered ? Math.round((stats[sid].replied / stats[sid].delivered) * 100) : 0;
     }
 
     return NextResponse.json({ stats });

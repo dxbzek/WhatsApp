@@ -20,10 +20,12 @@ export default function TemplatePerformance() {
     .sort((a, b) => b.s.sent - a.s.sent);
 
   // Headline rollups across all sent templates (pure derived view, no extra fetch).
+  // Every RATE is of delivered, never of sent — a message that failed/undelivered
+  // never reached anyone, so counting it in the denominator fakes the KPI down.
   const totalSent = rows.reduce((n, t) => n + (t.s.sent || 0), 0);
   const totalReplied = rows.reduce((n, t) => n + (t.s.replied || 0), 0);
-  const avgReply = totalSent ? Math.round((totalReplied / totalSent) * 100) : 0;
   const totalDelivered = rows.reduce((n, t) => n + (t.s.delivered || 0), 0);
+  const avgReply = totalDelivered ? Math.round((totalReplied / totalDelivered) * 100) : 0;
   const totalLeads = rows.reduce((n, t) => n + (t.s.leads || 0), 0);
   const avgLeadRate = totalDelivered ? Math.round((totalLeads / totalDelivered) * 100) : 0;
 
@@ -51,7 +53,7 @@ export default function TemplatePerformance() {
           <div className="kpis k5">
             <div className="kpi"><div className="kl">Total sent</div><div className="kv">{totalSent.toLocaleString()}</div><div className="ks">last 90 days</div></div>
             <div className="kpi"><div className="kl">Delivered</div><div className="kv">{totalDelivered.toLocaleString()}</div><div className="ks">reached a handset</div></div>
-            <div className="kpi"><div className="kl">Replies</div><div className="kv">{totalReplied.toLocaleString()}</div><div className="ks">{avgReply}% of sent</div></div>
+            <div className="kpi"><div className="kl">Replies</div><div className="kv">{totalReplied.toLocaleString()}</div><div className="ks">{avgReply}% of delivered</div></div>
             <div className="kpi"><div className="kl">Leads</div><div className="kv">{totalLeads.toLocaleString()}</div><div className="ks">tapped Interested</div></div>
             <div className="kpi"><div className="kl">Lead rate</div><div className="kv">{avgLeadRate}%</div><div className="ks">of delivered</div></div>
           </div>

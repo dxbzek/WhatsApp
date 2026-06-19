@@ -57,15 +57,14 @@ export async function POST(req: NextRequest) {
   // Strip trailing punctuation/whitespace so "Blocked!" / "Not interested." match.
   const text = body.trim().toLowerCase().replace(/[\s!.?,]+$/, "");
 
-  // Opt-out + negative-reply safety net. STOP/Unsubscribe AND clear "no" replies
-  // (the template's "Not Interested" button, "Blocked", etc.) ALWAYS suppress the
-  // contact — rule or not — so we never message them again. Re-contacting people
-  // who said no is the fastest way to tank the WhatsApp quality rating.
-  // EXACT match only, so a sentence like "not interested in selling, but buying"
-  // is deliberately NOT caught (a real lead shouldn't get suppressed).
-  const OPT_OUT = ["stop", "unsubscribe", "unsub", "cancel", "stop promotions", "opt out", "optout", "remove me"];
-  const NEG_REPLY = ["not interested", "no thanks", "no thank you", "not interested thanks", "blocked", "block", "block me", "do not contact", "dont contact", "leave me alone", "remove"];
-  const isOptOut = OPT_OUT.includes(text) || NEG_REPLY.includes(text);
+  // Hard opt-out only. "Stop"/Unsubscribe and explicit "do not contact me" replies
+  // suppress the contact so we never message them again. A soft decline like the
+  // template's "Not Interested" button (or "No thanks") does NOT block: it just
+  // declines this offer. The never-resend guard already stops us re-sending the
+  // same template, so a "Not Interested" contact stays reachable for other things.
+  // EXACT match only, so "not interested in selling, but buying" is never caught.
+  const OPT_OUT = ["stop", "unsubscribe", "unsub", "cancel", "stop promotions", "opt out", "optout", "remove me", "remove", "blocked", "block", "block me", "do not contact", "dont contact", "leave me alone"];
+  const isOptOut = OPT_OUT.includes(text);
   // Clear unread too: a suppression isn't an actionable inbox item (it moves to
   // Suppressed), so it must not leave a stuck unread that inflates the badge.
   if (isOptOut) {

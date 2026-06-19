@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { RATES } from "@/lib/rates";
@@ -105,6 +105,10 @@ function planDripTimes(count: number, perBatch: number, intervalMin: number, day
 export default function Campaigns() {
   const [tpls, setTpls] = useState<Tpl[]>([]);
   const [tplSid, setTplSid] = useState("");
+  // Re-entrancy guard for run(): set synchronously so a double-click during the
+  // pre-send await/confirm window can't create a second campaign (the button's
+  // disabled={running} only kicks in later, after the first await resolves).
+  const busyRef = useRef(false);
   const [vars, setVars] = useState<Record<string, string>>({});
   const [varMap, setVarMap] = useState<Record<string, string>>({}); // var -> "fixed" | CRM field id
   const [crmRecips, setCrmRecips] = useState<any[]>([]); // detailed CRM records for personalization
@@ -410,6 +414,11 @@ export default function Campaigns() {
     // CRM record (falling back to the fixed text when a field is empty).
     const pastedRecs = pasted?.records || [];
     const recMap = new Map([...crmRecips, ...pastedRecs].map((r) => [String(r.phone).replace(/[^0-9]/g, ""), r]));
+    // Ignore a double-click while a send is already in flight (everything past
+    // here is async, so the disabled button alone can't prevent re-entry).
+    if (busyRef.current) return;
+    busyRef.current = true;
+
     // Skip contacts who already received this (a delivered/read WhatsApp) so a
     // re-send never double-messages anyone. Failed / never-sent numbers are NOT
     // "reached", so they correctly stay in for a retry.
@@ -430,7 +439,7 @@ export default function Campaigns() {
         }
       } catch { /* best-effort: if the lookup fails, fall back to sending to all */ }
     }
-    if (sendNumbers.length === 0) return setErr("Everyone on this list has already been reached. Nothing to send.");
+    if (sendNumbers.length === 0) { busyRef.current = false; return setErr("Everyone on this list has already been reached. Nothing to send."); }
 
     const hasMapping = tplVars.length > 0;
     let blanks = 0;
@@ -461,7 +470,7 @@ export default function Campaigns() {
       ...notes,
       "Blacklisted contacts are skipped. Continue?",
     ].join("\n\n");
-    if (!confirm(summary)) return;
+    if (!confirm(summary)) { busyRef.current = false; return; }
 
     // SERVER-SIDE SEND (drip + now). Both write the recipients as 'scheduled'
     // messages and let /api/cron/dispatch deliver them — there is no browser loop,
@@ -518,6 +527,7 @@ export default function Campaigns() {
         setErr(e.message);
       } finally {
         setRunning(false);
+        busyRef.current = false;
       }
       return;
     }
@@ -610,6 +620,7 @@ export default function Campaigns() {
         }).catch(() => {});
       }
       setRunning(false);
+      busyRef.current = false;
     }
   }
 

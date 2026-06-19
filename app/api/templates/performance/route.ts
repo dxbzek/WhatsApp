@@ -54,15 +54,16 @@ export async function GET() {
       if (!data || data.length < 1000) break;
     }
 
-    // Lead conversations = pushed to Pipedrive. This is the real outcome we care
-    // about (delivered -> reached a person, but LEAD = it actually turned into
-    // something an agent can work). Set of conversation ids that became a lead.
+    // Lead conversations = anyone who tapped "Interested" / is flagged hot. The
+    // inbox Hot tab is the lead home now (Pipedrive was cut from the flow), so a
+    // lead is an expression of interest an agent can work — whether or not it was
+    // ever pushed to Pipedrive. Set of conversation ids that became a lead.
     const leadConvs = new Set<string>();
     for (let from = 0; ; from += 1000) {
       const { data, error } = await db
         .from("conversations")
         .select("id")
-        .not("pipedrive_lead_id", "is", null)
+        .eq("lead_status", "hot")
         .range(from, from + 999);
       if (error) throw error;
       for (const c of data as any[]) leadConvs.add(c.id);
@@ -100,9 +101,9 @@ export async function GET() {
       const seen = convsSeen[sid].size;
       stats[sid].conversations = seen;
       stats[sid].replied = convsReplied[sid].size;
-      // Leads = distinct conversations that got this template AND are now a
-      // Pipedrive lead. Rate is of DELIVERED (the real conversion: of everyone
-      // who actually received it, how many turned into a lead).
+      // Leads = distinct conversations that got this template AND turned hot
+      // (tapped Interested). Rate is of DELIVERED (the real conversion: of
+      // everyone who actually received it, how many turned into a lead).
       let leads = 0;
       for (const cid of convsSeen[sid]) if (leadConvs.has(cid)) leads++;
       stats[sid].leads = leads;

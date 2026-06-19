@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-type Agg = { sent: number; delivered: number; read: number; failed: number; reasons: Record<string, number> };
+type Agg = { sent: number; delivered: number; read: number; failed: number; scheduled: number; reasons: Record<string, number> };
 
 // Fold one (status, error_code, n) group into a campaign's funnel tallies.
 function fold(a: Agg, status: string, errorCode: string | null, n: number) {
@@ -13,6 +13,9 @@ function fold(a: Agg, status: string, errorCode: string | null, n: number) {
     a.failed += n;
     const code = errorCode ? String(errorCode) : "unknown";
     a.reasons[code] = (a.reasons[code] || 0) + n;
+  } else if (status === "scheduled") {
+    // Queued in our DB but not yet handed to WhatsApp — NOT "reached", track on its own.
+    a.scheduled += n;
   } else {
     a.sent += n; // reached WhatsApp (queued/sent/delivered/read/accepted)
     if (status === "read") { a.read += n; a.delivered += n; }
@@ -28,7 +31,7 @@ export async function GET() {
   try {
     const db = supabaseAdmin();
     const agg: Record<string, Agg> = {};
-    const blank = (): Agg => ({ sent: 0, delivered: 0, read: 0, failed: 0, reasons: {} });
+    const blank = (): Agg => ({ sent: 0, delivered: 0, read: 0, failed: 0, scheduled: 0, reasons: {} });
 
     const { data: rpc, error: rpcErr } = await db.rpc("campaign_funnel");
     if (!rpcErr && Array.isArray(rpc)) {

@@ -11,7 +11,7 @@ type Campaign = {
 };
 type Recipient = { status: string | null; error_code?: string | null; created_at: string; scheduled_at?: string | null; conversation: { wa_phone: string; name: string | null } | null };
 
-type Funnel = { sent: number; delivered: number; read: number; failed: number; deliveryRate: number; readRate: number; reasons?: Record<string, number> };
+type Funnel = { sent: number; delivered: number; read: number; failed: number; scheduled: number; deliveryRate: number; readRate: number; reasons?: Record<string, number> };
 
 export default function CampaignHistory() {
   const [rows, setRows] = useState<Campaign[] | null>(null);
@@ -181,13 +181,13 @@ function reach(c: Campaign, f: Funnel | undefined) {
   const delivered = f?.delivered || 0;        // reached a handset (includes read)
   const read = f?.read || 0;
   const failed = f?.failed || 0;
-  const acceptedByWa = f?.sent || 0;          // accepted by WhatsApp, not failed
-  const inFlight = Math.max(0, acceptedByWa - delivered); // queued/sent/scheduled, no receipt yet
-  // Split out the genuinely scheduled (future) ones so they read as "scheduled",
-  // not "pending". Capped to in-flight so the segments never overflow.
-  const scheduled = Math.min(inFlight, c.scheduled || 0);
-  const pending = Math.max(0, inFlight - scheduled);
-  const notSent = Math.max(0, total - acceptedByWa - failed);
+  const acceptedByWa = f?.sent || 0;          // handed to WhatsApp (excl. scheduled), incl. delivered/read
+  // Scheduled = queued in our DB, not yet sent. Live from the funnel (the old
+  // c.scheduled rollup drifts: it stays at the enqueue total and never drops as
+  // the cron sends, which made the header disagree with the per-row statuses).
+  const scheduled = f?.scheduled || 0;
+  const pending = Math.max(0, acceptedByWa - delivered); // sent, awaiting a delivery receipt
+  const notSent = Math.max(0, total - delivered - pending - scheduled - failed);
   // Coverage that matches the "X of Y reached" sentence: delivered / total.
   // (deliveryRate is a different ratio — delivered / accepted — and reads as a
   // contradiction next to "of Y", so it isn't shown there.)

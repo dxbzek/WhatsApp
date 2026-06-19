@@ -77,7 +77,7 @@ export async function GET() {
 
     for (const m of out) {
       const sid = m.content_sid;
-      const s = (stats[sid] ||= { sent: 0, delivered: 0, read: 0, failed: 0, errors: {} as Record<string, number> });
+      const s = (stats[sid] ||= { sent: 0, delivered: 0, read: 0, failed: 0, dead: 0, errors: {} as Record<string, number> });
       convsSeen[sid] ||= new Set();
       convsReplied[sid] ||= new Set();
       s.sent++;
@@ -89,6 +89,9 @@ export async function GET() {
         // (sender lock vs over-messaging vs dead number) instead of guessing.
         const code = m.error_code ? String(m.error_code) : "none";
         s.errors[code] = (s.errors[code] || 0) + 1;
+        // Dead = not a WhatsApp user. These can never deliver, so they're a list-
+        // quality issue, not a delivery failure — excluded from the delivery rate.
+        if (code !== "none" && DEAD_NUMBER_CODES.has(code)) s.dead++;
       }
 
       convsSeen[sid].add(m.conversation);
@@ -107,8 +110,15 @@ export async function GET() {
       let leads = 0;
       for (const cid of convsSeen[sid]) if (leadConvs.has(cid)) leads++;
       stats[sid].leads = leads;
-      stats[sid].leadRate = stats[sid].delivered ? Math.round((leads / stats[sid].delivered) * 100) : 0;
-      stats[sid].deliveryRate = stats[sid].sent ? Math.round((stats[sid].delivered / stats[sid].sent) * 100) : 0;
+      // One decimal: cold-outreach interest rates are well under 1%, so rounding
+      // to whole percent would flatten a real 0.6% down to "0% / 1%".
+      stats[sid].leadRate = stats[sid].delivered ? Math.round((leads / stats[sid].delivered) * 1000) / 10 : 0;
+      // Delivery judged on REACHABLE numbers (sent minus dead), so a dirty list
+      // doesn't read as a delivery problem. Dead numbers get their own rate.
+      const reachable = Math.max(0, stats[sid].sent - stats[sid].dead);
+      stats[sid].reachable = reachable;
+      stats[sid].deliveryRate = reachable ? Math.round((stats[sid].delivered / reachable) * 100) : 0;
+      stats[sid].deadRate = stats[sid].sent ? Math.round((stats[sid].dead / stats[sid].sent) * 100) : 0;
       stats[sid].failedRate = stats[sid].sent ? Math.round((stats[sid].failed / stats[sid].sent) * 100) : 0;
       stats[sid].readRate = stats[sid].sent ? Math.round((stats[sid].read / stats[sid].sent) * 100) : 0;
       // Bucket the failure reasons the same way the Insights page does, so both

@@ -52,7 +52,7 @@ export default function TemplatePerformance() {
             <div className="kpi"><div className="kl">Total sent</div><div className="kv">{totalSent.toLocaleString()}</div><div className="ks">last 90 days</div></div>
             <div className="kpi"><div className="kl">Delivered</div><div className="kv">{totalDelivered.toLocaleString()}</div><div className="ks">reached a handset</div></div>
             <div className="kpi"><div className="kl">Replies</div><div className="kv">{totalReplied.toLocaleString()}</div><div className="ks">{avgReply}% of sent</div></div>
-            <div className="kpi"><div className="kl">Leads</div><div className="kv">{totalLeads.toLocaleString()}</div><div className="ks">to Pipedrive</div></div>
+            <div className="kpi"><div className="kl">Leads</div><div className="kv">{totalLeads.toLocaleString()}</div><div className="ks">tapped Interested</div></div>
             <div className="kpi"><div className="kl">Lead rate</div><div className="kv">{avgLeadRate}%</div><div className="ks">of delivered</div></div>
           </div>
 
@@ -61,7 +61,7 @@ export default function TemplatePerformance() {
           <div className="hint" style={{ marginTop: 12 }}>
             Sent counts only messages actually handed to Twilio (canceled and skipped rows are excluded). Failed = undelivered + failed
             receipts; Delivered and Read come from WhatsApp receipts; reply counts conversations that messaged back after the send.
-            Each bar is a share of how many were sent. Benchmarks: delivery 90%+, read 60%+ of delivered, reply 3%+ (good 10%+).
+            Each bar is a share of how many were sent. Cold-outreach benchmarks: delivery 85%+ of reachable (sent minus dead numbers), read 45%+ of delivered, reply 1-3%+, interested 0.3-1%+ of delivered. Dead numbers are a list-quality issue, not a delivery failure.
           </div>
         </>
       )}
@@ -77,7 +77,7 @@ function TemplateCard({ t }: { t: any }) {
   const stages = [
     { label: "Sent", n: s.sent, color: "var(--ink-2)", note: "100%" },
     { label: "Failed", n: s.failed, color: "var(--red-ink)", note: `${s.failedRate}% of sent` },
-    { label: "Delivered", n: s.delivered, color: "var(--green-dot)", note: `${s.deliveryRate}% of sent` },
+    { label: "Delivered", n: s.delivered, color: "var(--green-dot)", note: `${s.deliveryRate}% of reachable` },
     { label: "Read", n: s.read, color: "var(--blue)", note: `${pct(s.read, s.delivered)}% of delivered` },
     { label: "Replied", n: s.replied, color: "var(--green-ink)", note: `${pct(s.replied, s.delivered)}% of delivered` },
     { label: "Leads", n: s.leads || 0, color: "var(--amber-dot)", note: `${s.leadRate || 0}% of delivered` },
@@ -146,10 +146,10 @@ const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
 // Top failure reasons (code -> count), busiest first, for the "why it failed" list.
 const topErrors = (errors: Record<string, number> = {}): [string, number][] =>
   Object.entries(errors).sort((a, b) => b[1] - a[1]).slice(0, 4);
-// Reply rate is the money metric: green if good (10%+), amber if okay (3%+), grey otherwise.
-const replyColor = (r: number) => (r >= 10 ? "var(--green-ink)" : r >= 3 ? "var(--amber-ink)" : "var(--ink-3)");
-// Lead rate (of delivered) is the REAL outcome — leads tend to be a few %: green 5%+, amber 1%+, grey otherwise.
-const leadColor = (r: number) => (r >= 5 ? "var(--green-ink)" : r >= 1 ? "var(--amber-ink)" : "var(--ink-3)");
+// Cold-outreach benchmarks. Reply rate: green 3%+, amber 1%+, grey otherwise.
+const replyColor = (r: number) => (r >= 3 ? "var(--green-ink)" : r >= 1 ? "var(--amber-ink)" : "var(--ink-3)");
+// Interested (lead) rate of delivered, cold-outreach: green 1%+, amber 0.3%+, grey otherwise.
+const leadColor = (r: number) => (r >= 1 ? "var(--green-ink)" : r >= 0.3 ? "var(--amber-ink)" : "var(--ink-3)");
 
 // Find the first funnel stage that under-performs and return the playbook action for it.
 // Order matters: a leak early in the funnel (delivery) must be fixed before a later one.
@@ -158,25 +158,28 @@ function diagnose(s: any): { leak: string; color: string; bg: string; border: st
   const amber = { color: "var(--amber-ink)", bg: "var(--amber-bg)", border: "var(--amber-border)", icon: IC.bolt };
   const green = { color: "var(--green-ink)", bg: "var(--green-bg)", border: "var(--green-border)", icon: IC.check };
   const red = { color: "var(--red-ink)", bg: "var(--red-bg)", border: "var(--red-border)", icon: IC.bolt };
-  if (s.deliveryRate < 90) {
+  // List quality first: if dead numbers are a big share of the send, that's the
+  // real problem, not delivery — flag it before judging the delivery rate.
+  if ((s.deadRate || 0) > 25)
+    return { ...amber, leak: "Dirty list", action: `${s.deadRate}% of this send were dead numbers (not on WhatsApp). Clean the list before the next send so delivery and quality rating aren't dragged down.` };
+  if (s.deliveryRate < 70) {
     // Name the real dominant reason from the error codes, not a guess.
     const buckets = [
       { n: s.errLocked || 0, leak: "Sender was locked by Meta", action: "Most failures are 63051 - Meta had the sender locked. Confirm the lock is lifted before resending; if not, the sender must be re-registered." },
       { n: s.errThrottled || 0, leak: "Over-messaging live users", action: "Most failures are 63049 - Meta capped these real users for too many marketing messages. Space sends out and stop re-blasting the same list." },
-      { n: s.errDead || 0, leak: "Dead numbers on the list", action: "Most failures are 63024/63003 - not WhatsApp users. Clean these off the list so they stop dragging delivery down." },
       { n: s.errHold || 0, leak: "Temporary Meta hold", action: "Most failures are 63032 - a short Meta experiment hold on these users. Retry later in small batches." },
     ].sort((a, b) => b.n - a.n);
     const top = buckets[0];
     if (top.n > 0) return { ...red, leak: top.leak, action: top.action };
     return { ...red, leak: "Delivery low", action: "Receipts came back failed with no error code. Open Insights for the raw Twilio reasons, then send to clean mobiles only." };
   }
-  if (readOfDelivered < 50)
+  if (readOfDelivered < 30)
     return { ...amber, leak: "Read low", action: "Timing or sender trust. Send 10:00-13:00 or 17:00-20:00 GST, use an image header and the brand name." };
-  if (s.replyRate < 3)
+  if (s.replyRate < 1)
     return { ...amber, leak: "Reply low", action: "Weak hook, CTA or targeting. Front-load a value hook, keep one quick-reply CTA, tighten the audience." };
   if (s.replied > 0 && (s.leads || 0) === 0)
-    return { ...amber, leak: "Replies aren't becoming leads", action: "People reply but none reached Pipedrive. Check the 'Interested' button / replies push to Pipedrive, and an agent follows up fast — this is where the money leaks." };
+    return { ...amber, leak: "Replies aren't becoming leads", action: "People reply but none tapped Interested. Sharpen the offer/CTA so a reply turns into real interest, and make sure an agent follows up fast." };
   if (s.replied > 0)
-    return { ...green, leak: "Capture replies", action: "Engagement is healthy. Make sure replies route to Pipedrive and an agent calls within minutes." };
+    return { ...green, leak: "Capture leads fast", action: "Engagement is healthy. Interested taps land in the inbox Hot tab and auto-route to agents — make sure someone calls within minutes." };
   return { ...green, leak: "Healthy", action: "Funnel looks good. Scale within warm-up caps and test one change at a time." };
 }

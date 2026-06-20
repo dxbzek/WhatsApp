@@ -153,7 +153,9 @@ export default function Campaigns() {
   const [optIn, setOptIn] = useState(false);
   const [excludeReached, setExcludeReached] = useState(true); // skip contacts already reached
   const [sentToday, setSentToday] = useState<number | null>(null);
-  const [warmup, setWarmup] = useState<typeof WARMUP[number]["id"]>("warming");
+  // The ERE sender has been live for weeks, so default to the established tier —
+  // the cap warning then only fires on a genuinely large blast, not normal sends.
+  const [warmup, setWarmup] = useState<typeof WARMUP[number]["id"]>("established");
   const [testPhone, setTestPhone] = useState("");
   const [testStatus, setTestStatus] = useState<string | null>(null);
   const [sendingTest, setSendingTest] = useState(false);

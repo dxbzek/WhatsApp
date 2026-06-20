@@ -848,7 +848,7 @@ export default function Campaigns() {
             {senders.map((s) => <option key={s} value={s}>{formatPhone(s)}</option>)}
           </select>
 
-          <div className="hint" style={{ margin: "14px 0 8px" }}>How established is this number? Sets a safe daily cap so a young number doesn’t get flagged.</div>
+          <div className="hint" style={{ margin: "14px 0 8px" }}>Sets a safe daily send cap for this number.</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {WARMUP.map((w) => (
               <div
@@ -870,7 +870,7 @@ export default function Campaigns() {
         <div className="sect">
           <div className="sect-t">Assign leads to</div>
           <div className="hint" style={{ marginTop: 0, marginBottom: 10 }}>
-            Pick which agents get this campaign’s interested leads. Replies are split round-robin across whoever you select. Each gets a WhatsApp ping with the lead’s number and your heads-up. Leave empty to keep leads unassigned.
+            Pick who gets the leads. Replies split round-robin; each is pinged with the lead’s number. Leave empty to keep unassigned.
           </div>
           {agents.length === 0 ? (
             <div className="hint" style={{ margin: 0 }}>No agents configured yet.</div>

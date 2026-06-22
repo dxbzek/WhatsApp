@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp } from "@/lib/twilio";
 import { verifyTwilioWebhook } from "@/lib/twilioSignature";
 import { distributeLead } from "@/lib/distribution";
+import { handleAgentReport } from "@/lib/agentReport";
 
 const ok200 = () => new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
@@ -32,6 +33,24 @@ export async function POST(req: NextRequest) {
   if (sid) {
     const { data: dupe } = await db.from("messages").select("id").eq("twilio_sid", sid).maybeSingle();
     if (dupe) return ok200();
+  }
+
+  // Agent self-report branch: when one of OUR agents texts this number, it's a
+  // status update on a lead they're working (their own WhatsApp chat with the
+  // lead is invisible to us), NOT a new lead. Log it to the agent's INTERNAL
+  // conversation (kept out of the inbox/lead views) for idempotency + record,
+  // then let handleAgentReport move the lead's stage and confirm back.
+  {
+    const { data: agentRow } = await db.from("agents").select("id").eq("wa_number", from).maybeSingle();
+    if (agentRow) {
+      const { data: aconv } = await db.from("conversations").upsert(
+        { wa_phone: phone, is_internal: true, last_body: displayBody, last_at: new Date().toISOString(), last_direction: "in", last_status: "received", ...(profileName ? { name: profileName } : {}) },
+        { onConflict: "wa_phone" }
+      ).select().single();
+      if (aconv) await db.from("messages").insert({ conversation: aconv.id, direction: "in", body: displayBody, status: "received", twilio_sid: sid, media_url: mediaUrl || null });
+      try { await handleAgentReport(from, body); } catch { /* never fail the webhook */ }
+      return ok200();
+    }
   }
 
   // upsert conversation + log inbound (capture WhatsApp profile name if present)

@@ -61,14 +61,18 @@ export default function Insights() {
           .sort((a, b) => b.replyRate - a.replyRate)
           .slice(0, 6);
         setTpls(rows);
-        let replied = 0, seen = 0;
-        for (const s of Object.values(stats) as any[]) { replied += s.replied || 0; seen += s.conversations || 0; }
-        setReplyRate(seen ? Math.round((replied / seen) * 100) : 0);
+        // Reply rate of DELIVERED (people who actually received it), never of
+        // every conversation — failed/undelivered sends don't belong in the base.
+        let replied = 0, delivered = 0;
+        for (const s of Object.values(stats) as any[]) { replied += s.replied || 0; delivered += s.delivered || 0; }
+        setReplyRate(delivered ? Math.round((replied / delivered) * 100) : 0);
       })
       .catch(() => { setTpls([]); setReplyRate(0); });
   }, []);
 
-  // Real lead pipeline from our own conversations (leads = pushed to Pipedrive).
+  // Real lead pipeline from our own conversations. Leads = people who tapped
+  // Interested (hot) — the inbox Hot tab is the lead home now, not Pipedrive.
+  // The pipeline view already excludes errors (failed/dead/opt-out).
   useEffect(() => {
     setPipeline(null);
     const qs = `from=${encodeURIComponent(new Date(from).toISOString())}&to=${encodeURIComponent(new Date(to).toISOString())}`;
@@ -80,7 +84,7 @@ export default function Insights() {
         let l = 0;
         for (const c of rows as any[]) {
           pl[c.lead_status || "new"] = (pl[c.lead_status || "new"] || 0) + 1;
-          if (c.pipedrive_lead_id) l++;
+          if ((c.lead_status || "") === "hot") l++;
         }
         setPipeline(pl);
         setLeads(l);
@@ -101,7 +105,7 @@ export default function Insights() {
     rows.push(["Metric", "Failed/undelivered (real)", realFailed, topRealErr ? errLabel(topRealErr) : ""]);
     rows.push(["Metric", "Read rate %", totals?.readRate ?? "", "of delivered"]);
     rows.push(["Metric", "Reply rate %", replyRate ?? "", "marketing · 90d"]);
-    rows.push(["Metric", "Leads to Pipedrive", leads ?? "", `last ${spanLabel}`]);
+    rows.push(["Metric", "Interested leads", leads ?? "", `tapped Interested · last ${spanLabel}`]);
     (tpls || []).forEach((t) => rows.push(["Template", t.name, t.sent, `${t.replyRate}% reply`]));
     Object.entries(pipeline || {}).forEach(([k, v]) => rows.push(["Lead status", LEAD_LABEL[k] || k, v, ""]));
     downloadCSV(`ere-insights-${spanLabel}.csv`, rows);
@@ -141,7 +145,7 @@ export default function Insights() {
         <div className="kpi" title="Delivery rate among numbers that are on WhatsApp (excludes dead numbers)"><div className="kl">Delivery rate</div><div className="kv">{kv(totals ? totals.deliveryRateValid : null, "%")}</div><div className="ks">{totals ? (realFailed ? `${realFailed.toLocaleString()} failed${topRealErr ? ` · ${errLabel(topRealErr)}` : ""}` : `of ${totals.validOutbound.toLocaleString()} on WhatsApp`) : "of sent"}</div></div>
         <div className="kpi"><div className="kl">Read rate</div><div className="kv">{kv(totals ? totals.readRate : null, "%")}</div><div className="ks">of delivered</div></div>
         <div className="kpi"><div className="kl">Reply rate</div><div className="kv">{kv(replyRate, "%")}</div><div className="ks">marketing · 90d</div></div>
-        <div className="kpi"><div className="kl">Leads to Pipedrive</div><div className="kv">{leads === null ? dash : leads.toLocaleString()}</div></div>
+        <div className="kpi"><div className="kl">Interested leads</div><div className="kv">{leads === null ? dash : leads.toLocaleString()}</div><div className="ks">tapped Interested · last {spanLabel}</div></div>
       </div>
 
       {totals && ((totals.accountLocked ?? 0) > 0 || (totals.marketingThrottled ?? 0) > 0 || (totals.neverSent ?? 0) > 0) && (

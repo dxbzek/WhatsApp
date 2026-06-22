@@ -16,7 +16,7 @@ type UIConv = {
 // "temperature" (lead_status). Tracks what the owning agent has done with it.
 const STAGES = [
   { id: "", label: "No stage" }, { id: "contacted", label: "Contacted" },
-  { id: "viewing", label: "Viewing" }, { id: "won", label: "Won" }, { id: "lost", label: "Lost" },
+  { id: "viewing", label: "Viewing" }, { id: "won", label: "Won" }, { id: "lost", label: "Lost → pool" },
 ];
 const stageLabel = (id?: string) => STAGES.find((s) => s.id === (id || ""))?.label || "";
 
@@ -235,14 +235,25 @@ export default function Inbox() {
   }
 
   // Assign / reassign the owning agent (or clear it). Optimistic, then persisted.
+  // Assigning a lead that was in the pool (stage "lost") clears its stage so it
+  // starts fresh for the new owner.
   async function setAgent(id: string, agentId: string) {
-    setConvos((p) => p.map((c) => (c.id === id ? { ...c, assignedAgentId: agentId || undefined } : c)));
-    if (live) await patchConvo(id, { assigned_agent_id: agentId || null });
+    const fromPool = !!agentId && convos.find((c) => c.id === id)?.leadStage === "lost";
+    setConvos((p) => p.map((c) => (c.id === id ? { ...c, assignedAgentId: agentId || undefined, leadStage: fromPool ? "" : c.leadStage } : c)));
+    if (live) {
+      await patchConvo(id, { assigned_agent_id: agentId || null });
+      if (fromPool) await patchConvo(id, { lead_stage: null });
+    }
   }
-  // Set the pipeline stage (Contacted → Viewing → Won/Lost), or clear it.
+  // Set the pipeline stage (Contacted → Viewing → Won), clear it, or send the
+  // lead back to the pool ("lost" = release the owner so another agent can take it).
   async function setStage(id: string, stage: string) {
-    setConvos((p) => p.map((c) => (c.id === id ? { ...c, leadStage: stage } : c)));
-    if (live) await patchConvo(id, { lead_stage: stage || null });
+    const toPool = stage === "lost";
+    setConvos((p) => p.map((c) => (c.id === id ? { ...c, leadStage: stage, assignedAgentId: toPool ? undefined : c.assignedAgentId } : c)));
+    if (live) {
+      await patchConvo(id, { lead_stage: stage || null });
+      if (toPool) await patchConvo(id, { assigned_agent_id: null });
+    }
   }
 
   const list = convos
@@ -254,8 +265,9 @@ export default function Inbox() {
         : tab === "replied" ? !!c.replied
         : tab === "optout" ? !!c.blocked
         : true))
-    // Per-agent filter: "" = all, "none" = unassigned, else a specific agent id.
-    .filter((c) => (agentFilter === "" ? true : agentFilter === "none" ? !c.assignedAgentId : c.assignedAgentId === agentFilter))
+    // Per-agent filter: "" = all, "none" = unassigned, "pool" = abandoned leads
+    // (released back, stage "lost"), else a specific agent id.
+    .filter((c) => (agentFilter === "" ? true : agentFilter === "pool" ? c.leadStage === "lost" : agentFilter === "none" ? !c.assignedAgentId : c.assignedAgentId === agentFilter))
     // Stage filter: "" = any, else exact pipeline stage.
     .filter((c) => (stageFilter === "" ? true : (c.leadStage || "") === stageFilter))
     .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.toLowerCase()) || (c.waPhone || "").includes(q.replace(/[^0-9]/g, "")));
@@ -277,6 +289,7 @@ export default function Inbox() {
                 <select className="seltrig" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} title="Filter by agent" aria-label="Filter by agent" style={{ height: 32, flex: 1, minWidth: 0 }}>
                   <option value="">All agents</option>
                   <option value="none">Unassigned</option>
+                  <option value="pool">♻ Lead Pool</option>
                   {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
                 <select className="seltrig" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} title="Filter by stage" aria-label="Filter by stage" style={{ height: 32, flex: 1, minWidth: 0 }}>
@@ -316,7 +329,9 @@ export default function Inbox() {
                       {c.blocked
                         ? <span className="leadtag"><span className="d" style={{ background: "var(--ink-3)" }} />Opt-out</span>
                         : <TagDot tag={c.tag} />}
-                      {c.leadStage && <span className="ci-comm" style={{ color: "var(--blue)", fontWeight: 600 }}>{stageLabel(c.leadStage)}</span>}
+                      {c.leadStage === "lost"
+                        ? <span className="ci-comm" style={{ color: "var(--amber-ink)", fontWeight: 600 }}>♻ In pool</span>
+                        : c.leadStage && <span className="ci-comm" style={{ color: "var(--blue)", fontWeight: 600 }}>{stageLabel(c.leadStage)}</span>}
                       {c.assignedAgentId && agentNames[c.assignedAgentId] && <span className="ci-comm">→ {agentNames[c.assignedAgentId]}</span>}
                       <span className="ci-comm">{c.community}</span>
                     </div>

@@ -48,12 +48,11 @@ function parseStage(body: string): Stage | null {
   return null;
 }
 
-// lead_status to set alongside the pipeline stage. Won/Lost also move the
-// temperature; contacted/viewing stay hot (still an active opportunity).
+// lead_status to set alongside a NON-lost stage. Won marks the temperature won;
+// contacted/viewing stay hot (still an active opportunity). Lost is handled
+// separately (it releases the lead back to the pool).
 function leadStatusFor(stage: Stage): string {
-  if (stage === "won") return "won";
-  if (stage === "lost") return "lost";
-  return "hot";
+  return stage === "won" ? "won" : "hot";
 }
 
 const labelOf = (s: Stage) => ({ contacted: "Contacted", viewing: "Viewing", won: "Won", lost: "Lost" }[s]);
@@ -101,17 +100,27 @@ export async function handleAgentReport(from: string, body: string): Promise<boo
     lead = open[0];
   }
 
-  // Apply the stage. Claim ownership if the lead had no owner (so the board
-  // reflects who is actually working it).
-  const patch: Record<string, any> = {
-    lead_stage: stage,
-    lead_status: leadStatusFor(stage),
-    stage_updated_at: new Date().toISOString(),
-  };
-  if (!lead.assigned_agent_id) { patch.assigned_agent_id = agent.id; patch.assigned_at = new Date().toISOString(); }
-  await db.from("conversations").update(patch).eq("id", lead.id);
-
+  const now = new Date().toISOString();
   const who = lead.name && lead.name !== ("+" + lead.wa_phone) ? lead.name : "+" + lead.wa_phone;
+  const patch: Record<string, any> = { lead_stage: stage, stage_updated_at: now };
+
+  if (stage === "lost") {
+    // "Lost" = the agent gives the lead back. Release ownership so it falls into
+    // the Lead Pool (un-owned, flagged lost) for someone else to pick up. We do
+    // NOT mark it dead — it stays a live lead, just unassigned.
+    patch.assigned_agent_id = null;
+    patch.assigned_at = null;
+    patch.lead_status = "warm";
+    await db.from("conversations").update(patch).eq("id", lead.id);
+    await reply(`Done. ${who} has been released back to the lead pool for another agent.`);
+    return true;
+  }
+
+  // Contacted / Viewing / Won move the lead forward. Claim ownership if it had
+  // none (so the board reflects who is actually working it).
+  patch.lead_status = leadStatusFor(stage);
+  if (!lead.assigned_agent_id) { patch.assigned_agent_id = agent.id; patch.assigned_at = now; }
+  await db.from("conversations").update(patch).eq("id", lead.id);
   await reply(`Done. ${who} marked as ${labelOf(stage)}.`);
   return true;
 }

@@ -135,9 +135,14 @@ function Recipients({ campaignId }: { campaignId: string }) {
   if (list === null) return <div style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 12 }}>Loading recipients…</div>;
   if (list.length === 0) return <div style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 12 }}>No recipient records.</div>;
 
+  // Chronological — earliest first. Scheduled rows sort by their send time,
+  // sent rows by when they went out, so the list reads top-to-bottom in order.
+  const timeKey = (r: Recipient) => new Date((r.status === "scheduled" && r.scheduled_at) ? r.scheduled_at : r.created_at).getTime();
+  const sorted = [...list].sort((a, b) => timeKey(a) - timeKey(b));
+
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border-soft)", paddingTop: 6, maxHeight: 320, overflowY: "auto" }}>
-      {list.map((r, i) => {
+      {sorted.map((r, i) => {
         const isSched = r.status === "scheduled";
         const isFail = r.status === "failed" || r.status === "undelivered";
         const when = isSched && r.scheduled_at ? r.scheduled_at : r.created_at;

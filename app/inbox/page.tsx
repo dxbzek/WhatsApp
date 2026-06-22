@@ -9,7 +9,7 @@ type UIConv = {
   id: string; name: string; phone: string; waPhone?: string;
   tag: "Hot" | "Warm" | ""; lead?: string; unread: number; time: string; community: string;
   live: boolean; loaded: boolean; messages: UIMsg[]; blocked?: boolean;
-  lastBody?: string; lastDirection?: string; replied?: boolean;
+  lastBody?: string; lastDirection?: string; replied?: boolean; assignedAgentId?: string;
 };
 
 const LEADS = [
@@ -65,6 +65,7 @@ export default function Inbox() {
   const [loaded, setLoaded] = useState(false); // first conversation fetch settled
   const [toast, setToast] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({}); // agent id -> name, for the "assigned to" badge
   const threadRef = useRef<HTMLDivElement>(null);
 
   const active = convos.find((c) => c.id === activeId) || null;
@@ -82,6 +83,7 @@ export default function Inbox() {
     try { const p = new URLSearchParams(window.location.search).get("q"); if (p) setQ(p); } catch { /* ignore */ }
     fetch("/api/senders").then((r) => r.json()).then((d) => { setSenders(d.senders || []); if (d.senders?.length) setSender(d.senders[0]); }).catch(() => {});
     fetch("/api/templates").then((r) => r.json()).then((d) => { const a = (d.templates || []).filter((t: Tpl) => t.status === "approved"); if (a.length) setApproved(a); }).catch(() => {});
+    fetch("/api/agents").then((r) => r.json()).then((d) => { const m: Record<string, string> = {}; (d.agents || []).forEach((a: any) => { m[a.id] = a.name; }); setAgentNames(m); }).catch(() => {});
     loadConvs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -100,6 +102,7 @@ export default function Inbox() {
         tag: tagOf(c.lead_status), lead: c.lead_status || "new", unread: c.unread ? 1 : 0, time: hhmm(c.last_at),
         community: c.community || "", live: true, loaded: false, messages: [], blocked: c.status === "blocked",
         lastBody: c.last_body || "", lastDirection: c.last_direction || "", replied: !!c.replied,
+        assignedAgentId: c.assigned_agent_id || undefined,
       }));
       setLive(true);
       setConvos((prev) => {
@@ -290,7 +293,7 @@ export default function Inbox() {
               <button className="icon-btn th-back" onClick={() => setShowThread(false)} title="Back" aria-label="Back to conversations"><Icon d={IC.cleft} s={18} /></button>
               <Avatar name={active.name} size={40} />
               <div className="th-main">
-                <div className="th-name">{active.name}{active.blocked && <span style={{ color: "var(--red-ink)", fontSize: 11, marginLeft: 8 }}>blocked</span>}</div>
+                <div className="th-name">{active.name}{active.blocked && <span style={{ color: "var(--red-ink)", fontSize: 11, marginLeft: 8 }}>blocked</span>}{active.assignedAgentId && agentNames[active.assignedAgentId] && <span style={{ color: "var(--blue)", fontSize: 11, marginLeft: 8, fontWeight: 600 }}>→ {agentNames[active.assignedAgentId]}</span>}</div>
                 <div className="th-sub">{active.phone}{active.community ? ` · ${active.community}` : ""}</div>
               </div>
               <select className="seltrig" value={active.lead || "new"} onChange={(e) => setLead(active.id, e.target.value)} title="Lead status" aria-label="Lead status" style={{ height: 32 }}>

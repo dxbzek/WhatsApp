@@ -117,6 +117,15 @@ export async function distributeLead(opts: {
       await db.from("campaigns").update({ rr_pointer: nextPointer }).eq("id", camp.id);
     }
 
+    // Persist the owner on the conversation so the lead is trackable after
+    // transfer — round-robin pick, or the first agent when notifying "all".
+    const owner = targets[0];
+    if (owner) {
+      await db.from("conversations")
+        .update({ assigned_agent_id: owner.id, assigned_at: new Date().toISOString() })
+        .eq("id", opts.conversationId);
+    }
+
     const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
     // What the campaign is about — the per-campaign blurb if set, else the name.
     const about = (camp.blurb && camp.blurb.trim()) ? camp.blurb.trim() : `Campaign: ${camp.name}`;

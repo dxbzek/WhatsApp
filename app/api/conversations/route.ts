@@ -58,8 +58,8 @@ export async function GET(req: NextRequest) {
     }
 
     if (view === "suppressed") {
-      const { data, error } = await db.from("conversations").select("id, wa_phone, name, status, last_at")
-        .in("status", ["blocked", "invalid"]).order("last_at", { ascending: false }).limit(1000);
+      const { data, error } = await db.from("conversations").select("id, wa_phone, name, status, last_at, suppressed_at")
+        .in("status", ["blocked", "invalid"]).order("suppressed_at", { ascending: false, nullsFirst: false }).limit(1000);
       if (error) throw new Error(error.message);
       return NextResponse.json({ conversations: data || [] });
     }

@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
       // viewing") marks the lead hot.
       if (rule.push_pipedrive && !rule.block) leadHot = true;
       if (rule.block) {
-        await db.from("conversations").update({ status: "blocked", unread: false }).eq("id", conv!.id);
+        await db.from("conversations").update({ status: "blocked", unread: false, suppressed_at: new Date().toISOString() }).eq("id", conv!.id);
       }
       if (rule.reply) {
         try {

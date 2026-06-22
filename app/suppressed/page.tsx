@@ -6,7 +6,11 @@ import { formatPhone } from "@/lib/format";
 
 const PAGE_SIZE = 50;
 
-type Conv = { id: string; wa_phone: string; name: string | null; status: string; last_at: string | null };
+type Conv = { id: string; wa_phone: string; name: string | null; status: string; last_at: string | null; suppressed_at: string | null };
+
+// Date + time a contact opted out / was suppressed.
+const fmtWhen = (iso: string | null) =>
+  iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
 
 const META: Record<string, { label: string; tone: string; note: string }> = {
   blocked: { label: "Opted out", tone: "var(--red)", note: "Replied STOP / unsubscribed — we never message them." },
@@ -69,7 +73,7 @@ export default function Suppressed() {
       <div className="panel">
         {rows === null ? <Skeleton rows={6} /> : shown.length > 0 ? (
           <table className="ttable">
-            <thead><tr><th>Contact</th><th>Reason</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Contact</th><th>Reason</th><th>Status</th><th>Suppressed</th><th></th></tr></thead>
             <tbody>
               {pageRows.map((c) => {
                 const m = META[c.status] || { label: c.status, tone: "var(--ink-3)", note: "" };
@@ -91,6 +95,7 @@ export default function Suppressed() {
                         <span className="bd" style={{ background: "rgba(255,255,255,.9)" }} />{m.label}
                       </span>
                     </td>
+                    <td className="tcol-muted" title={c.suppressed_at || ""}>{fmtWhen(c.suppressed_at)}</td>
                     <td style={{ textAlign: "right" }}>
                       <button className="btn btn-sec btn-sm" onClick={() => restore(c)} disabled={busy === c.id}>
                         {busy === c.id ? "…" : "Restore"}

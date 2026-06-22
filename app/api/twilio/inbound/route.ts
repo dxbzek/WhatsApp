@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
   // Positive intent: "Interested", plus the CTA buttons on our templates
   // ("Sell my property", "Rent it out for me", "Book a viewing", a valuation
   // request, etc.) — tapping any of these is a lead, not a plain reply.
-  const POS = /\binterested\b|\byes\b|\btell me more\b|\bmore (info|details)\b|\bsend (me )?details\b|\bsell my\b|\bsell with\b|\brent it out\b|\blist my\b|\bbook a viewing\b|\bvaluation\b|\bvalue my\b/;
+  const POS = /\binterested\b|\byes\b|\btell me more\b|\bmore (info|details)\b|\bsend (me )?(the )?details\b|\bthe details\b|\bsell my\b|\bsell with\b|\brent it out\b|\blist my\b|\bbook a viewing\b|\bvaluation\b|\bvalue my\b|\bwant to join\b|\bjoin\b/;
   const NEG = /\bnot interested\b|\bno\b|\bwrong number\b|\bremove\b|\bstop\b/;
   let leadHot = !isOptOut && POS.test(text) && !NEG.test(text);
 

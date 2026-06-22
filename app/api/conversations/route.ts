@@ -67,7 +67,12 @@ export async function GET(req: NextRequest) {
     if (view === "pipeline") {
       const from = sp.get("from");
       const to = sp.get("to");
-      let q = db.from("conversations").select("lead_status, pipedrive_lead_id, created_at");
+      // Only real leads, never error rows: a failed/undelivered send or a dead
+      // number is not a lead. Count a conversation only if we actually reached
+      // the person (delivered/read) OR they replied — and never blocked/invalid.
+      let q = db.from("conversations").select("lead_status, pipedrive_lead_id, created_at")
+        .not("status", "in", "(blocked,invalid)")
+        .or("replied.eq.true,last_status.in.(delivered,read)");
       if (from) q = q.gte("created_at", from);
       if (to) q = q.lte("created_at", to);
       const { data, error } = await q;

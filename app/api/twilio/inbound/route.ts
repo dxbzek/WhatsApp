@@ -71,15 +71,14 @@ export async function POST(req: NextRequest) {
     await db.from("conversations").update({ status: "blocked", unread: false }).eq("id", conv!.id);
   }
 
-  // Did this reply signal interest? Tag the lead "hot" so it surfaces in the
-  // inbox Hot tab instead of sinking down the time-sorted list. Negatives like
-  // "Not interested" are explicitly excluded so they don't get flagged hot.
-  // Positive intent: "Interested", plus the CTA buttons on our templates
-  // ("Sell my property", "Rent it out for me", "Book a viewing", a valuation
-  // request, etc.) — tapping any of these is a lead, not a plain reply.
-  const POS = /\binterested\b|\byes\b|\btell me more\b|\bmore (info|details)\b|\bsend (me )?(the )?details\b|\bthe details\b|\bsell my\b|\bsell with\b|\brent it out\b|\blist my\b|\bbook a viewing\b|\bvaluation\b|\bvalue my\b|\bwant to join\b|\bjoin\b/;
-  const NEG = /\bnot interested\b|\bno\b|\bwrong number\b|\bremove\b|\bstop\b/;
-  let leadHot = !isOptOut && POS.test(text) && !NEG.test(text);
+  // Any reply is a lead — tag it "hot" so it surfaces in the inbox Hot tab —
+  // EXCEPT: an opt-out (Stop family, already blocked above), an explicit "Not
+  // interested" / "No thanks", or a WhatsApp Business AUTO-REPLY (greeting/away
+  // message from a business number we messaged — a machine, not a person).
+  // Everything else (any CTA tap or real message) counts, so no lead is missed.
+  const NEG = /\bnot interested\b|\bno thank(s| you)?\b/;
+  const AUTO = /thank you for contacting|received your (message|enquiry)|i'?ve received|get back to you|will (get|reply) back|out of office|away (message|from)|automated (reply|message)|please let us know how we can help/i;
+  let leadHot = !isOptOut && !NEG.test(text) && !AUTO.test(body);
 
   // Button / keyword auto-reply rules (set per-button when creating a template).
   // Match the tapped button text or typed keyword to an enabled rule.

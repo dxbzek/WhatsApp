@@ -74,7 +74,10 @@ export async function POST(req: NextRequest) {
   // Did this reply signal interest? Tag the lead "hot" so it surfaces in the
   // inbox Hot tab instead of sinking down the time-sorted list. Negatives like
   // "Not interested" are explicitly excluded so they don't get flagged hot.
-  const POS = /\binterested\b|\byes\b|\btell me more\b|\bmore (info|details)\b|\bsend (me )?details\b/;
+  // Positive intent: "Interested", plus the CTA buttons on our templates
+  // ("Sell my property", "Rent it out for me", "Book a viewing", a valuation
+  // request, etc.) — tapping any of these is a lead, not a plain reply.
+  const POS = /\binterested\b|\byes\b|\btell me more\b|\bmore (info|details)\b|\bsend (me )?details\b|\bsell my\b|\bsell with\b|\brent it out\b|\blist my\b|\bbook a viewing\b|\bvaluation\b|\bvalue my\b/;
   const NEG = /\bnot interested\b|\bno\b|\bwrong number\b|\bremove\b|\bstop\b/;
   let leadHot = !isOptOut && POS.test(text) && !NEG.test(text);
 

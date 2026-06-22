@@ -77,11 +77,11 @@ export async function handleAgentReport(from: string, body: string): Promise<boo
 
   // Find the lead: explicit phone in the text wins, else their newest open lead.
   const phone = leadPhoneFrom(body);
-  let lead: { id: string; name: string | null; wa_phone: string; assigned_agent_id: string | null } | null = null;
+  let lead: { id: string; name: string | null; wa_phone: string; assigned_agent_id: string | null; first_response_at: string | null } | null = null;
   if (phone) {
     const { data } = await db
       .from("conversations")
-      .select("id, name, wa_phone, assigned_agent_id")
+      .select("id, name, wa_phone, assigned_agent_id, first_response_at")
       .eq("wa_phone", phone)
       .maybeSingle();
     lead = data || null;
@@ -91,7 +91,7 @@ export async function handleAgentReport(from: string, body: string): Promise<boo
     // `NULL NOT IN (...)` is NOT true in SQL, so we must match null explicitly.
     const { data } = await db
       .from("conversations")
-      .select("id, name, wa_phone, assigned_agent_id")
+      .select("id, name, wa_phone, assigned_agent_id, first_response_at")
       .eq("assigned_agent_id", agent.id)
       .or("lead_stage.is.null,lead_stage.in.(contacted,viewing)")
       .eq("is_internal", false)
@@ -119,9 +119,11 @@ export async function handleAgentReport(from: string, body: string): Promise<boo
   }
 
   // Contacted / Viewing / Won move the lead forward. Claim ownership if it had
-  // none (so the board reflects who is actually working it).
+  // none (so the board reflects who is actually working it). Stamp the first
+  // response once, for response-time tracking.
   patch.lead_status = leadStatusFor(stage);
   if (!lead.assigned_agent_id) { patch.assigned_agent_id = agent.id; patch.assigned_at = now; }
+  if (!lead.first_response_at) patch.first_response_at = now;
   await db.from("conversations").update(patch).eq("id", lead.id);
   await reply(`Done. ${who} marked as ${labelOf(stage)}.`);
   return true;

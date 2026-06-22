@@ -33,6 +33,7 @@ export default function Insights() {
   const [replyRate, setReplyRate] = useState<number | null>(null);
   const [leads, setLeads] = useState<number | null>(null);
   const [pipeline, setPipeline] = useState<Record<string, number> | null>(null);
+  const [perf, setPerf] = useState<{ agents: any[]; campaigns: any[]; pool: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   // Real Twilio messaging totals for the selected window.
@@ -92,6 +93,17 @@ export default function Insights() {
       .catch(() => { setPipeline({}); setLeads(0); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from, to]);
+
+  // Agent performance + campaign→deal attribution (all-time, from our own
+  // conversations). Independent of the date window — it's the standing scoreboard.
+  useEffect(() => {
+    fetch("/api/insights/performance")
+      .then((r) => r.json())
+      .then((d) => { if (d && !d.error) setPerf(d); else setPerf({ agents: [], campaigns: [], pool: 0 }); })
+      .catch(() => setPerf({ agents: [], campaigns: [], pool: 0 }));
+  }, []);
+
+  const fmtResp = (m: number | null) => (m == null ? dash : m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`);
 
   const exportCSV = () => {
     const rows: (string | number)[][] = [["Section", "Name", "Value", "Detail"]];
@@ -186,6 +198,69 @@ export default function Insights() {
                   <div style={{ width: `${Math.round(((pipeline?.[k] ?? 0) / pipeMax) * 100)}%`, height: "100%", background: LEAD_COLOR[k] }} />
                 </div>
                 <div className="perf-stat strong">{(pipeline?.[k] ?? 0).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-2" style={{ marginTop: 14 }}>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-t">Agent performance</div>
+            <div className="card-meta">leads owned · all-time</div>
+          </div>
+          <div className="perf">
+            {perf === null && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading…</div></div>}
+            {perf && perf.agents.length === 0 && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>No assigned leads yet.</div></div>}
+            {perf && perf.agents.length > 0 && (
+              <div className="perf-row" style={{ color: "var(--ink-3)", fontSize: 12, fontWeight: 600 }}>
+                <div className="perf-name">Agent</div>
+                <div className="perf-stat" style={{ minWidth: 56, textAlign: "right" }}>Leads</div>
+                <div className="perf-stat" style={{ minWidth: 56, textAlign: "right" }}>Active</div>
+                <div className="perf-stat" style={{ minWidth: 48, textAlign: "right" }}>Won</div>
+                <div className="perf-stat" style={{ minWidth: 64, textAlign: "right" }}>Avg reply</div>
+              </div>
+            )}
+            {(perf?.agents || []).map((a) => (
+              <div className="perf-row" key={a.id}>
+                <div className="perf-name">{a.name}</div>
+                <div className="perf-stat" style={{ minWidth: 56, textAlign: "right" }}>{a.leads}</div>
+                <div className="perf-stat" style={{ minWidth: 56, textAlign: "right" }}>{a.active}</div>
+                <div className="perf-stat strong" style={{ minWidth: 48, textAlign: "right", color: a.won ? "var(--green-dot)" : undefined }}>{a.won}</div>
+                <div className="perf-stat" style={{ minWidth: 64, textAlign: "right" }}>{fmtResp(a.avgResponseMins)}</div>
+              </div>
+            ))}
+            {perf && perf.pool > 0 && (
+              <div className="perf-row" style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 8 }}>
+                <div className="perf-name" style={{ color: "var(--amber-ink)" }}>♻ Lead pool (released)</div>
+                <div className="perf-stat strong" style={{ marginLeft: "auto", color: "var(--amber-ink)" }}>{perf.pool}</div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-t">Campaign → deals</div>
+            <div className="card-meta">what actually converts · all-time</div>
+          </div>
+          <div className="perf">
+            {perf === null && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading…</div></div>}
+            {perf && perf.campaigns.length === 0 && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>No attributed leads yet.</div></div>}
+            {perf && perf.campaigns.length > 0 && (
+              <div className="perf-row" style={{ color: "var(--ink-3)", fontSize: 12, fontWeight: 600 }}>
+                <div className="perf-name">Campaign</div>
+                <div className="perf-stat" style={{ minWidth: 52, textAlign: "right" }}>Leads</div>
+                <div className="perf-stat" style={{ minWidth: 44, textAlign: "right" }}>Won</div>
+                <div className="perf-stat" style={{ minWidth: 60, textAlign: "right" }}>Win rate</div>
+              </div>
+            )}
+            {(perf?.campaigns || []).slice(0, 8).map((c) => (
+              <div className="perf-row" key={c.id}>
+                <div className="perf-name mono" title={c.name}>{c.name}</div>
+                <div className="perf-stat" style={{ minWidth: 52, textAlign: "right" }}>{c.leads}</div>
+                <div className="perf-stat strong" style={{ minWidth: 44, textAlign: "right", color: c.won ? "var(--green-dot)" : undefined }}>{c.won}</div>
+                <div className="perf-stat" style={{ minWidth: 60, textAlign: "right" }}>{c.winRate == null ? dash : `${c.winRate}%`}</div>
               </div>
             ))}
           </div>

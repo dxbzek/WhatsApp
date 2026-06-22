@@ -127,6 +127,11 @@ export async function POST(req: NextRequest) {
     const db = supabaseAdmin();
     const { error } = await db.from("conversations").update(allowed).eq("id", id);
     if (error) throw new Error(error.message);
+    // Stamp first response once when a manager moves a lead into an active stage
+    // (only if not already set) — feeds response-time reporting.
+    if (allowed.lead_stage && ["contacted", "viewing", "won"].includes(allowed.lead_stage)) {
+      await db.from("conversations").update({ first_response_at: new Date().toISOString() }).eq("id", id).is("first_response_at", null);
+    }
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     return NextResponse.json({ error: e.message || "Update failed" }, { status: 500 });

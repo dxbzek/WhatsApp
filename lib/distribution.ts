@@ -26,6 +26,12 @@ async function sendAlert(toWa: string, leadName: string, contactPhone: string, a
   }
 }
 
+// Ping a single agent's WhatsApp with a lead reminder/alert (used by the
+// stale-lead watcher). Reuses the approved alert template, free-text fallback.
+export async function pingAgent(wa_number: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
+  return sendAlert(wa_number, leadName, contactPhone, about);
+}
+
 // Ping each target agent with the lead. Best-effort: a per-agent failure never
 // blocks the rest. Returns { name, ok } per agent so the caller knows whether the
 // alert actually reached at least one of them.
@@ -117,14 +123,12 @@ export async function distributeLead(opts: {
       await db.from("campaigns").update({ rr_pointer: nextPointer }).eq("id", camp.id);
     }
 
-    // Persist the owner on the conversation so the lead is trackable after
-    // transfer — round-robin pick, or the first agent when notifying "all".
+    // Persist the owner + source campaign on the conversation so the lead is
+    // trackable (after transfer) and attributable (which campaign produced it).
     const owner = targets[0];
-    if (owner) {
-      await db.from("conversations")
-        .update({ assigned_agent_id: owner.id, assigned_at: new Date().toISOString() })
-        .eq("id", opts.conversationId);
-    }
+    const convPatch: Record<string, any> = { source_campaign_id: camp.id };
+    if (owner) { convPatch.assigned_agent_id = owner.id; convPatch.assigned_at = new Date().toISOString(); }
+    await db.from("conversations").update(convPatch).eq("id", opts.conversationId);
 
     const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
     // What the campaign is about — the per-campaign blurb if set, else the name.

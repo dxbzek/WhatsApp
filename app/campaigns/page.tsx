@@ -848,23 +848,6 @@ export default function Campaigns() {
             {senders.map((s) => <option key={s} value={s}>{formatPhone(s)}</option>)}
           </select>
 
-          <div className="hint" style={{ margin: "14px 0 8px" }}>Sets a safe daily send cap for this number.</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {WARMUP.map((w) => (
-              <div
-                key={w.id}
-                onClick={() => { setWarmup(w.id); if (mode === "drip") { setPerBatch(w.batch); setIntervalMin(w.interval); } }}
-                className={`pick${warmup === w.id ? " on" : ""}`}
-                style={{ flex: "1 1 160px", marginBottom: 0 }}
-              >
-                <div className="pk-radio" />
-                <div className="pk-main">
-                  <div className="pk-t">{w.label}</div>
-                  <div className="pk-s">{w.sub} · cap {w.cap}/day</div>
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
 
         <div className="sect">

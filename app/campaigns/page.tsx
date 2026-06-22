@@ -126,6 +126,10 @@ export default function Campaigns() {
   const [agents, setAgents] = useState<{ id: string; name: string; wa_number: string }[]>([]);
   const [agentIds, setAgentIds] = useState<string[]>([]);
   const [blurb, setBlurb] = useState("");
+  // The agent heads-up auto-fills from the chosen template's name so the user
+  // never has to write it. We only stop auto-filling once they type their own.
+  const [blurbTouched, setBlurbTouched] = useState(false);
+  const defaultBlurb = (name: string) => (name || "").replace(/_v\d+$/i, "").replace(/[_-]+/g, " ").trim().replace(/^\w/, (c) => c.toUpperCase());
   const router = useRouter();
 
   // Load agents for the lead-distribution picker.
@@ -654,7 +658,7 @@ export default function Campaigns() {
 
         <div className="sect">
           <div className="sect-t">1 · Template</div>
-          <select value={tplSid} onChange={(e) => { setTplSid(e.target.value); setVars({}); setVarMap({}); }} className="input">
+          <select value={tplSid} onChange={(e) => { const sid = e.target.value; setTplSid(sid); setVars({}); setVarMap({}); if (!blurbTouched) { const t = tpls.find((x) => x.sid === sid); setBlurb(t ? defaultBlurb(t.name) : ""); } }} className="input">
             <option value="">Select an approved template…</option>
             {tpls.map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
           </select>
@@ -885,12 +889,12 @@ export default function Campaigns() {
               </div>
               <input
                 value={blurb}
-                onChange={(e) => setBlurb(e.target.value)}
+                onChange={(e) => { setBlurb(e.target.value); setBlurbTouched(true); }}
                 className="input"
                 maxLength={140}
                 placeholder='Heads-up for the agent, e.g. "Buyers for off-market Palm villas under AED 25M"'
               />
-              <div className="hint" style={{ marginBottom: 0 }}>One line telling the agent what this campaign is about. It goes in their lead alert. Optional.</div>
+              <div className="hint" style={{ marginBottom: 0 }}>Auto-filled from the template, so you can leave it. It goes in the agent&apos;s lead alert. Edit only if you want something different.</div>
             </>
           )}
         </div>

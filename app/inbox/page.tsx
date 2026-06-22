@@ -9,8 +9,16 @@ type UIConv = {
   id: string; name: string; phone: string; waPhone?: string;
   tag: "Hot" | "Warm" | ""; lead?: string; unread: number; time: string; community: string;
   live: boolean; loaded: boolean; messages: UIMsg[]; blocked?: boolean;
-  lastBody?: string; lastDirection?: string; replied?: boolean; assignedAgentId?: string;
+  lastBody?: string; lastDirection?: string; replied?: boolean; assignedAgentId?: string; leadStage?: string;
 };
+
+// Pipeline progress of a transferred lead, distinct from the Hot/Warm
+// "temperature" (lead_status). Tracks what the owning agent has done with it.
+const STAGES = [
+  { id: "", label: "No stage" }, { id: "contacted", label: "Contacted" },
+  { id: "viewing", label: "Viewing" }, { id: "won", label: "Won" }, { id: "lost", label: "Lost" },
+];
+const stageLabel = (id?: string) => STAGES.find((s) => s.id === (id || ""))?.label || "";
 
 const LEADS = [
   { id: "new", label: "New" }, { id: "hot", label: "Hot" }, { id: "warm", label: "Warm" },
@@ -66,6 +74,9 @@ export default function Inbox() {
   const [toast, setToast] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [agentNames, setAgentNames] = useState<Record<string, string>>({}); // agent id -> name, for the "assigned to" badge
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([]); // ordered, for the assign + filter pickers
+  const [agentFilter, setAgentFilter] = useState(""); // "" = all agents, "none" = unassigned, else agent id
+  const [stageFilter, setStageFilter] = useState(""); // "" = any stage
   const threadRef = useRef<HTMLDivElement>(null);
 
   const active = convos.find((c) => c.id === activeId) || null;
@@ -83,7 +94,7 @@ export default function Inbox() {
     try { const p = new URLSearchParams(window.location.search).get("q"); if (p) setQ(p); } catch { /* ignore */ }
     fetch("/api/senders").then((r) => r.json()).then((d) => { setSenders(d.senders || []); if (d.senders?.length) setSender(d.senders[0]); }).catch(() => {});
     fetch("/api/templates").then((r) => r.json()).then((d) => { const a = (d.templates || []).filter((t: Tpl) => t.status === "approved"); if (a.length) setApproved(a); }).catch(() => {});
-    fetch("/api/agents").then((r) => r.json()).then((d) => { const m: Record<string, string> = {}; (d.agents || []).forEach((a: any) => { m[a.id] = a.name; }); setAgentNames(m); }).catch(() => {});
+    fetch("/api/agents").then((r) => r.json()).then((d) => { const list = (d.agents || []).map((a: any) => ({ id: a.id, name: a.name })); setAgents(list); const m: Record<string, string> = {}; list.forEach((a: any) => { m[a.id] = a.name; }); setAgentNames(m); }).catch(() => {});
     loadConvs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -102,7 +113,7 @@ export default function Inbox() {
         tag: tagOf(c.lead_status), lead: c.lead_status || "new", unread: c.unread ? 1 : 0, time: hhmm(c.last_at),
         community: c.community || "", live: true, loaded: false, messages: [], blocked: c.status === "blocked",
         lastBody: c.last_body || "", lastDirection: c.last_direction || "", replied: !!c.replied,
-        assignedAgentId: c.assigned_agent_id || undefined,
+        assignedAgentId: c.assigned_agent_id || undefined, leadStage: c.lead_stage || "",
       }));
       setLive(true);
       setConvos((prev) => {
@@ -223,6 +234,17 @@ export default function Inbox() {
     }
   }
 
+  // Assign / reassign the owning agent (or clear it). Optimistic, then persisted.
+  async function setAgent(id: string, agentId: string) {
+    setConvos((p) => p.map((c) => (c.id === id ? { ...c, assignedAgentId: agentId || undefined } : c)));
+    if (live) await patchConvo(id, { assigned_agent_id: agentId || null });
+  }
+  // Set the pipeline stage (Contacted → Viewing → Won/Lost), or clear it.
+  async function setStage(id: string, stage: string) {
+    setConvos((p) => p.map((c) => (c.id === id ? { ...c, leadStage: stage } : c)));
+    if (live) await patchConvo(id, { lead_stage: stage || null });
+  }
+
   const list = convos
     // Replied = anyone who messaged back (opt-outs included, but labelled on the row).
     // Opt-outs get their own filter. Unread/Hot stay actionable-only (no opt-outs).
@@ -232,6 +254,10 @@ export default function Inbox() {
         : tab === "replied" ? !!c.replied
         : tab === "optout" ? !!c.blocked
         : true))
+    // Per-agent filter: "" = all, "none" = unassigned, else a specific agent id.
+    .filter((c) => (agentFilter === "" ? true : agentFilter === "none" ? !c.assignedAgentId : c.assignedAgentId === agentFilter))
+    // Stage filter: "" = any, else exact pipeline stage.
+    .filter((c) => (stageFilter === "" ? true : (c.leadStage || "") === stageFilter))
     .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.toLowerCase()) || (c.waPhone || "").includes(q.replace(/[^0-9]/g, "")));
 
   return (
@@ -246,6 +272,19 @@ export default function Inbox() {
                 <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>
               ))}
             </div>
+            {agents.length > 0 && (
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <select className="seltrig" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} title="Filter by agent" aria-label="Filter by agent" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                  <option value="">All agents</option>
+                  <option value="none">Unassigned</option>
+                  {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                <select className="seltrig" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} title="Filter by stage" aria-label="Filter by stage" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                  <option value="">Any stage</option>
+                  {STAGES.filter((s) => s.id).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              </div>
+            )}
           </div>
           {loaded && !live && (
             <div style={{ background: "var(--amber-bg)", color: "var(--amber-ink)", borderBottom: "1px solid var(--amber-border)", padding: "8px 16px", fontSize: 12, fontWeight: 600 }}>
@@ -272,11 +311,13 @@ export default function Inbox() {
                     })()}</span>
                     {c.unread > 0 && <span className="unread">{c.unread}</span>}
                   </div>
-                  {(c.tag || c.community || c.blocked) && (
+                  {(c.tag || c.community || c.blocked || c.leadStage || c.assignedAgentId) && (
                     <div className="ci-tags">
                       {c.blocked
                         ? <span className="leadtag"><span className="d" style={{ background: "var(--ink-3)" }} />Opt-out</span>
                         : <TagDot tag={c.tag} />}
+                      {c.leadStage && <span className="ci-comm" style={{ color: "var(--blue)", fontWeight: 600 }}>{stageLabel(c.leadStage)}</span>}
+                      {c.assignedAgentId && agentNames[c.assignedAgentId] && <span className="ci-comm">→ {agentNames[c.assignedAgentId]}</span>}
                       <span className="ci-comm">{c.community}</span>
                     </div>
                   )}
@@ -313,6 +354,24 @@ export default function Inbox() {
                 )}
               </div>
             </div>
+
+            {agents.length > 0 && (
+              <div className="ctx-bar" style={{ gap: 10, flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)" }}>
+                  Owner
+                  <select className="seltrig" value={active.assignedAgentId || ""} onChange={(e) => setAgent(active.id, e.target.value)} title="Assign to agent" aria-label="Assign to agent" style={{ height: 30 }}>
+                    <option value="">Unassigned</option>
+                    {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)" }}>
+                  Stage
+                  <select className="seltrig" value={active.leadStage || ""} onChange={(e) => setStage(active.id, e.target.value)} title="Lead stage" aria-label="Lead stage" style={{ height: 30 }}>
+                    {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                  </select>
+                </label>
+              </div>
+            )}
 
             {active.live && active.waPhone && <CrmContext phone={active.waPhone} />}
 

@@ -113,6 +113,14 @@ export async function POST(req: NextRequest) {
       if ("unread" in patch) allowed.unread = !!patch.unread;
       if ("lead_status" in patch) allowed.lead_status = String(patch.lead_status);
       if ("status" in patch) allowed.status = String(patch.status);
+      if ("lead_stage" in patch) allowed.lead_stage = patch.lead_stage ? String(patch.lead_stage) : null;
+      // Assign / reassign the owning agent. Empty value clears the owner.
+      // Stamp assigned_at whenever an owner is set so the handover is timestamped.
+      if ("assigned_agent_id" in patch) {
+        const a = patch.assigned_agent_id ? String(patch.assigned_agent_id) : null;
+        allowed.assigned_agent_id = a;
+        allowed.assigned_at = a ? new Date().toISOString() : null;
+      }
     }
     if (!Object.keys(allowed).length) return NextResponse.json({ error: "no valid fields" }, { status: 400 });
     const db = supabaseAdmin();

@@ -393,16 +393,18 @@ export default function Inbox() {
             <div className="thread" ref={threadRef}>
               <div className="day-sep"><span>Today</span></div>
               {active.messages.map((m) => {
-                // Quick-reply / URL / phone buttons come from the template the message
+                // Buttons AND the header/cover image come from the template the message
                 // was sent with (matched by content_sid), so the inbox bubble shows the
-                // same tappable buttons the recipient sees on WhatsApp.
-                const tplBtns = m.from === "out" && m.contentSid
-                  ? approved.find((t) => t.sid === m.contentSid)?.buttons
-                  : null;
+                // same card the recipient sees on WhatsApp (header image isn't stored on
+                // the message row, only on the template).
+                const tpl = m.from === "out" && m.contentSid ? approved.find((t) => t.sid === m.contentSid) : null;
+                const tplBtns = tpl?.buttons;
+                const tplMedia = !m.media ? tpl?.media : null;
                 return (
                   <div key={m.id} className={`msg ${m.from}`}>
                     <div className="msg-stack">
                       <div className="msg-bubble">
+                        {tplMedia && <img src={mediaSrc(tplMedia)} alt="" onLoad={scrollToBottom} style={{ width: "100%", borderRadius: 8, marginBottom: 6, display: "block" }} />}
                         {m.media && (/\.pdf($|\?)/i.test(m.media)
                           ? <a href={mediaSrc(m.media)} target="_blank" rel="noreferrer" style={{ color: "var(--wa-blue)", display: "block", marginBottom: 4 }}>Open document ↗</a>
                           : <img src={mediaSrc(m.media)} alt="" onLoad={scrollToBottom} />)}

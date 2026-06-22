@@ -87,11 +87,13 @@ export async function handleAgentReport(from: string, body: string): Promise<boo
     lead = data || null;
     if (!lead) { await reply(`We could not find a lead with the number ${phone}. Double-check it and try again.`); return true; }
   } else {
+    // Open = not yet won or lost. A brand-new lead has a NULL stage, and
+    // `NULL NOT IN (...)` is NOT true in SQL, so we must match null explicitly.
     const { data } = await db
       .from("conversations")
       .select("id, name, wa_phone, assigned_agent_id")
       .eq("assigned_agent_id", agent.id)
-      .not("lead_stage", "in", "(won,lost)")
+      .or("lead_stage.is.null,lead_stage.in.(contacted,viewing)")
       .eq("is_internal", false)
       .order("assigned_at", { ascending: false })
       .limit(2);

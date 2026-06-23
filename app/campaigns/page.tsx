@@ -105,6 +105,9 @@ function planDripTimes(count: number, perBatch: number, intervalMin: number, day
 export default function Campaigns() {
   const [tpls, setTpls] = useState<Tpl[]>([]);
   const [tplSid, setTplSid] = useState("");
+  // A/B test: when on, recipients split 50/50 and the second half gets tplSidB.
+  const [abTest, setAbTest] = useState(false);
+  const [tplSidB, setTplSidB] = useState("");
   // Re-entrancy guard for run(): set synchronously so a double-click during the
   // pre-send await/confirm window can't create a second campaign (the button's
   // disabled={running} only kicks in later, after the first await resolves).
@@ -279,6 +282,7 @@ export default function Campaigns() {
   }, []);
 
   const tpl = tpls.find((t) => t.sid === tplSid);
+  const tplB = tpls.find((t) => t.sid === tplSidB);
   const tplVars = tpl ? Object.keys(tpl.variables || {}) : [];
 
   // Structured records from a pasted/uploaded CSV with a header (phone + columns).
@@ -394,6 +398,7 @@ export default function Campaigns() {
     setErr(null);
     setDoneMsg(null);
     if (!tplSid) return setErr("Pick an approved template.");
+    if (abTest && (!tplSidB || tplSidB === tplSid)) return setErr("Pick a different Variant B template for the A/B test.");
     if (numbers.length === 0) return setErr("Add at least one recipient.");
     if (!optIn) return setErr("Please confirm these recipients opted in to WhatsApp messages.");
     // Collect every heads-up into ONE final confirm instead of stacking dialogs.
@@ -493,24 +498,40 @@ export default function Campaigns() {
         const finishIso = isNow ? new Date().toISOString() : new Date(dripFinishMs).toISOString();
         const cr = await fetch("/api/campaign/create", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: finishIso, agentIds, distribution: "round_robin", blurb }),
+          body: JSON.stringify({ name: abTest ? `${tpl?.name} (A/B)` : tpl?.name, templateSid: tplSid, templateName: tpl?.name, templateSidB: abTest ? tplSidB : undefined, templateNameB: abTest ? tplB?.name : undefined, sender, mode, total: recipients.length, finishAt: finishIso, agentIds, distribution: "round_robin", blurb }),
         });
         const cd = await cr.json();
         if (!cr.ok) throw new Error(cd.error || "Could not create the campaign.");
         const campaignId = cd.id;
 
-        // "Now" = one batch, all due immediately. "Drip" = paced per the UI.
-        const er = await fetch("/api/campaign/enqueue", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            campaignId, contentSid: tplSid, sender: sender || undefined, recipients,
-            perBatch: isNow ? recipients.length : perBatch,
-            intervalMin: isNow ? 1 : intervalMin,
-            daytime: isNow ? true : daytimeOnly,
-          }),
-        });
-        const ed = await er.json();
-        if (!er.ok) throw new Error(ed.error || (isNow ? "Could not queue the send." : "Could not schedule the drip."));
+        // A/B: split recipients 50/50 by index parity (unbiased vs a phone-sorted
+        // list) and queue each half under the same campaign with its own template.
+        // Otherwise queue everyone on the single template. Each message keeps its
+        // content_sid, so the log compares variants.
+        const groups = abTest
+          ? [
+              { sid: tplSid, recips: recipients.filter((_, i) => i % 2 === 0) },
+              { sid: tplSidB, recips: recipients.filter((_, i) => i % 2 === 1) },
+            ]
+          : [{ sid: tplSid, recips: recipients }];
+        let enqueued = 0, skipped = 0;
+        for (const g of groups) {
+          if (g.recips.length === 0) continue;
+          const er = await fetch("/api/campaign/enqueue", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              campaignId, contentSid: g.sid, sender: sender || undefined, recipients: g.recips,
+              perBatch: isNow ? g.recips.length : perBatch,
+              intervalMin: isNow ? 1 : intervalMin,
+              daytime: isNow ? true : daytimeOnly,
+            }),
+          });
+          const r = await er.json();
+          if (!er.ok) throw new Error(r.error || (isNow ? "Could not queue the send." : "Could not schedule the drip."));
+          enqueued += r.enqueued || 0;
+          skipped += r.skipped || 0;
+        }
+        const ed = { enqueued, skipped };
 
         // Compile not-in-CRM recipients to the Sheet (best-effort, never blocks).
         let uncrmNote = "";
@@ -662,6 +683,21 @@ export default function Campaigns() {
             <option value="">Select an approved template…</option>
             {tpls.map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
           </select>
+          {tpl && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, cursor: "pointer" }}>
+              <input type="checkbox" checked={abTest} onChange={(e) => setAbTest(e.target.checked)} />
+              A/B test against a second template (recipients split 50/50)
+            </label>
+          )}
+          {tpl && abTest && (
+            <div style={{ marginTop: 8 }}>
+              <select value={tplSidB} onChange={(e) => setTplSidB(e.target.value)} className="input">
+                <option value="">Select Variant B template…</option>
+                {tpls.filter((t) => t.sid !== tplSid).map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
+              </select>
+              <div className="hint" style={{ marginBottom: 0 }}>Half get the template above (A), half get this one (B). The campaign log shows which wins.</div>
+            </div>
+          )}
           {tpl && (tpl.body || tpl.media || (tpl.buttons?.length ?? 0) > 0) && (
             <div style={{ marginTop: 12, maxWidth: 360 }}>
               <div className="dlabel" style={{ marginTop: 0 }}>Preview{sampleRec ? " (first recipient)" : ""}</div>

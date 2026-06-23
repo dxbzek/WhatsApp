@@ -7,7 +7,7 @@ import { errorCause } from "@/lib/twilioErrors";
 type Campaign = {
   id: string; name: string; template_name: string | null; sender: string | null;
   mode: string; total: number; sent: number; scheduled: number; failed: number; skipped: number;
-  status: string; finish_at: string | null; created_at: string;
+  status: string; finish_at: string | null; created_at: string; template_sid_b?: string | null;
 };
 type Recipient = { status: string | null; error_code?: string | null; created_at: string; scheduled_at?: string | null; conversation: { wa_phone: string; name: string | null } | null };
 
@@ -104,6 +104,7 @@ export default function CampaignHistory() {
               <Coverage c={c} f={funnels[c.id]} />
               <FailureReasons f={funnels[c.id]} />
               <DripTracker c={c} f={funnels[c.id]} />
+              {c.template_sid_b && <ABResults campaignId={c.id} />}
 
               <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
                 <button className="btn btn-sec btn-sm" onClick={() => setOpenId(openId === c.id ? null : c.id)}>
@@ -119,6 +120,38 @@ export default function CampaignHistory() {
       )}
       {toast && <Toast kind={toast.kind} onDone={() => setToast(null)}>{toast.text}</Toast>}
     </div></div>
+  );
+}
+
+// A/B comparison: variant A vs B by reach, taps, and tap rate; leader starred.
+function ABResults({ campaignId }: { campaignId: string }) {
+  const [data, setData] = useState<{ ab: boolean; variants: any[] } | null>(null);
+  useEffect(() => {
+    fetch(`/api/campaign/ab?campaign=${encodeURIComponent(campaignId)}&t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => r.json()).then(setData).catch(() => setData(null));
+  }, [campaignId]);
+  if (!data?.ab || !Array.isArray(data.variants)) return null;
+  const vs = data.variants;
+  const someTaps = vs.some((v) => v.taps > 0);
+  const lead = vs.reduce((a, b) => (b.taps > a.taps || (b.taps === a.taps && b.tapRate > a.tapRate) ? b : a), vs[0]);
+  return (
+    <div style={{ marginTop: 14, padding: "11px 13px", borderRadius: "var(--r)", background: "var(--chip)", border: "1px solid var(--border-soft)" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)", marginBottom: 8, letterSpacing: 0.3 }}>A/B TEST · by taps</div>
+      {vs.map((v) => {
+        const win = someTaps && v.sid === lead.sid;
+        return (
+          <div key={v.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0", fontSize: 13 }}>
+            <span style={{ fontWeight: 700, width: 14, color: win ? "var(--green-ink)" : "var(--ink-2)" }}>{v.key}</span>
+            <span className="mono" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {v.name}{win && <span style={{ marginLeft: 8, color: "var(--green-ink)", fontWeight: 700 }}>★ leading</span>}
+            </span>
+            <span style={{ color: "var(--ink-3)" }}>{v.reached} reached</span>
+            <span style={{ fontWeight: 700 }}>{v.taps} taps</span>
+            <span style={{ color: "var(--ink-3)", minWidth: 46, textAlign: "right" }}>{v.tapRate}%</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

@@ -25,6 +25,9 @@ export async function POST(req: NextRequest) {
         agent_ids: agentIds,
         distribution: b.distribution === "all" ? "all" : "round_robin",
         blurb: typeof b.blurb === "string" && b.blurb.trim() ? b.blurb.trim() : null,
+        // A/B test: variant B template (null on a normal single-template campaign).
+        template_sid_b: b.templateSidB || null,
+        template_name_b: b.templateNameB || null,
       })
       .select("id")
       .single();

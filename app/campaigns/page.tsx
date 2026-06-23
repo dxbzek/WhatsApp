@@ -283,6 +283,11 @@ export default function Campaigns() {
 
   const tpl = tpls.find((t) => t.sid === tplSid);
   const tplB = tpls.find((t) => t.sid === tplSidB);
+  // Internal/operational templates (agent lead alerts, the team briefing) are NOT
+  // customer broadcasts — keep them out of the campaign picker so they can never
+  // be blasted to owners by mistake.
+  const isInternalTpl = (name?: string) => /lead_alert|lead_briefing/i.test(name || "");
+  const campaignTpls = tpls.filter((t) => !isInternalTpl(t.name));
   const tplVars = tpl ? Object.keys(tpl.variables || {}) : [];
 
   // Structured records from a pasted/uploaded CSV with a header (phone + columns).
@@ -681,7 +686,7 @@ export default function Campaigns() {
           <div className="sect-t">1 · Template</div>
           <select value={tplSid} onChange={(e) => { const sid = e.target.value; setTplSid(sid); setVars({}); setVarMap({}); if (!blurbTouched) { const t = tpls.find((x) => x.sid === sid); setBlurb(t ? defaultBlurb(t.name) : ""); } }} className="input">
             <option value="">Select an approved template…</option>
-            {tpls.map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
+            {campaignTpls.map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
           </select>
           {tpl && (
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, cursor: "pointer" }}>
@@ -693,7 +698,7 @@ export default function Campaigns() {
             <div style={{ marginTop: 8 }}>
               <select value={tplSidB} onChange={(e) => setTplSidB(e.target.value)} className="input">
                 <option value="">Select Variant B template…</option>
-                {tpls.filter((t) => t.sid !== tplSid).map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
+                {campaignTpls.filter((t) => t.sid !== tplSid).map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
               </select>
               <div className="hint" style={{ marginBottom: 0 }}>Half get the template above (A), half get this one (B). The campaign log shows which wins.</div>
             </div>

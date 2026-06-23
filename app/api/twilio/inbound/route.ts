@@ -90,14 +90,16 @@ export async function POST(req: NextRequest) {
     await db.from("conversations").update({ status: "blocked", unread: false }).eq("id", conv!.id);
   }
 
-  // Any reply is a lead — tag it "hot" so it surfaces in the inbox Hot tab —
-  // EXCEPT: an opt-out (Stop family, already blocked above), an explicit "Not
-  // interested" / "No thanks", or a WhatsApp Business AUTO-REPLY (greeting/away
-  // message from a business number we messaged — a machine, not a person).
-  // Everything else (any CTA tap or real message) counts, so no lead is missed.
-  const NEG = /\bnot interested\b|\bno thank(s| you)?\b/;
-  const AUTO = /thank you for contacting|received your (message|enquiry)|i'?ve received|get back to you|will (get|reply) back|out of office|away (message|from)|automated (reply|message)|please let us know how we can help/i;
-  let leadHot = !isOptOut && !NEG.test(text) && !AUTO.test(body);
+  // A lead is HOT only when the contact TAPS one of our converting CTA buttons
+  // ("I'm Interested", "What's my offer", "Free valuation", "Speak to an agent",
+  // "Sell my property", "Rent it out for me", "Send me the details", "I want to
+  // join", "MANAGE"). Those are deliberate interest signals. Free text — a
+  // business auto-reply ("Thank you for contacting X"), "who is this", a wrong
+  // number — is NOT a lead: it must not mark hot or ping an agent. The matching
+  // converting-button rule below (push_pipedrive = true) flips this to true;
+  // anything that isn't a converting tap stays false (still logged + visible in
+  // the Replied tab for a human to read, just never auto-routed).
+  let leadHot = false;
 
   // Button / keyword auto-reply rules (set per-button when creating a template).
   // Match the tapped button text or typed keyword to an enabled rule.

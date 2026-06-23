@@ -704,24 +704,36 @@ export default function Campaigns() {
             </div>
           )}
           {tpl && (tpl.body || tpl.media || (tpl.buttons?.length ?? 0) > 0) && (
-            <div style={{ marginTop: 12, maxWidth: 360 }}>
+            <div style={{ marginTop: 12, maxWidth: 330 }}>
               <div className="dlabel" style={{ marginTop: 0 }}>Preview{sampleRec ? " (first recipient)" : ""}</div>
-              <div className="wa-bubble" style={{ maxWidth: "100%" }}>
-                {tpl.media && <img className="bimg" src={tpl.media} alt="" />}
-                {tpl.body && <div className="bbody">{renderLabel(tpl, previewVars)}</div>}
-                {tpl.footer && <div className="bfoot">{tpl.footer}</div>}
-                {(tpl.buttons?.length ?? 0) > 0 && (
-                  <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-                    {tpl.buttons!.map((b, bi) => {
-                      const icon = b.type === "URL" ? "🔗" : b.type === "PHONE_NUMBER" ? "📞" : "↩︎";
-                      return (
-                        <div key={bi} className="wa-reply" style={{ maxWidth: "100%" }}>
-                          <span style={{ fontSize: 13 }}>{icon}</span>{b.title}
-                        </div>
-                      );
-                    })}
+              {/* Real WhatsApp framing (chat header + wallpaper + read ticks) so the
+                  preview reads like the message the owner actually receives, not a
+                  flat white box on a white card. Mirrors the template builder. */}
+              <div style={{ borderRadius: 12, overflow: "hidden", border: "1px solid var(--border)", boxShadow: "var(--sh-lg)" }}>
+                <div className="wa-top">
+                  <div className="wa-ava">E</div>
+                  <div><div className="wa-name">ERE Homes</div><div className="wa-status">online</div></div>
+                </div>
+                <div className="wa-chat" style={{ minHeight: 0, padding: "14px 12px 16px" }}>
+                  <div className="wa-bubble">
+                    {tpl.media && <img className="bimg" src={tpl.media} alt="" />}
+                    {tpl.body && <div className="bbody">{renderLabel(tpl, previewVars)}</div>}
+                    {tpl.footer && <div className="bfoot">{tpl.footer}</div>}
+                    <div className="btime">12:30 PM <span style={{ color: "#53bdeb" }}>✓✓</span></div>
                   </div>
-                )}
+                  {(tpl.buttons?.length ?? 0) > 0 && (
+                    <div className="wa-replies">
+                      {tpl.buttons!.map((b, bi) => {
+                        const icon = b.type === "URL" ? "🔗" : b.type === "PHONE_NUMBER" ? "📞" : "↩︎";
+                        return (
+                          <div key={bi} className="wa-reply">
+                            <span style={{ fontSize: 12 }}>{icon}</span>{b.title}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}

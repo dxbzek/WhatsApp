@@ -704,36 +704,15 @@ export default function Campaigns() {
             </div>
           )}
           {tpl && (tpl.body || tpl.media || (tpl.buttons?.length ?? 0) > 0) && (
-            <div style={{ marginTop: 12, maxWidth: 330 }}>
+            <div style={{ marginTop: 12 }}>
               <div className="dlabel" style={{ marginTop: 0 }}>Preview{sampleRec ? " (first recipient)" : ""}</div>
-              {/* Real WhatsApp framing (chat header + wallpaper + read ticks) so the
-                  preview reads like the message the owner actually receives, not a
-                  flat white box on a white card. Mirrors the template builder. */}
-              <div style={{ borderRadius: 12, overflow: "hidden", border: "1px solid var(--border)", boxShadow: "var(--sh-lg)" }}>
-                <div className="wa-top">
-                  <div className="wa-ava">E</div>
-                  <div><div className="wa-name">ERE Homes</div><div className="wa-status">online</div></div>
-                </div>
-                <div className="wa-chat" style={{ minHeight: 0, padding: "14px 12px 16px" }}>
-                  <div className="wa-bubble">
-                    {tpl.media && <img className="bimg" src={tpl.media} alt="" />}
-                    {tpl.body && <div className="bbody">{renderLabel(tpl, previewVars)}</div>}
-                    {tpl.footer && <div className="bfoot">{tpl.footer}</div>}
-                    <div className="btime">12:30 PM <span style={{ color: "#53bdeb" }}>✓✓</span></div>
-                  </div>
-                  {(tpl.buttons?.length ?? 0) > 0 && (
-                    <div className="wa-replies">
-                      {tpl.buttons!.map((b, bi) => {
-                        const icon = b.type === "URL" ? "🔗" : b.type === "PHONE_NUMBER" ? "📞" : "↩︎";
-                        return (
-                          <div key={bi} className="wa-reply">
-                            <span style={{ fontSize: 12 }}>{icon}</span>{b.title}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+              {/* On an A/B campaign, preview BOTH templates side by side (stacks on
+                  narrow screens) so the sender eyeballs each arm before sending. */}
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                <WaPreview t={tpl} vars={previewVars} label={abTest && tplB ? "Variant A" : undefined} />
+                {abTest && tplB && (tplB.body || tplB.media || (tplB.buttons?.length ?? 0) > 0) && (
+                  <WaPreview t={tplB} vars={previewVars} label="Variant B" />
+                )}
               </div>
             </div>
           )}
@@ -1103,6 +1082,43 @@ function renderLabel(tpl: Tpl | undefined, vars: Record<string, string>) {
   let s = tpl?.body || (tpl ? `[${tpl.name}]` : "");
   for (const [k, v] of Object.entries(vars)) s = s.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), v || `{{${k}}}`);
   return s;
+}
+// One WhatsApp-framed template preview (chat header + wallpaper + read ticks), so it
+// reads like the message the owner actually receives. Reused for both A/B arms; the
+// optional label tags which variant it is. Fixed width with maxWidth 100% so two sit
+// side by side on desktop and stack cleanly on mobile.
+function WaPreview({ t, vars, label }: { t: Tpl; vars: Record<string, string>; label?: string }) {
+  return (
+    <div style={{ width: 300, maxWidth: "100%" }}>
+      {label && <div className="hint" style={{ marginTop: 0, marginBottom: 6, fontWeight: 600 }}>{label}</div>}
+      <div style={{ borderRadius: 12, overflow: "hidden", border: "1px solid var(--border)", boxShadow: "var(--sh-lg)" }}>
+        <div className="wa-top">
+          <div className="wa-ava">E</div>
+          <div><div className="wa-name">ERE Homes</div><div className="wa-status">online</div></div>
+        </div>
+        <div className="wa-chat" style={{ minHeight: 0, padding: "14px 12px 16px" }}>
+          <div className="wa-bubble">
+            {t.media && <img className="bimg" src={t.media} alt="" />}
+            {t.body && <div className="bbody">{renderLabel(t, vars)}</div>}
+            {t.footer && <div className="bfoot">{t.footer}</div>}
+            <div className="btime">12:30 PM <span style={{ color: "#53bdeb" }}>✓✓</span></div>
+          </div>
+          {(t.buttons?.length ?? 0) > 0 && (
+            <div className="wa-replies">
+              {t.buttons!.map((b, bi) => {
+                const icon = b.type === "URL" ? "🔗" : b.type === "PHONE_NUMBER" ? "📞" : "↩︎";
+                return (
+                  <div key={bi} className="wa-reply">
+                    <span style={{ fontSize: 12 }}>{icon}</span>{b.title}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 // Parsed-CSV preview as a real table (phone + columns), so the user sees a clean
 // grid instead of raw comma text. Caps the visible rows to keep the box compact;

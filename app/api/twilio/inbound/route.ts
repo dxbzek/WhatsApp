@@ -76,6 +76,15 @@ export async function POST(req: NextRequest) {
   // Strip trailing punctuation/whitespace so "Blocked!" / "Not interested." match.
   const text = body.trim().toLowerCase().replace(/[\s!.?,]+$/, "");
 
+  // Button / keyword auto-reply rules (set per-button when creating a template).
+  // Fetched once: used both to detect buying intent and to send the matched reply.
+  let rules: any[] = [];
+  try {
+    const { data } = await db.from("auto_replies").select("*").eq("enabled", true);
+    rules = data || [];
+  } catch { /* never fail the inbound webhook */ }
+  const rule = rules.find((r: any) => (r.trigger || "").trim().toLowerCase() === text);
+
   // Hard opt-out only. "Stop"/Unsubscribe and explicit "do not contact me" replies
   // suppress the contact so we never message them again. A soft decline like the
   // template's "Not Interested" button (or "No thanks") does NOT block: it just
@@ -84,11 +93,31 @@ export async function POST(req: NextRequest) {
   // EXACT match only, so "not interested in selling, but buying" is never caught.
   const OPT_OUT = ["stop", "unsubscribe", "unsub", "cancel", "stop promotions", "opt out", "optout", "remove me", "remove", "blocked", "block", "block me", "do not contact", "dont contact", "leave me alone"];
   const isOptOut = OPT_OUT.includes(text);
-  // Clear unread too: a suppression isn't an actionable inbox item (it moves to
-  // Suppressed), so it must not leave a stuck unread that inflates the badge.
-  if (isOptOut) {
-    await db.from("conversations").update({ status: "blocked", unread: false }).eq("id", conv!.id);
-  }
+
+  // Buying-intent detection. Twilio delivers each quick-reply tap as its OWN
+  // inbound webhook, so a contact who taps "Send me photos" AND "Stop
+  // promotions" seconds apart reaches us as two unrelated calls — and the
+  // opt-out would otherwise silently suppress a warm lead (this lost Basheer KP,
+  // Jun 2026: tapped Stop + "Send me photos" + "What is the land area", got the
+  // goodbye). An intent signal is a converting button (a push_pipedrive rule) or
+  // a concrete buying question. We look back a short window so the order of the
+  // taps does not matter.
+  const INTENT_WINDOW_MS = 60 * 60 * 1000;
+  const intentTriggers = new Set(
+    rules.filter((r: any) => r.push_pipedrive && !r.block).map((r: any) => (r.trigger || "").trim().toLowerCase())
+  );
+  const INTENT_KEYWORDS = ["photo", "viewing", "land area", "price", "how much", "floor plan", "brochure", "sqft", "square f", "payment plan"];
+  const looksLikeIntent = (s: string) => {
+    const t = (s || "").trim().toLowerCase().replace(/[\s!.?,]+$/, "");
+    if (!t || OPT_OUT.includes(t)) return false;
+    return intentTriggers.has(t) || INTENT_KEYWORDS.some((k) => t.includes(k));
+  };
+  const recentIntent = async () => {
+    const since = new Date(Date.now() - INTENT_WINDOW_MS).toISOString();
+    const { data } = await db.from("messages").select("body")
+      .eq("conversation", conv!.id).eq("direction", "in").gte("created_at", since);
+    return (data || []).some((m: any) => looksLikeIntent(m.body));
+  };
 
   // A lead is HOT only when the contact TAPS one of our converting CTA buttons
   // ("I'm Interested", "What's my offer", "Free valuation", "Speak to an agent",
@@ -100,28 +129,52 @@ export async function POST(req: NextRequest) {
   // anything that isn't a converting tap stays false (still logged + visible in
   // the Replied tab for a human to read, just never auto-routed).
   let leadHot = false;
+  let flaggedConflict = false; // opt-out + buying intent in one session -> human, not silent suppress
 
-  // Button / keyword auto-reply rules (set per-button when creating a template).
-  // Match the tapped button text or typed keyword to an enabled rule.
-  try {
-    const { data: rules } = await db.from("auto_replies").select("*").eq("enabled", true);
-    const rule = (rules || []).find((r: any) => (r.trigger || "").trim().toLowerCase() === text);
-    if (rule) {
-      // A button wired as an interest signal (e.g. "Interested", "Book a
-      // viewing") marks the lead hot.
-      if (rule.push_pipedrive && !rule.block) leadHot = true;
-      if (rule.block) {
-        await db.from("conversations").update({ status: "blocked", unread: false, suppressed_at: new Date().toISOString() }).eq("id", conv!.id);
-      }
-      if (rule.reply) {
-        try {
-          const tw = await sendWhatsApp(from, rule.reply);
-          await db.from("messages").insert({ conversation: conv!.id, direction: "out", body: rule.reply, status: tw.status, twilio_sid: tw.sid });
-          await db.from("conversations").update({ last_direction: "out", last_status: tw.status, last_body: rule.reply }).eq("id", conv!.id);
-        } catch { /* 24h window may be closed; ignore */ }
-      }
+  // Decide suppression. A hard opt-out keyword or a block rule wants to suppress.
+  // But if the same contact also showed buying intent in the window, DON'T
+  // suppress — surface them as a hot lead for a human and skip the goodbye.
+  const wantsBlock = isOptOut || !!(rule && rule.block);
+  if (wantsBlock) {
+    if (await recentIntent()) {
+      flaggedConflict = true;
+      leadHot = true;
+      // Keep them open + unread so they sit in the Hot tab for a human to read.
+      await db.from("conversations").update({ status: "open", unread: true }).eq("id", conv!.id);
+    } else {
+      // Clear unread too: a suppression isn't an actionable inbox item (it moves
+      // to Suppressed), so it must not leave a stuck unread that inflates the badge.
+      await db.from("conversations").update({ status: "blocked", unread: false, suppressed_at: new Date().toISOString() }).eq("id", conv!.id);
     }
-  } catch { /* never fail the inbound webhook */ }
+  }
+
+  // Matched-rule reply + hot routing.
+  if (rule) {
+    // A button wired as an interest signal (e.g. "Interested", "Book a
+    // viewing") marks the lead hot.
+    if (rule.push_pipedrive && !rule.block) leadHot = true;
+    // Send the rule's auto-reply, EXCEPT the opt-out goodbye when we flagged a
+    // conflict — we must not tell an interested lead we have removed them.
+    if (rule.reply && !(rule.block && flaggedConflict)) {
+      try {
+        const tw = await sendWhatsApp(from, rule.reply);
+        await db.from("messages").insert({ conversation: conv!.id, direction: "out", body: rule.reply, status: tw.status, twilio_sid: tw.sid });
+        await db.from("conversations").update({ last_direction: "out", last_status: tw.status, last_body: rule.reply }).eq("id", conv!.id);
+      } catch { /* 24h window may be closed; ignore */ }
+    }
+  }
+
+  // Reverse order: a buying-intent message arriving right after an opt-out
+  // already suppressed the conversation. Un-suppress and flag for a human.
+  if (!wantsBlock && looksLikeIntent(body)) {
+    const { data: c } = await db.from("conversations").select("status, suppressed_at").eq("id", conv!.id).maybeSingle();
+    const recentlySuppressed = c?.suppressed_at && (Date.now() - new Date(c.suppressed_at).getTime() < INTENT_WINDOW_MS);
+    if (c?.status === "blocked" && recentlySuppressed) {
+      flaggedConflict = true;
+      leadHot = true;
+      await db.from("conversations").update({ status: "open", unread: true, suppressed_at: null }).eq("id", conv!.id);
+    }
+  }
 
   // Surface interested leads as hot so they sit in the inbox Hot tab (the lead
   // list), and route them to an agent. Hot is the top tier, so this only ever

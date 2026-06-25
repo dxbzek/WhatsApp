@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { distributeMetaLead } from "@/lib/distribution";
+import { syncLeadToCrm } from "@/lib/crmSync";
 
 // Shared ingest for a single Meta Instant-Form lead, regardless of how it arrived
 // (the Zapier bridge POSTing to /api/leads/meta, or the meta-leads cron pulling it
@@ -78,6 +79,15 @@ export async function ingestMetaLead(opts: {
     assigned_agent: dist.assigned[0] ?? null,
     routing_status: dist.status,
   }).eq("id", conv.id);
+
+  // Mirror real property enquiries into the owner/audience CRM as a Buyer Lead so
+  // they sit alongside owner records. Recruitment applicants are deliberately kept
+  // OUT of the CRM (different audience - must never receive owner/seller sends).
+  // Best-effort: a CRM hiccup must never fail lead routing.
+  const isRecruitment = /recruit/i.test(detail) || /recruit/i.test(ref);
+  if (!isRecruitment) {
+    try { await syncLeadToCrm({ name, e164, email, detail }); } catch { /* non-fatal */ }
+  }
 
   // Append a permanent lead-tracking row (never overwritten, unlike the chat).
   await db.from("lead_events").insert({

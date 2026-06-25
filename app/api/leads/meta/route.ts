@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase";
-import { distributeMetaLead } from "@/lib/distribution";
+import { ingestMetaLead } from "@/lib/leadIngest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,90 +49,19 @@ export async function POST(req: NextRequest) {
       .filter(Boolean)
       .join(" · ");
 
-  // Normalise to E.164. Zapier should pass full international; we still cover a
-  // bare UAE local number (leading 0) and a missing +.
-  const e164 = normalizePhone(rawPhone);
-  if (!e164) return NextResponse.json({ error: "Missing or invalid phone" }, { status: 400 });
-  const bare = e164.replace("+", "");
-
-  const db = supabaseAdmin();
-  const leadName = name || "New contact";
-  const preview = `New lead from Meta ad${detail ? ` — ${detail}` : ""}`;
-
-  // Upsert the conversation as a hot lead, tagged with its Meta source.
-  const { data: conv, error: convErr } = await db
-    .from("conversations")
-    .upsert(
-      {
-        wa_phone: bare,
-        name: leadName,
-        last_body: preview,
-        last_at: new Date().toISOString(),
-        unread: true,
-        last_direction: "in",
-        last_status: "received",
-        last_inbound_at: new Date().toISOString(),
-        replied: true,
-        lead_status: "hot",
-        source: "meta_lead_form",
-        source_detail: detail || null,
-      },
-      { onConflict: "wa_phone" }
-    )
-    .select("id")
-    .single();
-  if (convErr || !conv) return NextResponse.json({ error: convErr?.message || "Upsert failed" }, { status: 500 });
-
-  // Log the lead in-thread so the agent sees the context (and email) on open.
-  const noteLines = [preview, email ? `Email: ${email}` : "", ref ? `Ref: ${ref}` : ""].filter(Boolean);
-  await db.from("messages").insert({
-    conversation: conv.id, direction: "in", body: noteLines.join("\n"), status: "received",
-  });
-
-  // Round-robin to the listing's agent pool and ping them with the Meta context.
-  // Always returns an outcome (never throws) so we can track every lead.
-  const dist = await distributeMetaLead({ contactPhone: e164, contactName: leadName, ref, detail });
-  const alertStatus = dist.alertOk ? "sent" : dist.fallbackOk ? "fallback" : "none";
-
-  // Denormalise the outcome onto the conversation for at-a-glance inbox context.
-  await db.from("conversations").update({
-    source_ref: dist.ref ?? (ref || null),
-    assigned_agent: dist.assigned[0] ?? null,
-    routing_status: dist.status,
-  }).eq("id", conv.id);
-
-  // Append a permanent lead-tracking row (never overwritten, unlike the chat).
-  await db.from("lead_events").insert({
-    conversation: conv.id,
-    wa_phone: bare,
-    name: leadName,
-    ref: dist.ref ?? (ref || null),
-    detail: detail || null,
-    routing_status: dist.status,
-    assigned_agent: dist.assigned[0] ?? null,
-    alert_status: alertStatus,
-  });
-
+  // Hand off to the shared ingest (same path the meta-leads cron uses): normalises
+  // the phone, upserts the hot lead, routes it, and logs a lead_events row.
+  const res = await ingestMetaLead({ name, phone: rawPhone, email, ref, detail });
+  if (!res.ok) {
+    const status = res.error === "Missing or invalid phone" ? 400 : 500;
+    return NextResponse.json({ error: res.error || "Ingest failed" }, { status });
+  }
   return NextResponse.json({
     ok: true,
-    conversationId: conv.id,
-    status: dist.status,
-    assigned: dist.assigned,
-    routed: dist.status === "routed",
-    alert: alertStatus,
+    conversationId: res.conversationId,
+    status: res.status,
+    assigned: res.assigned,
+    routed: res.status === "routed",
+    alert: res.alert,
   });
-}
-
-// Light E.164 normaliser. Keeps a leading +, strips other punctuation; maps a UAE
-// local "05xxxxxxxx" to +9715xxxxxxxx; assumes a 9-15 digit string without + is
-// already international and just needs the +.
-function normalizePhone(raw: string): string | null {
-  if (!raw) return null;
-  let s = raw.replace(/[^\d+]/g, "");
-  if (s.startsWith("00")) s = "+" + s.slice(2);
-  if (s.startsWith("0") && s.length === 10) return "+971" + s.slice(1); // UAE local mobile
-  if (!s.startsWith("+")) s = "+" + s;
-  const digits = s.replace("+", "");
-  if (digits.length < 8 || digits.length > 15) return null;
-  return s;
 }

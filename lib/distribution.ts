@@ -32,6 +32,42 @@ export async function pingAgent(wa_number: string, leadName: string, contactPhon
   return sendAlert(wa_number, leadName, contactPhone, about);
 }
 
+// Meta-ad lead alert — its OWN variant so the agent can tell a Meta form lead
+// apart from a WhatsApp-interest lead, and personalised with the agent's name.
+// Prefers the dedicated Meta template (META_LEAD_ALERT_SID, vars 1=agent name,
+// 2=lead name, 3=number, 4=enquiry); until that template is approved + its SID
+// is set, it sends via the existing approved alert template so delivery is never
+// lost, and on any rejection falls back to Meta-worded free text (24h window).
+async function sendMetaAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, enquiry: string): Promise<boolean> {
+  const metaSid = (process.env.META_LEAD_ALERT_SID || "").trim();
+  const fallback =
+    `Hi ${agentName}, you have a new ERE lead from a Meta ad.\n\n` +
+    `Name: ${leadName}\nNumber: ${contactPhone}\nEnquiry: ${enquiry}\n\n` +
+    `They just submitted the lead form. Call or WhatsApp them now while it's hot.`;
+  try {
+    if (metaSid) {
+      await sendTemplate(toWa, metaSid, { "1": agentName, "2": leadName, "3": contactPhone, "4": enquiry });
+    } else {
+      // No Meta template yet: use the existing approved template for guaranteed
+      // delivery. Its {{3}} already carries "From Meta Ad: …" so it still reads right.
+      await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, { "1": leadName, "2": contactPhone, "3": `From Meta Ad: ${enquiry}` });
+    }
+    return true;
+  } catch {
+    try { await sendWhatsApp(toWa, fallback); return true; } catch { return false; }
+  }
+}
+
+// Ping each Meta-lead target agent, personalised by name. Mirrors alertAgents.
+async function alertMetaAgents(targets: Agent[], leadName: string, contactPhone: string, enquiry: string): Promise<{ name: string; ok: boolean }[]> {
+  const results: { name: string; ok: boolean }[] = [];
+  for (const a of targets) {
+    const ok = await sendMetaAlert(a.name, a.wa_number, leadName, contactPhone, enquiry);
+    results.push({ name: a.name, ok });
+  }
+  return results;
+}
+
 // Ping each target agent with the lead. Best-effort: a per-agent failure never
 // blocks the rest. Returns { name, ok } per agent so the caller knows whether the
 // alert actually reached at least one of them.
@@ -51,7 +87,7 @@ async function notifyFallback(reason: string, leadName: string, contactPhone: st
   const to = (process.env.LEAD_FALLBACK_WA || "").trim();
   if (!to) return false;
   const about = `UNROUTED (${reason})${context ? ` — ${context}` : ""}. Reassign this lead.`;
-  return sendAlert(to, leadName, contactPhone, about);
+  return sendMetaAlert("team", to, leadName, contactPhone, about);
 }
 
 // Pick the target agent(s) from an ordered pool: "all" notifies everyone (owner =
@@ -212,8 +248,8 @@ export async function distributeMetaLead(opts: {
     // Lead with the specific property the lead enquired about (ad set), falling
     // back to the route label / campaign; append the lead's email if we have it.
     const label = listing || (route.label && String(route.label).trim()) || (opts.detail && opts.detail.trim()) || String(route.ref);
-    const about = `From Meta Ad: ${label}${emailPart}`;
-    const results = await alertAgents(targets, leadName, opts.contactPhone, about);
+    const enquiry = `${label}${emailPart}`;
+    const results = await alertMetaAgents(targets, leadName, opts.contactPhone, enquiry);
     const assigned = results.map((r) => r.name);
     const alertOk = results.some((r) => r.ok);
 

@@ -311,24 +311,32 @@ function FailureReasons({ f }: { f: Funnel | undefined }) {
 // over the send window plus a countdown, so you can watch it finish instead of
 // blindly waiting. Re-renders every second via the page's heartbeat tick.
 function DripTracker({ c, f }: { c: Campaign; f: Funnel | undefined }) {
-  if (!(c.status === "scheduled" || c.status === "sending") || !c.finish_at) return null;
+  if (!(c.status === "scheduled" || c.status === "sending")) return null;
   const start = new Date(c.created_at).getTime();
-  const end = new Date(c.finish_at).getTime();
   const now = Date.now();
-  const span = Math.max(1, end - start);
-  const pct = Math.max(0, Math.min(100, ((now - start) / span) * 100));
-  const remainMin = Math.max(0, Math.round((end - now) / 60000));
-  const done = now >= end;
-  const remainLabel = remainMin >= 60 ? `~${Math.floor(remainMin / 60)}h ${remainMin % 60}m left` : `~${remainMin} min left`;
-  // Use the real in-flight count from receipts (scheduled + queued, no receipt
-  // yet) so this matches the legend above, not the stale c.scheduled rollup.
+  // Real in-flight count from receipts (scheduled + queued, no receipt yet).
   const r = reach(c, f);
   const stillScheduled = r.scheduled + r.pending;
+  if (stillScheduled <= 0) return null; // nothing in flight, nothing to track
+  const total = c.total || (stillScheduled + r.delivered + r.failed) || 0;
+  const processed = Math.max(0, total - stillScheduled);
+  // Progress is by ACTUAL processed/total, not elapsed/planned-window — so the bar
+  // can't sit full while messages remain.
+  const pct = total ? Math.max(0, Math.min(100, (processed / total) * 100)) : 0;
+  // ETA from real throughput so far, NOT the planned finish_at (which goes stale the
+  // moment the drip runs slower than planned, leaving a frozen "finishes 5:18 PM").
+  const elapsedMin = (now - start) / 60000;
+  const ratePerMin = elapsedMin > 0 ? processed / elapsedMin : 0;
+  const etaMin = ratePerMin > 0 ? Math.ceil(stillScheduled / ratePerMin) : null;
+  const etaTime = etaMin != null ? new Date(now + etaMin * 60000) : null;
+  const slow = etaMin != null && etaMin > 120; // dripping unusually slowly
+  const leftLabel = ratePerMin === 0 ? "starting…"
+    : etaMin! >= 60 ? `~${Math.floor(etaMin! / 60)}h ${etaMin! % 60}m left` : `~${etaMin} min left`;
   return (
     <div style={{ marginTop: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, color: "var(--blue)", marginBottom: 6 }}>
-        <span>{done ? "Finishing up…" : remainLabel}{stillScheduled > 0 ? ` · ${stillScheduled.toLocaleString()} still scheduled` : ""}</span>
-        <span>finishes {new Date(end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+        <span>{leftLabel}{stillScheduled > 0 ? ` · ${stillScheduled.toLocaleString()} still scheduled` : ""}</span>
+        {etaTime && <span>{slow ? "slow · " : ""}done by {etaTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
       </div>
       <div className="prog-bar" style={{ width: "100%", background: "var(--blue-tint)" }}>
         <div className="prog-fill" style={{ width: `${pct}%`, background: "var(--blue)", transition: "width .6s linear" }} />

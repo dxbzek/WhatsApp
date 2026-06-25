@@ -165,10 +165,14 @@ export async function distributeMetaLead(opts: {
   contactPhone: string; // +E.164
   contactName?: string;
   ref?: string;          // listing/ad code, e.g. "CAYAN-BH"
-  detail?: string;       // ad / campaign / form name, for matching + context
+  detail?: string;       // campaign name, for matching + context
+  listing?: string;      // specific property (ad set/ad) shown in the alert
+  email?: string;        // lead's email, shown in the alert
 }): Promise<MetaLeadResult> {
   const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
-  const context = [opts.ref, opts.detail].filter(Boolean).join(" · ");
+  const listing = (opts.listing || "").trim();
+  const emailPart = opts.email && opts.email.trim() ? ` · ${opts.email.trim()}` : "";
+  const context = [listing || opts.detail, opts.email].filter(Boolean).join(" · ");
   try {
     const db = supabaseAdmin();
 
@@ -205,8 +209,10 @@ export async function distributeMetaLead(opts: {
       await db.from("lead_routes").update({ rr_pointer: nextPointer }).eq("ref", route.ref);
     }
 
-    const label = (route.label && String(route.label).trim()) || (opts.detail && opts.detail.trim()) || String(route.ref);
-    const about = `From Meta Ad: ${label}`;
+    // Lead with the specific property the lead enquired about (ad set), falling
+    // back to the route label / campaign; append the lead's email if we have it.
+    const label = listing || (route.label && String(route.label).trim()) || (opts.detail && opts.detail.trim()) || String(route.ref);
+    const about = `From Meta Ad: ${label}${emailPart}`;
     const results = await alertAgents(targets, leadName, opts.contactPhone, about);
     const assigned = results.map((r) => r.name);
     const alertOk = results.some((r) => r.ok);

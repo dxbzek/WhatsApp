@@ -20,7 +20,8 @@ export async function ingestMetaLead(opts: {
   phone: string;         // raw or E.164; normalised here
   email?: string;
   ref?: string;          // listing/ad code, e.g. CAYAN-BH (usually blank for cron)
-  detail?: string;       // ad / campaign / form name — drives routing
+  detail?: string;       // campaign name — drives routing
+  listing?: string;      // specific property (ad set/ad), shown in the agent alert
 }): Promise<IngestResult> {
   const e164 = normalizePhone(opts.phone || "");
   if (!e164) return { ok: false, error: "Missing or invalid phone" };
@@ -65,7 +66,10 @@ export async function ingestMetaLead(opts: {
   });
 
   // Round-robin to the listing's agent pool and ping them with the Meta context.
-  const dist = await distributeMetaLead({ contactPhone: e164, contactName: leadName, ref, detail });
+  const dist = await distributeMetaLead({
+    contactPhone: e164, contactName: leadName, ref, detail,
+    listing: (opts.listing || "").trim(), email,
+  });
   const alertStatus = dist.alertOk ? "sent" : dist.fallbackOk ? "fallback" : "none";
 
   // Denormalise the outcome onto the conversation for at-a-glance inbox context.

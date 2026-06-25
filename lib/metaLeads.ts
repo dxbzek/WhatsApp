@@ -19,8 +19,23 @@ export type MetaLead = {
   name: string;
   phone: string;
   email: string;
-  detail: string;        // campaign -> adset -> ad -> form name, for routing
+  detail: string;        // campaign name — what routing matches on
+  listing: string;       // cleaned ad-set/ad name — the specific property, for the alert
 };
+
+// Turn a pipe-named ad asset ("ERE | Marina Residences 1 | Palm Jumeirah | 24 Jun
+// 2026") into a human listing label ("Marina Residences 1 · Palm Jumeirah") by
+// dropping the ERE prefix and the trailing date stamp.
+function cleanLabel(s: string): string {
+  if (!s) return "";
+  return s
+    .split("|")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .filter((p) => p.toUpperCase() !== "ERE")
+    .filter((p) => !/^\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}$/.test(p)) // strip "24 Jun 2026"
+    .join(" · ");
+}
 
 async function graphGet(path: string, params: Record<string, string>, token: string): Promise<any> {
   const u = new URL(`${GRAPH()}/${path}`);
@@ -76,7 +91,9 @@ export async function fetchFormLeads(pageToken: string, formId: string, limit = 
       [fd["first_name"], fd["last_name"]].filter(Boolean).join(" ").trim();
     const phone = fd["phone_number"] || fd["phone"] || "";
     const email = fd["email"] || "";
+    // Route on the campaign name; show the specific listing (ad set / ad) in the alert.
     const detail = l.campaign_name || l.adset_name || l.ad_name || "";
-    return { id: String(l.id), created_time: l.created_time, name, phone, email, detail };
+    const listing = cleanLabel(l.adset_name || l.ad_name || "");
+    return { id: String(l.id), created_time: l.created_time, name, phone, email, detail, listing };
   });
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendWhatsApp, sendTemplate, sendMediaWhatsApp } from "@/lib/twilio";
+import { sendWhatsApp, sendTemplate, sendMediaWhatsApp, getContentMedia, getContentBody, renderTemplateBody } from "@/lib/twilio";
 import { logConversationToPipedrive } from "@/lib/pipedriveSync";
 
 // POST free-form: { phone, body }
@@ -12,8 +12,12 @@ export async function POST(req: NextRequest) {
     if (!phone || (!body && !contentSid && !mediaUrl)) {
       return NextResponse.json({ error: "phone and body (or contentSid / mediaUrl) required" }, { status: 400 });
     }
-    // What we store/show in the inbox bubble
-    const displayBody = contentSid ? (label || "[template]") : (body || (mediaUrl ? "[media]" : ""));
+    // What we store/show in the inbox bubble: prefer the template's real rendered
+    // text (so it isn't a "[template]" stub), then an explicit label, then the body.
+    const templateBody = contentSid ? await getContentBody(contentSid).catch(() => null) : null;
+    const displayBody = contentSid
+      ? (renderTemplateBody(templateBody, variables) || label || "[template]")
+      : (body || (mediaUrl ? "[media]" : ""));
     const e164 = String(phone).replace(/[^0-9+]/g, "");
     const wa = e164.replace("+", "");
     const db = supabaseAdmin();
@@ -31,6 +35,10 @@ export async function POST(req: NextRequest) {
       .select()
       .single();
 
+    // For template sends, pull the template's header image so the inbox bubble
+    // shows the same creative the recipient sees (text templates resolve to null).
+    const templateMedia = contentSid ? await getContentMedia(contentSid) : null;
+
     // send via Twilio (template, media, or free-form)
     const tw = contentSid
       ? await sendTemplate(e164, contentSid, variables, undefined, from)
@@ -46,7 +54,7 @@ export async function POST(req: NextRequest) {
       status: tw.status,
       twilio_sid: tw.sid,
       content_sid: contentSid || null,
-      media_url: mediaUrl || null,
+      media_url: mediaUrl || templateMedia || null,
     });
 
     // denormalize last-message status onto the conversation (for the inbox list)

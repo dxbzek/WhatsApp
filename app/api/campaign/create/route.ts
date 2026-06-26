@@ -6,10 +6,11 @@ export const dynamic = "force-dynamic";
 
 // Create a campaign row before sending starts, so it shows in the log
 // immediately (and messages can link to it). Returns { id }.
-// POST { name, templateSid, templateName, sender, mode, total, finishAt? }
+// POST { name, templateSid, templateName, sender, mode, total, finishAt?, agentIds?, distribution? }
 export async function POST(req: NextRequest) {
   try {
     const b = await req.json();
+    const agentIds = Array.isArray(b.agentIds) ? b.agentIds.filter((x: any) => typeof x === "string") : [];
     const { data, error } = await supabaseAdmin()
       .from("campaigns")
       .insert({
@@ -21,6 +22,12 @@ export async function POST(req: NextRequest) {
         total: b.total || 0,
         status: b.mode === "now" ? "sending" : "scheduled",
         finish_at: b.finishAt || null,
+        agent_ids: agentIds,
+        distribution: b.distribution === "all" ? "all" : "round_robin",
+        blurb: typeof b.blurb === "string" && b.blurb.trim() ? b.blurb.trim() : null,
+        // A/B test: variant B template (null on a normal single-template campaign).
+        template_sid_b: b.templateSidB || null,
+        template_name_b: b.templateNameB || null,
       })
       .select("id")
       .single();

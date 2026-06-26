@@ -8,12 +8,10 @@ const clean = (v?: string) => (v || "").replace(/^\uFEFF/, "").trim();
 // missing at prerender time; real values are injected at build/runtime.
 const URL = clean(process.env.NEXT_PUBLIC_SUPABASE_URL) || "https://placeholder.supabase.co";
 
-// Browser/anon client (read for the inbox UI)
-export const supabaseBrowser = () =>
-  createClient(
-    URL,
-    clean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) || "placeholder"
-  );
+// NOTE: there is intentionally NO browser/anon Supabase client. The public anon
+// key is exposed in the client bundle and bypasses the app login gate, so the UI
+// must never read these tables directly. All DB access goes through the gated
+// /api/* routes below using the service role, and RLS denies anon at the DB.
 
 // Server/service client (writes from API routes only - never import in client code)
 export const supabaseAdmin = () =>

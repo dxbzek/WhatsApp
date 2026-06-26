@@ -1,190 +1,271 @@
 "use client";
 import { useEffect, useState } from "react";
-import { errorCause } from "@/lib/twilioErrors";
+import { Icon, IC, PageHead, downloadCSV } from "@/lib/ui";
+import { errorCause, DEAD_NUMBER_CODES } from "@/lib/twilioErrors";
 
-type Data = {
-  range: { days: number; since: string };
-  totals: {
-    total: number; outbound: number; inbound: number; delivered: number; read: number;
-    failed: number; undelivered: number; deliveryRate: number; readRate: number; failRate: number;
-    priceTotal: number; currency: string; capped: boolean;
-  };
-  byStatus: Record<string, number>;
-  byErr: Record<string, number>;
-  byDay: { day: string; out: number; in: number }[];
-  logs: { sid: string; date: string; direction: string; from: string; to: string; status: string; error_code: string | null; body: string; price: string | null }[];
-};
+// datetime-local <-> Date helpers (local time, minute precision)
+const pad = (n: number) => String(n).padStart(2, "0");
+const toInput = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const QUICK: [string, number][] = [["24h", 24], ["7d", 168], ["30d", 720], ["90d", 2160]];
 
-const STATUS_COLOR: Record<string, string> = {
-  delivered: "#137333", read: "#1a73e8", sent: "#9a6700", queued: "#9a6700",
-  failed: "#b00020", undelivered: "#b00020", received: "#6B6862",
-};
+type Totals = { outbound: number; validOutbound: number; notOnWhatsApp: number; deliveryRate: number; deliveryRateValid: number; readRate: number; inbound: number; failed: number; undelivered: number; failRate: number; neverSent?: number; accountLocked?: number; marketingThrottled?: number };
+type TplRow = { name: string; sent: number; replyRate: number };
 
+// One authoritative source of error-code labels (lib/twilioErrors), shared with
+// the campaign log — so "63024" reads "not a WhatsApp user", not a wrong guess.
+const errLabel = (code: string) => `${code} — ${errorCause(code)}`;
+const LEAD_ORDER = ["hot", "warm", "new", "cold", "won", "lost"] as const;
+const LEAD_LABEL: Record<string, string> = { new: "New", hot: "Hot", warm: "Warm", cold: "Cold", won: "Won", lost: "Lost" };
+const LEAD_COLOR: Record<string, string> = { hot: "var(--red)", warm: "var(--amber-dot)", new: "var(--ink-3)", cold: "var(--blue)", won: "var(--green-dot)", lost: "var(--ink-3)" };
+
+const dash = "—";
 
 export default function Insights() {
-  const [days, setDays] = useState(7);
-  const [data, setData] = useState<Data | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Default window: last 24 hours.
+  const [to, setTo] = useState(() => toInput(new Date()));
+  const [from, setFrom] = useState(() => toInput(new Date(Date.now() - 24 * 3600000)));
+  const setQuick = (hours: number) => { const n = new Date(); setTo(toInput(n)); setFrom(toInput(new Date(n.getTime() - hours * 3600000))); };
+  const hrs = Math.max(1, Math.round((new Date(to).getTime() - new Date(from).getTime()) / 3600000));
+  const spanLabel = hrs <= 48 ? `${hrs}h` : `${Math.round(hrs / 24)}d`;
+  const [totals, setTotals] = useState<Totals | null>(null);
+  const [byErr, setByErr] = useState<Record<string, number>>({});
+  const [tpls, setTpls] = useState<TplRow[] | null>(null);
+  const [replyRate, setReplyRate] = useState<number | null>(null);
+  const [leads, setLeads] = useState<number | null>(null);
+  const [pipeline, setPipeline] = useState<Record<string, number> | null>(null);
+  const [perf, setPerf] = useState<{ agents: any[]; campaigns: any[]; pool: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  async function load(d: number) {
-    setLoading(true); setErr(null);
-    try {
-      const res = await fetch(`/api/insights?days=${d}`);
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error || "Failed");
-      setData(j);
-    } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
-  }
-  useEffect(() => { load(days); }, [days]);
+  // Real Twilio messaging totals for the selected window.
+  useEffect(() => {
+    setTotals(null); setByErr({}); setErr(null);
+    const qs = `from=${encodeURIComponent(new Date(from).toISOString())}&to=${encodeURIComponent(new Date(to).toISOString())}`;
+    fetch(`/api/insights?${qs}`)
+      .then((r) => r.json())
+      .then((d) => { if (d?.totals) { setTotals(d.totals); setByErr(d.byErr || {}); } else if (d?.error) setErr(d.error); })
+      .catch(() => setErr("Could not load Twilio insights."));
+  }, [from, to]);
 
-  const t = data?.totals;
+  // Real per-template performance (last 90 days) → top templates + overall reply rate.
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/templates/performance").then((r) => r.json()),
+      fetch("/api/templates").then((r) => r.json()),
+    ])
+      .then(([perf, list]) => {
+        const stats: Record<string, any> = perf?.stats || {};
+        const names: Record<string, string> = {};
+        for (const t of list?.templates || []) names[t.sid] = t.name;
+        const rows: TplRow[] = Object.entries(stats)
+          .map(([sid, s]: any) => ({ name: names[sid] || sid, sent: s.sent, replyRate: s.replyRate }))
+          .filter((r) => r.sent > 0)
+          .sort((a, b) => b.replyRate - a.replyRate)
+          .slice(0, 6);
+        setTpls(rows);
+        // Reply rate of DELIVERED (people who actually received it), never of
+        // every conversation — failed/undelivered sends don't belong in the base.
+        let replied = 0, delivered = 0;
+        for (const s of Object.values(stats) as any[]) { replied += s.replied || 0; delivered += s.delivered || 0; }
+        setReplyRate(delivered ? Math.round((replied / delivered) * 100) : 0);
+      })
+      .catch(() => { setTpls([]); setReplyRate(0); });
+  }, []);
+
+  // Real lead pipeline from our own conversations. Leads = people who tapped
+  // Interested (hot) — the inbox Hot tab is the lead home now, not Pipedrive.
+  // The pipeline view already excludes errors (failed/dead/opt-out).
+  useEffect(() => {
+    setPipeline(null);
+    const qs = `from=${encodeURIComponent(new Date(from).toISOString())}&to=${encodeURIComponent(new Date(to).toISOString())}`;
+    fetch(`/api/conversations?view=pipeline&${qs}`)
+      .then((r) => r.json())
+      .then((d) => {
+        const rows = d.conversations || [];
+        const pl: Record<string, number> = {};
+        let l = 0;
+        for (const c of rows as any[]) {
+          pl[c.lead_status || "new"] = (pl[c.lead_status || "new"] || 0) + 1;
+          if ((c.lead_status || "") === "hot") l++;
+        }
+        setPipeline(pl);
+        setLeads(l);
+      })
+      .catch(() => { setPipeline({}); setLeads(0); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to]);
+
+  // Agent performance + campaign→deal attribution (all-time, from our own
+  // conversations). Independent of the date window — it's the standing scoreboard.
+  useEffect(() => {
+    fetch("/api/insights/performance")
+      .then((r) => r.json())
+      .then((d) => { if (d && !d.error) setPerf(d); else setPerf({ agents: [], campaigns: [], pool: 0 }); })
+      .catch(() => setPerf({ agents: [], campaigns: [], pool: 0 }));
+  }, []);
+
+  const fmtResp = (m: number | null) => (m == null ? dash : m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`);
+
+  const exportCSV = () => {
+    const rows: (string | number)[][] = [["Section", "Name", "Value", "Detail"]];
+    // Headline KPIs first — the actual numbers shown on the page, so an exported
+    // report isn't just templates + pipeline with the metrics missing.
+    rows.push(["Metric", "Messages attempted", totals?.outbound ?? "", `last ${spanLabel}`]);
+    rows.push(["Metric", "Messages sent (on WhatsApp)", totals?.validOutbound ?? "", `${notOnWA} not on WhatsApp`]);
+    rows.push(["Metric", "Not on WhatsApp", notOnWA, "dead numbers (63024/63003/21211/21614)"]);
+    rows.push(["Metric", "Delivery rate % (reachable)", totals?.deliveryRateValid ?? "", `of ${totals?.validOutbound ?? ""} on WhatsApp`]);
+    rows.push(["Metric", "Delivery rate % (all attempts)", totals?.deliveryRate ?? "", `of ${totals?.outbound ?? ""} attempted`]);
+    rows.push(["Metric", "Failed/undelivered (real)", realFailed, topRealErr ? errLabel(topRealErr) : ""]);
+    rows.push(["Metric", "Read rate %", totals?.readRate ?? "", "of delivered"]);
+    rows.push(["Metric", "Reply rate %", replyRate ?? "", "marketing · 90d"]);
+    rows.push(["Metric", "Interested leads", leads ?? "", `tapped Interested · last ${spanLabel}`]);
+    (tpls || []).forEach((t) => rows.push(["Template", t.name, t.sent, `${t.replyRate}% reply`]));
+    Object.entries(pipeline || {}).forEach(([k, v]) => rows.push(["Lead status", LEAD_LABEL[k] || k, v, ""]));
+    downloadCSV(`ere-insights-${spanLabel}.csv`, rows);
+  };
+
+  const kv = (v: string | number | null, suffix = "") => (v === null ? dash : `${v}${suffix}`);
+  const pipeRows = LEAD_ORDER.filter((k) => (pipeline?.[k] ?? 0) > 0);
+  const pipeMax = Math.max(1, ...Object.values(pipeline || {}));
+  // Failed deliveries + the single most common reason, to explain the delivery rate.
+  // Numbers not on WhatsApp are dead numbers, not real delivery failures - break them
+  // out so the headline "sent" and delivery rate reflect reachable numbers only.
+  const NOT_ON_WA = DEAD_NUMBER_CODES;
+  const failedCount = totals ? totals.failed + totals.undelivered : 0;
+  const notOnWA = totals ? totals.notOnWhatsApp : 0;
+  const realFailed = Math.max(0, failedCount - notOnWA);
+  const topErr = Object.entries(byErr).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  const topRealErr = Object.entries(byErr).filter(([k]) => !NOT_ON_WA.has(k)).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 24px" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-        <h1 style={{ fontFamily: "Georgia, serif", fontWeight: 400, fontSize: 24, margin: 0 }}>
-          Messaging Insights
-        </h1>
-        <div style={{ display: "flex", gap: 6 }}>
-          {[1, 7, 30, 90].map((d) => (
-            <button key={d} onClick={() => setDays(d)} style={{ ...tab, ...(days === d ? tabActive : {}) }}>
-              {d === 1 ? "24h" : `${d}d`}
-            </button>
+    <div className="page"><div className="maxw">
+      <PageHead title="Insights" sub="Real WhatsApp messaging performance from Twilio and your inbox — no estimates.">
+        <div className="seg">
+          {QUICK.map(([id, h]) => (
+            <button key={id} className={spanLabel === id ? "on" : ""} onClick={() => setQuick(h)}>{id}</button>
           ))}
+        </div>
+        <input type="datetime-local" className="input dt-range" value={from} max={to} onChange={(e) => setFrom(e.target.value)} title="From" />
+        <span style={{ color: "var(--ink-3)" }}>→</span>
+        <input type="datetime-local" className="input dt-range" value={to} min={from} onChange={(e) => setTo(e.target.value)} title="To" />
+        <button className="btn btn-sec" onClick={exportCSV}><Icon d={IC.dl} s={15} />Export</button>
+      </PageHead>
+
+      {err && <div className="err-box" style={{ marginBottom: 14 }}>{err}</div>}
+
+      <div className="kpis k5">
+        <div className="kpi" title={totals ? `${totals.outbound.toLocaleString()} attempted, ${notOnWA.toLocaleString()} not on WhatsApp` : ""}><div className="kl">Messages sent</div><div className="kv">{kv(totals ? totals.validOutbound.toLocaleString() : null)}</div><div className="ks">{totals ? (notOnWA ? `${notOnWA.toLocaleString()} not on WhatsApp` : `last ${spanLabel}`) : `last ${spanLabel}`}</div></div>
+        <div className="kpi" title="Delivery rate among numbers that are on WhatsApp (excludes dead numbers)"><div className="kl">Delivery rate</div><div className="kv">{kv(totals ? totals.deliveryRateValid : null, "%")}</div><div className="ks">{totals ? (realFailed ? `${realFailed.toLocaleString()} failed${topRealErr ? ` · ${errLabel(topRealErr)}` : ""}` : `of ${totals.validOutbound.toLocaleString()} on WhatsApp`) : "of sent"}</div></div>
+        <div className="kpi"><div className="kl">Read rate</div><div className="kv">{kv(totals ? totals.readRate : null, "%")}</div><div className="ks">of delivered</div></div>
+        <div className="kpi"><div className="kl">Reply rate</div><div className="kv">{kv(replyRate, "%")}</div><div className="ks">marketing · 90d</div></div>
+        <div className="kpi"><div className="kl">Interested leads</div><div className="kv">{leads === null ? dash : leads.toLocaleString()}</div><div className="ks">tapped Interested · last {spanLabel}</div></div>
+      </div>
+
+      {totals && ((totals.accountLocked ?? 0) > 0 || (totals.marketingThrottled ?? 0) > 0 || (totals.neverSent ?? 0) > 0) && (
+        <div className="note" style={{ display: "flex", flexWrap: "wrap", gap: 16, fontSize: 13, color: "var(--ink-3)", margin: "2px 0 14px", padding: "8px 12px", background: "var(--chip)", borderRadius: 8 }}>
+          {((totals.accountLocked ?? 0) > 0 || (totals.neverSent ?? 0) > 0) && <span style={{ color: "var(--ink-2)" }}>Excluded from the rate (never reached a real attempt):</span>}
+          {(totals.accountLocked ?? 0) > 0 && <span><b style={{ color: "var(--ink-1)" }}>{totals.accountLocked!.toLocaleString()}</b> sender/account locked by Meta (63051 · the suspension)</span>}
+          {(totals.neverSent ?? 0) > 0 && <span><b style={{ color: "var(--ink-1)" }}>{totals.neverSent!.toLocaleString()}</b> never sent (canceled/skipped)</span>}
+          {(totals.marketingThrottled ?? 0) > 0 && <span style={{ color: "var(--amber-dot, var(--ink-2))" }}>Counted as failed: <b style={{ color: "var(--ink-1)" }}>{totals.marketingThrottled!.toLocaleString()}</b> Meta marketing throttle (63049 · over-messaging live numbers)</span>}
+        </div>
+      )}
+
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-head"><div className="card-t">Top templates</div><div className="card-meta">by reply rate · 90d</div></div>
+          <div className="perf">
+            {tpls === null && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading…</div></div>}
+            {tpls && tpls.length === 0 && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>No template sends yet.</div></div>}
+            {(tpls || []).map((t) => (
+              <div className="perf-row" key={t.name}>
+                <div className="perf-name mono">{t.name}</div>
+                <div className="perf-stat">{t.sent.toLocaleString()} sent</div>
+                <div className="perf-stat strong">{t.replyRate}% reply</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-head"><div className="card-t">Lead pipeline</div><div className="card-meta">conversations · last {spanLabel}</div></div>
+          <div className="perf">
+            {pipeline === null && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading…</div></div>}
+            {pipeline && pipeRows.length === 0 && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>No conversations in range.</div></div>}
+            {pipeRows.map((k) => (
+              <div className="perf-row" key={k}>
+                <div className="perf-name" style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 70 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 8, background: LEAD_COLOR[k], display: "inline-block" }} />{LEAD_LABEL[k]}
+                </div>
+                <div style={{ flex: 1, height: 6, background: "var(--chip)", borderRadius: 6, margin: "0 12px", overflow: "hidden" }}>
+                  <div style={{ width: `${Math.round(((pipeline?.[k] ?? 0) / pipeMax) * 100)}%`, height: "100%", background: LEAD_COLOR[k] }} />
+                </div>
+                <div className="perf-stat strong">{(pipeline?.[k] ?? 0).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
-      {err && <div style={errBox}>{err}</div>}
-      {loading && <div style={{ color: "#6B6862" }}>Loading…</div>}
-
-      {t && !loading && (
-        <>
-          {t.capped && (
-            <div style={{ fontSize: 12, color: "#9a6700", marginBottom: 12 }}>
-              Result capped - showing the most recent pages only. Narrow the range for full coverage.
-            </div>
-          )}
-
-          {/* Scorecards */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12, marginBottom: 22 }}>
-            <Card label="Total messages" value={t.total} />
-            <Card label="Outbound" value={t.outbound} />
-            <Card label="Inbound" value={t.inbound} />
-            <Card label="Delivery rate" value={`${t.deliveryRate}%`} sub={`${t.delivered + t.read} reached`} />
-            <Card label="Read rate" value={`${t.readRate}%`} sub={`${t.read} read`} />
-            <Card label="Failed / undeliv." value={t.failed + t.undelivered} sub={`${t.failRate}% of outbound`} color={t.failed + t.undelivered ? "#b00020" : undefined} />
+      <div className="grid-2" style={{ marginTop: 14 }}>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-t">Agent performance</div>
+            <div className="card-meta">leads owned · all-time</div>
           </div>
-
-          {/* Delivery breakdown - the funnel from sent to read */}
-          <Section title="Delivery breakdown">
-            {(() => {
-              const rows = [
-                { label: "Sent", n: t.outbound, c: "#141414" },
-                { label: "Delivered", n: t.delivered + t.read, c: "#137333" },
-                { label: "Read", n: t.read, c: "#1a73e8" },
-                { label: "Failed / undelivered", n: t.failed + t.undelivered, c: "#b00020" },
-                { label: "Inbound replies", n: t.inbound, c: "#9a958c" },
-              ];
-              const max = Math.max(1, ...rows.map((r) => r.n));
-              return rows.map((r) => (
-                <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 0" }}>
-                  <span style={{ width: 150, flexShrink: 0, fontSize: 13, color: "#3a3a3a" }}>{r.label}</span>
-                  <div style={{ flex: 1, background: "#EEEEEE", borderRadius: 6, height: 22, overflow: "hidden" }}>
-                    <div style={{ width: `${(r.n / max) * 100}%`, height: "100%", background: r.c, minWidth: r.n ? 3 : 0, borderRadius: 6 }} />
-                  </div>
-                  <span style={{ width: 56, textAlign: "right", fontWeight: 600, fontSize: 14 }}>{r.n}</span>
-                </div>
-              ));
-            })()}
-          </Section>
-
-          {/* Status + error breakdown */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <Section title="By status">
-              {Object.entries(data!.byStatus).sort((a, b) => b[1] - a[1]).map(([s, n]) => (
-                <Row key={s} left={<span><Dot c={STATUS_COLOR[s] || "#6B6862"} />{s}</span>} right={n} />
-              ))}
-            </Section>
-            <Section title="Errors (code · cause)">
-              {Object.keys(data!.byErr).length === 0 && <div style={{ color: "#137333" }}>No errors.</div>}
-              {Object.entries(data!.byErr).sort((a, b) => b[1] - a[1]).map(([code, n]) => (
-                <Row
-                  key={code}
-                  left={
-                    <span>
-                      <a href={`https://www.twilio.com/docs/api/errors/${code}`} target="_blank" rel="noreferrer" style={{ color: "#b00020", fontWeight: 700, textDecoration: "none" }}>{code}</a>
-                      <span style={{ color: "#6B6862" }}> · {errorCause(code)}</span>
-                    </span>
-                  }
-                  right={n}
-                />
-              ))}
-            </Section>
+          <div className="perf">
+            {perf === null && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading…</div></div>}
+            {perf && perf.agents.length === 0 && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>No assigned leads yet.</div></div>}
+            {perf && perf.agents.length > 0 && (
+              <div className="perf-row" style={{ color: "var(--ink-3)", fontSize: 12, fontWeight: 600 }}>
+                <div className="perf-name">Agent</div>
+                <div className="perf-stat" style={{ minWidth: 56, textAlign: "right" }}>Leads</div>
+                <div className="perf-stat" style={{ minWidth: 56, textAlign: "right" }}>Active</div>
+                <div className="perf-stat" style={{ minWidth: 48, textAlign: "right" }}>Won</div>
+                <div className="perf-stat" style={{ minWidth: 64, textAlign: "right" }}>Avg reply</div>
+              </div>
+            )}
+            {(perf?.agents || []).map((a) => (
+              <div className="perf-row" key={a.id}>
+                <div className="perf-name">{a.name}</div>
+                <div className="perf-stat" style={{ minWidth: 56, textAlign: "right" }}>{a.leads}</div>
+                <div className="perf-stat" style={{ minWidth: 56, textAlign: "right" }}>{a.active}</div>
+                <div className="perf-stat strong" style={{ minWidth: 48, textAlign: "right", color: a.won ? "var(--green-dot)" : undefined }}>{a.won}</div>
+                <div className="perf-stat" style={{ minWidth: 64, textAlign: "right" }}>{fmtResp(a.avgResponseMins)}</div>
+              </div>
+            ))}
+            {perf && perf.pool > 0 && (
+              <div className="perf-row" style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 8 }}>
+                <div className="perf-name" style={{ color: "var(--amber-ink)" }}>♻ Lead pool (released)</div>
+                <div className="perf-stat strong" style={{ marginLeft: "auto", color: "var(--amber-ink)" }}>{perf.pool}</div>
+              </div>
+            )}
           </div>
-
-          {/* Logs */}
-          <Section title={`Message log (${data!.logs.length})`}>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                  <tr style={{ textAlign: "left", color: "#6B6862", borderBottom: "1px solid #E4E1DB" }}>
-                    <th style={th}>Time</th><th style={th}>Dir</th><th style={th}>To / From</th>
-                    <th style={th}>Status</th><th style={th}>Err</th><th style={th}>Body</th><th style={th}>Price</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data!.logs.map((m) => (
-                    <tr key={m.sid} style={{ borderBottom: "1px solid #F0EEE9" }}>
-                      <td style={td}>{m.date ? new Date(m.date).toLocaleString() : "-"}</td>
-                      <td style={td}>{m.direction?.startsWith("outbound") ? "→" : "←"}</td>
-                      <td style={td}>{m.direction?.startsWith("outbound") ? m.to : m.from}</td>
-                      <td style={{ ...td, color: STATUS_COLOR[m.status] || "#1F1C17" }}>{m.status}</td>
-                      <td style={{ ...td, color: m.error_code ? "#b00020" : "#cfccc6" }} title={m.error_code ? errorCause(m.error_code) : ""}>{m.error_code || "-"}</td>
-                      <td style={{ ...td, maxWidth: 320, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.body}</td>
-                      <td style={td}>{m.price || "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Section>
-        </>
-      )}
-    </div>
+        </div>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-t">Campaign → deals</div>
+            <div className="card-meta">what actually converts · all-time</div>
+          </div>
+          <div className="perf">
+            {perf === null && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading…</div></div>}
+            {perf && perf.campaigns.length === 0 && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>No attributed leads yet.</div></div>}
+            {perf && perf.campaigns.length > 0 && (
+              <div className="perf-row" style={{ color: "var(--ink-3)", fontSize: 12, fontWeight: 600 }}>
+                <div className="perf-name">Campaign</div>
+                <div className="perf-stat" style={{ minWidth: 52, textAlign: "right" }}>Leads</div>
+                <div className="perf-stat" style={{ minWidth: 44, textAlign: "right" }}>Won</div>
+                <div className="perf-stat" style={{ minWidth: 60, textAlign: "right" }}>Win rate</div>
+              </div>
+            )}
+            {(perf?.campaigns || []).slice(0, 8).map((c) => (
+              <div className="perf-row" key={c.id}>
+                <div className="perf-name mono" title={c.name}>{c.name}</div>
+                <div className="perf-stat" style={{ minWidth: 52, textAlign: "right" }}>{c.leads}</div>
+                <div className="perf-stat strong" style={{ minWidth: 44, textAlign: "right", color: c.won ? "var(--green-dot)" : undefined }}>{c.won}</div>
+                <div className="perf-stat" style={{ minWidth: 60, textAlign: "right" }}>{c.winRate == null ? dash : `${c.winRate}%`}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div></div>
   );
 }
-
-function Card({ label, value, sub, color }: { label: string; value: any; sub?: string; color?: string }) {
-  return (
-    <div style={{ background: "#fff", border: "1px solid #E4E1DB", borderRadius: 12, padding: 16 }}>
-      <div style={{ fontSize: 12, color: "#6B6862", marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 600, color: color || "#141414" }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: "#9a958c", marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
-}
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div style={{ background: "#fff", border: "1px solid #E4E1DB", borderRadius: 12, padding: 18, marginBottom: 16 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, letterSpacing: 0.5 }}>{title}</div>
-      {children}
-    </div>
-  );
-}
-function Row({ left, right }: { left: React.ReactNode; right: React.ReactNode }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #F0EEE9", fontSize: 14 }}>
-      <span>{left}</span><b>{right}</b>
-    </div>
-  );
-}
-function Dot({ c }: { c: string }) {
-  return <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 9, background: c, marginRight: 7 }} />;
-}
-
-const tab: React.CSSProperties = { padding: "8px 14px", background: "#fff", border: "1px solid #E4E1DB", borderRadius: 8, cursor: "pointer", fontSize: 13 };
-const tabActive: React.CSSProperties = { background: "#141414", color: "#fff", borderColor: "#141414" };
-const th: React.CSSProperties = { padding: "8px 10px", fontWeight: 600 };
-const td: React.CSSProperties = { padding: "8px 10px" };
-const errBox: React.CSSProperties = { background: "#fdecea", color: "#b00020", padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 14 };

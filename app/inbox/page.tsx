@@ -1,432 +1,505 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { supabaseBrowser } from "@/lib/supabase";
-import { useIsMobile } from "@/lib/useResponsive";
+import { Icon, IC, Avatar, CHECK2, Skeleton, Toast } from "@/lib/ui";
+import { CONVOS, SEED_TEMPLATES, type Tpl } from "@/lib/fixtures";
 import { formatPhone } from "@/lib/format";
 
-type Conv = {
-  id: string; wa_phone: string; name: string | null; status: string;
-  last_body: string | null; last_at: string | null;
-  unread?: boolean | null; last_direction?: string | null; last_status?: string | null;
-  lead_status?: string | null;
+type UIMsg = { id: string; from: "in" | "out"; t: string; at: string; status?: string | null; media?: string | null; contentSid?: string | null };
+type UIConv = {
+  id: string; name: string; phone: string; waPhone?: string;
+  tag: "Hot" | "Warm" | ""; lead?: string; unread: number; time: string; community: string;
+  live: boolean; loaded: boolean; messages: UIMsg[]; blocked?: boolean;
+  lastBody?: string; lastDirection?: string; replied?: boolean; assignedAgentId?: string; leadStage?: string;
 };
 
-// Lead temperature options + colors.
-const LEAD_STATUSES = [
-  { id: "new", label: "New", color: "#6B6862" },
-  { id: "hot", label: "Hot", color: "#b00020" },
-  { id: "warm", label: "Warm", color: "#d9822b" },
-  { id: "cold", label: "Cold", color: "#1a73e8" },
-  { id: "won", label: "Won", color: "#137333" },
-  { id: "lost", label: "Lost", color: "#9a958c" },
+// Pipeline progress of a transferred lead, distinct from the Hot/Warm
+// "temperature" (lead_status). Tracks what the owning agent has done with it.
+const STAGES = [
+  { id: "", label: "No stage" }, { id: "contacted", label: "Contacted" },
+  { id: "viewing", label: "Viewing" }, { id: "won", label: "Won" }, { id: "lost", label: "Lost → pool" },
 ];
-const leadColor = (s?: string | null) => LEAD_STATUSES.find((x) => x.id === (s || "new"))?.color || "#6B6862";
-const leadLabel = (s?: string | null) => LEAD_STATUSES.find((x) => x.id === (s || "new"))?.label || "New";
-type Msg = { id: string; conversation: string; direction: string; body: string | null; status: string | null; created_at: string; media_url?: string | null };
+const stageLabel = (id?: string) => STAGES.find((s) => s.id === (id || ""))?.label || "";
 
-// Resolve a media URL to something the browser can load. Inbound Twilio URLs
-// need our authenticated proxy; our own Supabase URLs load directly.
-function mediaSrc(url: string) {
-  return url.includes("api.twilio.com") ? `/api/media?url=${encodeURIComponent(url)}` : url;
-}
-function isPdf(url: string) {
-  return /\.pdf($|\?)/i.test(url);
+const LEADS = [
+  { id: "new", label: "New" }, { id: "hot", label: "Hot" }, { id: "warm", label: "Warm" },
+  { id: "cold", label: "Cold" }, { id: "won", label: "Won" }, { id: "lost", label: "Lost" },
+];
+const tagOf = (lead?: string): "Hot" | "Warm" | "" => (lead === "hot" ? "Hot" : lead === "warm" ? "Warm" : "");
+const hhmm = (iso?: string | null) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+function mediaSrc(url: string) { return url.includes("api.twilio.com") ? `/api/media?url=${encodeURIComponent(url)}` : url; }
+
+function TagDot({ tag }: { tag: string }) {
+  if (!tag) return null;
+  const c = tag === "Hot" ? "var(--red)" : "var(--amber-dot)";
+  return <span className="leadtag"><span className="d" style={{ background: c }} />{tag}</span>;
 }
 
-// Delivery ticks for an OUTBOUND message status.
-function Ticks({ status }: { status: string | null | undefined }) {
-  if (!status) return null;
-  if (status === "read") return <span style={{ color: "#1a73e8" }} title="Read">✓✓</span>;
-  if (status === "delivered") return <span style={{ color: "#9a958c" }} title="Delivered">✓✓</span>;
-  if (status === "sent" || status === "queued") return <span style={{ color: "#9a958c" }} title={status}>✓</span>;
-  if (status === "undelivered" || status === "failed") return <span style={{ color: "#b00020" }} title={status}>✗</span>;
-  return null;
+function Ticks({ status }: { status?: string | null }) {
+  if (!status) return <span style={{ color: "#53bdeb" }}>{CHECK2}</span>;
+  if (status === "read") return <span style={{ color: "#53bdeb" }}>{CHECK2}</span>;
+  if (status === "delivered") return <span style={{ color: "#8a9398" }}>{CHECK2}</span>;
+  if (status === "undelivered" || status === "failed") return <span style={{ color: "#E0383E" }} title={status}>✗</span>;
+  return <span style={{ color: "#8a9398" }} title={status || ""}>✓</span>;
+}
+
+function demoConvs(): UIConv[] {
+  return CONVOS.map((c) => ({
+    id: String(c.id), name: c.name, phone: c.phone, tag: c.tag, lead: c.tag === "Hot" ? "hot" : c.tag === "Warm" ? "warm" : "new",
+    unread: c.unread, time: c.time, community: c.community, live: false, loaded: true,
+    replied: c.messages.some((m) => m.from === "in"),
+    messages: c.messages.map((m, i) => ({ id: String(i), from: m.from, t: m.t, at: m.at })),
+  }));
 }
 
 export default function Inbox() {
-  const sb = useRef(supabaseBrowser());
-  const [convs, setConvs] = useState<Conv[]>([]);
-  const [active, setActive] = useState<Conv | null>(null);
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
+  const [convos, setConvos] = useState<UIConv[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [live, setLive] = useState(false);
+  const [q, setQ] = useState("");
+  const [tab, setTab] = useState<"all" | "unread" | "hot" | "replied" | "optout">("all");
+  const [showThread, setShowThread] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [approved, setApproved] = useState<Tpl[]>(SEED_TEMPLATES.filter((t) => t.status === "approved"));
   const [senders, setSenders] = useState<string[]>([]);
   const [sender, setSender] = useState("");
-  const [query, setQuery] = useState("");
-  const [leadFilter, setLeadFilter] = useState("all");
-  const isMobile = useIsMobile();
+  const [sending, setSending] = useState(false);
+  const [loaded, setLoaded] = useState(false); // first conversation fetch settled
+  const [toast, setToast] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({}); // agent id -> name, for the "assigned to" badge
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([]); // ordered, for the assign + filter pickers
+  const [agentFilter, setAgentFilter] = useState(""); // "" = all agents, "none" = unassigned, else agent id
+  const [stageFilter, setStageFilter] = useState(""); // "" = any stage
+  const threadRef = useRef<HTMLDivElement>(null);
 
-  async function setLead(id: string, lead_status: string) {
-    await sb.current.from("conversations").update({ lead_status }).eq("id", id);
-    setConvs((prev) => prev.map((x) => (x.id === id ? { ...x, lead_status } : x)));
-    setActive((a) => (a && a.id === id ? { ...a, lead_status } : a));
-    // Mirror the status to Pipedrive (find-or-create person + lead, set label).
-    fetch("/api/pipedrive/status", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId: id }),
-    }).catch(() => {});
-  }
+  const active = convos.find((c) => c.id === activeId) || null;
+  const draft = (activeId && drafts[activeId]) || "";
+  const setDraft = (v: string) => setDrafts((d) => {
+    const next = { ...d, [activeId || ""]: v };
+    try { localStorage.setItem("om_drafts", JSON.stringify(next)); } catch { /* ignore */ }
+    return next;
+  });
 
+  // Initial load: senders, approved templates, drafts, and conversations
+  // (live Supabase → fixtures fallback). Also seed search from ?q=.
   useEffect(() => {
-    fetch("/api/senders").then((r) => r.json()).then((d) => {
-      setSenders(d.senders || []);
-      if (d.senders?.length) setSender(d.senders[0]);
-    });
+    try { setDrafts(JSON.parse(localStorage.getItem("om_drafts") || "{}")); } catch { /* ignore */ }
+    try { const p = new URLSearchParams(window.location.search).get("q"); if (p) setQ(p); } catch { /* ignore */ }
+    fetch("/api/senders").then((r) => r.json()).then((d) => { setSenders(d.senders || []); if (d.senders?.length) setSender(d.senders[0]); }).catch(() => {});
+    fetch("/api/templates").then((r) => r.json()).then((d) => { const a = (d.templates || []).filter((t: Tpl) => t.status === "approved"); if (a.length) setApproved(a); }).catch(() => {});
+    fetch("/api/agents").then((r) => r.json()).then((d) => { const list = (d.agents || []).map((a: any) => ({ id: a.id, name: a.name })); setAgents(list); const m: Record<string, string> = {}; list.forEach((a: any) => { m[a.id] = a.name; }); setAgentNames(m); }).catch(() => {});
+    loadConvs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadConvs() {
-    const { data } = await sb.current.from("conversations").select("*").order("last_at", { ascending: false });
-    setConvs((data as Conv[]) || []);
+    try {
+      // Server route (service role) does the recent-window + actionable-lead merge
+      // so the Hot/Unread tabs never drop a lead past the recent 1000. The browser
+      // no longer reads the conversations table directly (RLS denies anon).
+      const res = await fetch("/api/conversations?view=inbox");
+      if (!res.ok) throw new Error("no live data");
+      const data: any[] = (await res.json()).conversations || [];
+      if (data.length === 0) throw new Error("no live data");
+      const mapped: UIConv[] = data.map((c: any) => ({
+        id: c.id, name: c.name || "+" + c.wa_phone, phone: formatPhone(c.wa_phone), waPhone: c.wa_phone,
+        tag: tagOf(c.lead_status), lead: c.lead_status || "new", unread: c.unread ? 1 : 0, time: hhmm(c.last_at),
+        community: c.community || "", live: true, loaded: false, messages: [], blocked: c.status === "blocked",
+        lastBody: c.last_body || "", lastDirection: c.last_direction || "", replied: !!c.replied,
+        assignedAgentId: c.assigned_agent_id || undefined, leadStage: c.lead_stage || "",
+      }));
+      setLive(true);
+      setConvos((prev) => {
+        // preserve already-loaded messages on refresh
+        const byId = new Map(prev.map((p) => [p.id, p]));
+        return mapped.map((m) => { const old = byId.get(m.id); return old?.loaded ? { ...m, loaded: true, messages: old.messages } : m; });
+      });
+      if (!activeId && data[0]) setActiveId(data[0].id);
+    } catch {
+      const d = demoConvs();
+      setLive(false);
+      setConvos(d);
+      if (!activeId) setActiveId(d[0].id);
+    } finally {
+      setLoaded(true);
+    }
   }
+
   async function loadMsgs(id: string) {
-    const { data } = await sb.current.from("messages").select("*").eq("conversation", id).order("created_at");
-    setMsgs((data as Msg[]) || []);
+    // NOTE: on a fetch error (e.g. the server is briefly throttled mid campaign
+    // blast) we must NOT mark the conversation loaded — caching an empty result
+    // as "loaded" leaves the thread permanently blank until a hard reload.
+    let data: any[];
+    try {
+      const res = await fetch(`/api/messages?view=thread&conversation=${encodeURIComponent(id)}`);
+      if (!res.ok) return; // leave loaded:false so it shows "Loading…" and retries
+      data = (await res.json()).messages || [];
+    } catch { return; }
+    const msgs: UIMsg[] = (data || []).map((m: any) => ({
+      id: m.id, from: m.direction === "out" ? "out" : "in",
+      t: m.body && m.body !== "[media]" ? m.body : "", at: hhmm(m.created_at), status: m.status, media: m.media_url, contentSid: m.content_sid,
+    }));
+    setConvos((p) => p.map((c) => (c.id === id ? { ...c, loaded: true, messages: msgs } : c)));
   }
 
-  useEffect(() => { loadConvs(); }, []);
+  // Live updates: poll the gated server routes every 8s (replaces Supabase
+  // realtime, which needed the browser's anon DB access). Refreshes the open
+  // thread and the conversation list, same as the old postgres_changes handlers.
   useEffect(() => {
-    const ch = sb.current
-      .channel("rt")
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => { if (active) loadMsgs(active.id); loadConvs(); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => loadConvs())
-      .subscribe();
-    return () => { sb.current.removeChannel(ch); };
-  }, [active]);
+    if (!live) return;
+    const poll = setInterval(() => { if (activeId) loadMsgs(activeId); loadConvs(); }, 8000);
+    return () => clearInterval(poll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, activeId]);
 
-  async function open(c: Conv) {
-    setActive(c);
-    await loadMsgs(c.id);
-    if (c.unread) {
-      await sb.current.from("conversations").update({ unread: false }).eq("id", c.id);
-      setConvs((prev) => prev.map((x) => (x.id === c.id ? { ...x, unread: false } : x)));
+  // Auto-load messages for whichever conversation is active but not yet loaded.
+  // Covers the auto-selected top conversation (loadConvs sets activeId without
+  // fetching its messages) and retries any thread left unloaded by a transient
+  // loadMsgs error, so the thread never sits blank waiting for a click.
+  useEffect(() => {
+    if (!activeId) return;
+    const c = convos.find((x) => x.id === activeId);
+    if (c && c.live && !c.loaded) loadMsgs(activeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, convos]);
+
+  // Jump to the newest message when a thread loads or updates. We do it on the
+  // next frame (after layout) AND expose scrollToBottom so a template's image
+  // can re-scroll once it finishes loading — otherwise the image expands the
+  // thread *after* this runs and shoves the latest reply below the fold, which
+  // looked like "the reply isn't showing".
+  const scrollToBottom = () => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; };
+  useEffect(() => { const r = requestAnimationFrame(scrollToBottom); return () => cancelAnimationFrame(r); }, [activeId, convos]);
+
+  // Update a conversation through the gated server route (whitelisted fields).
+  async function patchConvo(id: string, patch: Record<string, any>) {
+    try {
+      await fetch("/api/conversations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, patch }) });
+    } catch { /* ignore */ }
+  }
+
+  async function openConvo(c: UIConv) {
+    setActiveId(c.id);
+    setShowThread(true);
+    setMoreOpen(false);
+    setConvos((p) => p.map((x) => (x.id === c.id ? { ...x, unread: 0 } : x)));
+    if (c.live) {
+      if (!c.loaded) await loadMsgs(c.id);
+      patchConvo(c.id, { unread: false });
     }
   }
 
   async function send() {
-    if (!active || !text.trim()) return;
-    setSending(true);
-    const res = await fetch("/api/send", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "+" + active.wa_phone, body: text, from: sender || undefined }),
-    });
-    setSending(false);
-    if (res.ok) { setText(""); loadMsgs(active.id); loadConvs(); }
-    else alert("Send failed: " + (await res.json()).error);
-  }
-
-  const q = query.trim().toLowerCase();
-  const shown = convs.filter((c) => {
-    if (leadFilter !== "all" && (c.lead_status || "new") !== leadFilter) return false;
-    if (!q) return true;
-    return (c.name || "").toLowerCase().includes(q) || c.wa_phone.includes(q.replace(/[^0-9]/g, ""));
-  });
-
-  const showList = !isMobile || !active;
-  const showChat = !isMobile || !!active;
-
-  return (
-    <div style={{ display: "flex", height: "100%" }}>
-      {showList && (
-        <aside style={{ width: isMobile ? "100%" : 320, borderRight: isMobile ? "none" : "1px solid #E4E1DB", background: "#fff", overflowY: "auto", flexShrink: 0 }}>
-          <div style={{ padding: "10px 12px", borderBottom: "1px solid #F0EEE9", position: "sticky", top: 0, background: "#fff", zIndex: 1 }}>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name or number"
-              style={{ width: "100%", padding: "9px 12px", border: "1px solid #E4E1DB", borderRadius: 8, fontSize: 13, boxSizing: "border-box" }}
-            />
-            <div style={{ display: "flex", gap: 5, marginTop: 8, flexWrap: "wrap" }}>
-              {[{ id: "all", label: "All", color: "#141414" }, ...LEAD_STATUSES].map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => setLeadFilter(s.id)}
-                  style={{
-                    fontSize: 11, padding: "3px 9px", borderRadius: 20, cursor: "pointer",
-                    border: `1px solid ${leadFilter === s.id ? s.color : "#E4E1DB"}`,
-                    background: leadFilter === s.id ? s.color : "#fff",
-                    color: leadFilter === s.id ? "#fff" : "#6B6862",
-                  }}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          {shown.map((c) => (
-            <div key={c.id} onClick={() => open(c)} style={{ padding: "14px 18px", borderBottom: "1px solid #F0EEE9", cursor: "pointer", background: active?.id === c.id ? "#EEEEEE" : "#fff", display: "flex", gap: 10, alignItems: "center" }}>
-              {c.unread && <span style={{ width: 9, height: 9, borderRadius: 9, background: "#137333", flexShrink: 0 }} title="Unread" />}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <span style={{ fontWeight: c.unread ? 700 : 600 }}>
-                    {c.name || "+" + c.wa_phone}
-                    {c.lead_status && c.lead_status !== "new" && (
-                      <span style={{ fontSize: 10, marginLeft: 8, color: "#fff", background: leadColor(c.lead_status), padding: "1px 7px", borderRadius: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>{leadLabel(c.lead_status)}</span>
-                    )}
-                    {c.status === "blocked" && <span style={{ color: "#b00", fontSize: 11, marginLeft: 8 }}>blocked</span>}
-                    {c.status === "invalid" && <span style={{ color: "#9a958c", fontSize: 11, marginLeft: 8 }}>invalid number</span>}
-                  </span>
-                  {c.last_at && <span style={{ fontSize: 11, color: "#9a958c", whiteSpace: "nowrap" }}>{new Date(c.last_at).toLocaleDateString([], { month: "short", day: "numeric" })}</span>}
-                </div>
-                <div style={{ fontSize: 13, color: "#6B6862", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {c.last_direction === "out" && <span style={{ marginRight: 4 }}><Ticks status={c.last_status} /></span>}
-                  {c.last_body}
-                </div>
-              </div>
-            </div>
-          ))}
-          {convs.length === 0 && <div style={{ padding: 20, color: "#6B6862" }}>No conversations yet. Send one below.</div>}
-          {convs.length > 0 && shown.length === 0 && <div style={{ padding: 20, color: "#9a958c", fontSize: 13 }}>No matches for “{query}”.</div>}
-        </aside>
-      )}
-
-      {showChat && (
-        <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          {active ? (
-            <>
-              <div style={{ padding: "14px 18px", borderBottom: "1px solid #E4E1DB", background: "#fff", fontWeight: 600, display: "flex", alignItems: "center", gap: 12 }}>
-                {isMobile && <button onClick={() => setActive(null)} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", padding: 0 }}>←</button>}
-                <span style={{ flex: 1 }}>{active.name || "+" + active.wa_phone}</span>
-                <select
-                  value={active.lead_status || "new"}
-                  onChange={(e) => setLead(active.id, e.target.value)}
-                  title="Lead status"
-                  style={{ padding: "7px 10px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#fff", background: leadColor(active.lead_status), border: "none" }}
-                >
-                  {LEAD_STATUSES.map((s) => <option key={s.id} value={s.id} style={{ background: "#fff", color: "#141414" }}>{s.label}</option>)}
-                </select>
-                <PushToPipedrive conv={active} lastInbound={[...msgs].reverse().find((m) => m.direction === "in")?.body || null} />
-              </div>
-              <CrmContext phone={active.wa_phone} />
-              <div style={{ flex: 1, overflowY: "auto", padding: 18 }}>
-                {msgs.map((m) => (
-                  <div key={m.id} style={{ display: "flex", justifyContent: m.direction === "out" ? "flex-end" : "flex-start", marginBottom: 10 }}>
-                    <div style={{ maxWidth: "80%", padding: "10px 14px", borderRadius: 12, whiteSpace: "pre-wrap", wordBreak: "break-word", background: m.direction === "out" ? "#DCF8C6" : "#fff", border: "1px solid #E4E1DB", fontSize: 14 }}>
-                      {m.media_url && (
-                        isPdf(m.media_url)
-                          ? <a href={mediaSrc(m.media_url)} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginBottom: m.body && m.body !== "[media]" ? 6 : 0, color: "#1a73e8" }}>Open document ↗</a>
-                          : <img src={mediaSrc(m.media_url)} alt="" style={{ display: "block", maxWidth: "100%", borderRadius: 8, marginBottom: m.body && m.body !== "[media]" ? 6 : 0 }} />
-                      )}
-                      {m.body && m.body !== "[media]" && m.body}
-                      <div style={{ fontSize: 10, color: "#9a958c", marginTop: 4, textAlign: "right" }}>
-                        {new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        {m.direction === "out" && <span style={{ marginLeft: 6 }}><Ticks status={m.status} /></span>}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ padding: 14, borderTop: "1px solid #E4E1DB", background: "#fff", display: "flex", gap: 10, position: "relative", alignItems: "center" }}>
-                {senders.length > 1 && (
-                  <select value={sender} onChange={(e) => setSender(e.target.value)} title="Send from" style={{ padding: "11px 8px", border: "1px solid #E4E1DB", borderRadius: 8, fontSize: 13, flexShrink: 0, maxWidth: 150 }}>
-                    {senders.map((s) => <option key={s} value={s}>{formatPhone(s)}</option>)}
-                  </select>
-                )}
-                <TemplateSender phone={active.wa_phone} from={sender} onSent={() => { loadMsgs(active.id); loadConvs(); }} />
-                <AttachMedia phone={active.wa_phone} from={sender} onSent={() => { loadMsgs(active.id); loadConvs(); }} />
-                <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Type a message" style={{ flex: 1, padding: "12px 14px", border: "1px solid #E4E1DB", borderRadius: 8, fontSize: 14, minWidth: 0 }} />
-                <button onClick={send} disabled={sending} style={{ padding: "12px 22px", background: "#141414", color: "#fff", border: "none", borderRadius: 8, letterSpacing: 1, textTransform: "uppercase", fontSize: 12, cursor: "pointer", flexShrink: 0 }}>{sending ? "..." : "Send"}</button>
-              </div>
-            </>
-          ) : (
-            <NewMessage onSent={loadConvs} />
-          )}
-        </main>
-      )}
-    </div>
-  );
-}
-
-// Push this conversation into Pipedrive as a Hot lead (direct, no Ulgebra).
-function PushToPipedrive({ conv, lastInbound }: { conv: Conv; lastInbound: string | null }) {
-  const [state, setState] = useState<"idle" | "busy" | "done" | "err">("idle");
-  const [err, setErr] = useState("");
-  async function push() {
-    setState("busy");
-    setErr("");
-    try {
-      const note =
-        `Pushed from ERE WhatsApp.\nPhone: +${conv.wa_phone}` +
-        (lastInbound ? `\nLast reply: "${lastInbound}"` : "");
-      const res = await fetch("/api/pipedrive/push", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: "+" + conv.wa_phone, name: conv.name || undefined, note }),
-      });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || "Failed");
-      setState("done");
-    } catch (e: any) {
-      setErr(e.message);
-      setState("err");
+    if (!active || !draft.trim()) return;
+    const text = draft.trim();
+    if (active.live && active.waPhone) {
+      setSending(true);
+      try {
+        const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "+" + active.waPhone, body: text, from: sender || undefined }) });
+        if (!res.ok) throw new Error((await res.json()).error || "Send failed");
+        setDraft(""); setTplOpen(false);
+        await loadMsgs(active.id);
+      } catch (e: any) {
+        setToast({ kind: "bad", text: "Send failed: " + e.message });
+      } finally {
+        setSending(false);
+      }
+    } else {
+      // demo: append locally
+      const at = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      setConvos((p) => p.map((c) => (c.id === active.id ? { ...c, time: at, messages: [...c.messages, { id: "m" + Date.now(), from: "out", t: text, at, status: "read" }] } : c)));
+      setDraft(""); setTplOpen(false);
     }
   }
-  return (
-    <>
-      <button
-        onClick={push}
-        disabled={state === "busy" || state === "done"}
-        title={err || "Create a Hot lead in Pipedrive"}
-        style={{
-          padding: "8px 14px",
-          background: state === "done" ? "#137333" : "#fff",
-          color: state === "done" ? "#fff" : "#141414",
-          border: "1px solid " + (state === "err" ? "#b00020" : "#E4E1DB"),
-          borderRadius: 8,
-          cursor: "pointer",
-          fontSize: 12,
-          letterSpacing: 0.5,
-          whiteSpace: "nowrap",
-        }}
-      >
-        {state === "busy" ? "Pushing…" : state === "done" ? "✓ In Pipedrive" : state === "err" ? "Retry → Pipedrive" : "→ Pipedrive"}
-      </button>
 
-      {state === "done" && (
-        <div style={{ position: "fixed", top: 60, right: 20, background: "#137333", color: "#fff", padding: "12px 16px", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,.18)", zIndex: 50, fontSize: 14, maxWidth: 320 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>Pushed to Pipedrive ✓</div>
-          <div style={{ fontSize: 13, opacity: 0.95 }}>Hot lead created.{" "}
-            <a href="https://erehomesrealestatebrokers.pipedrive.com/leads/inbox" target="_blank" rel="noreferrer" style={{ color: "#fff", textDecoration: "underline" }}>Open Leads inbox ↗</a>
+  function insertTemplate(t: Tpl) {
+    const first = (active?.name || "there").split(" ")[0].replace(/^\+/, "there");
+    setDraft((t.body || "").replace(/\{\{(\d+)\}\}/g, (_, n) => (n === "1" ? first : t.variables?.[n] || "")));
+    setTplOpen(false);
+    setTimeout(() => document.querySelector<HTMLInputElement>(".msg-input")?.focus(), 0);
+  }
+
+  async function setLead(id: string, lead: string) {
+    setConvos((p) => p.map((c) => (c.id === id ? { ...c, lead, tag: tagOf(lead) } : c)));
+    if (live) {
+      await patchConvo(id, { lead_status: lead });
+      fetch("/api/pipedrive/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: id }) }).catch(() => {});
+    }
+  }
+
+  // Assign / reassign the owning agent (or clear it). Optimistic, then persisted.
+  // Assigning a lead that was in the pool (stage "lost") clears its stage so it
+  // starts fresh for the new owner.
+  async function setAgent(id: string, agentId: string) {
+    const fromPool = !!agentId && convos.find((c) => c.id === id)?.leadStage === "lost";
+    setConvos((p) => p.map((c) => (c.id === id ? { ...c, assignedAgentId: agentId || undefined, leadStage: fromPool ? "" : c.leadStage } : c)));
+    if (live) {
+      await patchConvo(id, { assigned_agent_id: agentId || null });
+      if (fromPool) await patchConvo(id, { lead_stage: null });
+    }
+  }
+  // Set the pipeline stage (Contacted → Viewing → Won), clear it, or send the
+  // lead back to the pool ("lost" = release the owner so another agent can take it).
+  async function setStage(id: string, stage: string) {
+    const toPool = stage === "lost";
+    setConvos((p) => p.map((c) => (c.id === id ? { ...c, leadStage: stage, assignedAgentId: toPool ? undefined : c.assignedAgentId } : c)));
+    if (live) {
+      await patchConvo(id, { lead_stage: stage || null });
+      if (toPool) await patchConvo(id, { assigned_agent_id: null });
+    }
+  }
+
+  const list = convos
+    // Replied = anyone who messaged back (opt-outs included, but labelled on the row).
+    // Opt-outs get their own filter. Unread/Hot stay actionable-only (no opt-outs).
+    .filter((c) => (
+      tab === "unread" ? c.unread > 0 && !c.blocked
+        : tab === "hot" ? c.tag === "Hot" && !c.blocked
+        : tab === "replied" ? !!c.replied
+        : tab === "optout" ? !!c.blocked
+        : true))
+    // Per-agent filter: "" = all, "none" = unassigned, "pool" = abandoned leads
+    // (released back, stage "lost"), else a specific agent id.
+    .filter((c) => (agentFilter === "" ? true : agentFilter === "pool" ? c.leadStage === "lost" : agentFilter === "none" ? !c.assignedAgentId : c.assignedAgentId === agentFilter))
+    // Stage filter: "" = any, else exact pipeline stage.
+    .filter((c) => (stageFilter === "" ? true : (c.leadStage || "") === stageFilter))
+    .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.toLowerCase()) || (c.waPhone || "").includes(q.replace(/[^0-9]/g, "")));
+
+  return (
+    <div className="page inbox-page">
+      <div className={"inbox" + (showThread ? " show-thread" : "")}>
+        <div className="conv-col">
+          <div className="conv-head">
+            <div className="conv-title">Inbox</div>
+            <div className="list-search full"><Icon d={IC.search} s={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search conversations…" /></div>
+            <div className="seg-tabs">
+              {([["all", "All"], ["unread", "Unread"], ["replied", "Replied"], ["optout", "Opt-outs"], ["hot", "Hot"]] as const).map(([id, l]) => (
+                <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>
+              ))}
+            </div>
+            {agents.length > 0 && (
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <select className="seltrig" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} title="Filter by agent" aria-label="Filter by agent" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                  <option value="">All agents</option>
+                  <option value="none">Unassigned</option>
+                  <option value="pool">♻ Lead Pool</option>
+                  {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                <select className="seltrig" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} title="Filter by stage" aria-label="Filter by stage" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                  <option value="">Any stage</option>
+                  {STAGES.filter((s) => s.id).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+          {loaded && !live && (
+            <div style={{ background: "var(--amber-bg)", color: "var(--amber-ink)", borderBottom: "1px solid var(--amber-border)", padding: "8px 16px", fontSize: 12, fontWeight: 600 }}>
+              Showing sample data — not connected to the live inbox. These replies aren&apos;t real.
+            </div>
+          )}
+          <div className="conv-list">
+            {!loaded && <div style={{ padding: 12 }}><Skeleton rows={7} /></div>}
+            {loaded && list.map((c) => (
+              <div key={c.id} className={`conv-item ${c.id === activeId ? "active" : ""}`} onClick={() => openConvo(c)}>
+                <Avatar name={c.name} size={42} />
+                <div className="ci-main">
+                  <div className="ci-top"><span className="ci-name">{c.name}</span><span className="ci-time">{c.time}</span></div>
+                  <div className="ci-bottom">
+                    <span className="ci-msg">{(() => {
+                      if (c.messages.length) {
+                        const last = c.messages[c.messages.length - 1];
+                        return last.t || (last.media ? "📷 Photo" : "");
+                      }
+                      const b = c.lastBody || "";
+                      if (b === "[media]") return "📷 Photo";
+                      if (b === "[template]") return "Template message";
+                      return b;
+                    })()}</span>
+                    {c.unread > 0 && <span className="unread">{c.unread}</span>}
+                  </div>
+                  {(c.tag || c.community || c.blocked || c.leadStage || c.assignedAgentId) && (
+                    <div className="ci-tags">
+                      {c.blocked
+                        ? <span className="leadtag"><span className="d" style={{ background: "var(--ink-3)" }} />Opt-out</span>
+                        : <TagDot tag={c.tag} />}
+                      {c.leadStage === "lost"
+                        ? <span className="ci-comm" style={{ color: "var(--amber-ink)", fontWeight: 600 }}>♻ In pool</span>
+                        : c.leadStage && <span className="ci-comm" style={{ color: "var(--blue)", fontWeight: 600 }}>{stageLabel(c.leadStage)}</span>}
+                      {c.assignedAgentId && agentNames[c.assignedAgentId] && <span className="ci-comm">→ {agentNames[c.assignedAgentId]}</span>}
+                      <span className="ci-comm">{c.community}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {loaded && list.length === 0 && <div className="empty sm"><div>No conversations match.</div></div>}
           </div>
         </div>
-      )}
-      {state === "err" && (
-        <div style={{ position: "fixed", top: 60, right: 20, background: "#b00020", color: "#fff", padding: "12px 16px", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,.18)", zIndex: 50, fontSize: 13, maxWidth: 320 }}>
-          Pipedrive push failed: {err}
-        </div>
-      )}
-    </>
-  );
-}
 
-// Pick an approved template and send it (works outside the 24h window).
-function TemplateSender({ phone, from, onSent }: { phone: string; from?: string; onSent: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [tpls, setTpls] = useState<any[]>([]);
-  const [sel, setSel] = useState<any | null>(null);
-  const [vals, setVals] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
-
-  async function load() {
-    const res = await fetch("/api/templates");
-    const d = await res.json();
-    setTpls((d.templates || []).filter((t: any) => t.status === "approved"));
-  }
-  function toggle() {
-    const next = !open;
-    setOpen(next);
-    setSel(null);
-    if (next && tpls.length === 0) load();
-  }
-  function pick(t: any) {
-    const vars = t.variables || {};
-    if (Object.keys(vars).length) { setSel(t); setVals({ ...vars }); }
-    else doSend(t, {});
-  }
-  async function doSend(t: any, values: Record<string, string>) {
-    setBusy(true);
-    let label = t.body || `[${t.name}]`;
-    for (const [k, v] of Object.entries(values)) label = label.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), v || `{{${k}}}`);
-    const res = await fetch("/api/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "+" + phone, contentSid: t.sid, variables: values, label, from: from || undefined }),
-    });
-    setBusy(false);
-    if (res.ok) { setOpen(false); setSel(null); onSent(); }
-    else alert("Template send failed: " + (await res.json()).error);
-  }
-
-  const vars = sel ? Object.keys(sel.variables || {}) : [];
-
-  return (
-    <div style={{ flexShrink: 0 }}>
-      <button onClick={toggle} title="Insert a template" style={{ padding: "12px 16px", background: "#fff", border: "1px solid #E4E1DB", borderRadius: 8, cursor: "pointer", fontSize: 18, lineHeight: 1, color: "#141414" }}>+</button>
-      {open && (
-        <div style={{ position: "absolute", bottom: 64, left: 14, width: 320, maxHeight: 360, overflowY: "auto", background: "#fff", border: "1px solid #E4E1DB", borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,.12)", padding: 12, zIndex: 20 }}>
-          {!sel && (
-            <>
-              <div style={{ fontSize: 12, color: "#6B6862", marginBottom: 8 }}>Approved templates</div>
-              {tpls.length === 0 && <div style={{ fontSize: 13, color: "#9a958c" }}>No approved templates.</div>}
-              {tpls.map((t) => (
-                <div key={t.sid} onClick={() => pick(t)} style={{ padding: "10px 8px", borderBottom: "1px solid #F0EEE9", cursor: "pointer" }}>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{t.name}</div>
-                  <div style={{ fontSize: 12, color: "#6B6862", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.body}</div>
-                </div>
-              ))}
-            </>
-          )}
-          {sel && (
-            <>
-              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>{sel.name}</div>
-              <div style={{ fontSize: 12, color: "#6B6862", marginBottom: 10, whiteSpace: "pre-wrap" }}>{sel.body}</div>
-              {vars.map((k) => (
-                <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>{`{{${k}}}`}</span>
-                  <input value={vals[k] || ""} onChange={(e) => setVals({ ...vals, [k]: e.target.value })} placeholder="value" style={{ flex: 1, padding: "8px 10px", border: "1px solid #E4E1DB", borderRadius: 8, fontSize: 13 }} />
-                </div>
-              ))}
-              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                <button onClick={() => doSend(sel, vals)} disabled={busy} style={{ flex: 1, padding: "10px", background: "#141414", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>{busy ? "Sending…" : "Send template"}</button>
-                <button onClick={() => setSel(null)} style={{ padding: "10px 14px", background: "#fff", border: "1px solid #E4E1DB", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Back</button>
+        {active ? (
+          <div className="thread-col">
+            <div className="thread-head">
+              <button className="icon-btn th-back" onClick={() => setShowThread(false)} title="Back" aria-label="Back to conversations"><Icon d={IC.cleft} s={18} /></button>
+              <Avatar name={active.name} size={40} />
+              <div className="th-main">
+                <div className="th-name">{active.name}{active.blocked && <span style={{ color: "var(--red-ink)", fontSize: 11, marginLeft: 8 }}>blocked</span>}{active.assignedAgentId && agentNames[active.assignedAgentId] && <span style={{ color: "var(--blue)", fontSize: 11, marginLeft: 8, fontWeight: 600 }}>→ {agentNames[active.assignedAgentId]}</span>}</div>
+                <div className="th-sub">{active.phone}{active.community ? ` · ${active.community}` : ""}</div>
               </div>
-            </>
-          )}
-        </div>
-      )}
+              <select className="seltrig" value={active.lead || "new"} onChange={(e) => setLead(active.id, e.target.value)} title="Lead status" aria-label="Lead status" style={{ height: 32 }}>
+                {LEADS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+              <a className="icon-btn" href={`tel:${(active.waPhone ? "+" + active.waPhone : active.phone).replace(/\s/g, "")}`} title="Call" aria-label="Call"><Icon d={IC.phone} s={17} /></a>
+              <div style={{ position: "relative" }}>
+                <button className="icon-btn" title="More" aria-label="More actions" aria-haspopup="menu" aria-expanded={moreOpen} onClick={() => setMoreOpen((o) => !o)}><Icon d={IC.dots} s={17} /></button>
+                {moreOpen && (
+                  <>
+                    <div className="acct-scrim" onClick={() => setMoreOpen(false)} />
+                    <div className="avatar-menu" style={{ width: 210 }}>
+                      <button className="am-item" onClick={() => { setMoreOpen(false); pushPipedrive(active); }}><Icon d={IC.users} s={16} />Push to Pipedrive</button>
+                      <button className="am-item" onClick={() => { setMoreOpen(false); setLead(active.id, active.unread ? "new" : active.lead || "new"); markUnread(active); }}><Icon d={IC.inbox} s={16} />Mark as unread</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {agents.length > 0 && (
+              <div className="ctx-bar" style={{ gap: 10, flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)" }}>
+                  Owner
+                  <select className="seltrig" value={active.assignedAgentId || ""} onChange={(e) => setAgent(active.id, e.target.value)} title="Assign to agent" aria-label="Assign to agent" style={{ height: 30 }}>
+                    <option value="">Unassigned</option>
+                    {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)" }}>
+                  Stage
+                  <select className="seltrig" value={active.leadStage || ""} onChange={(e) => setStage(active.id, e.target.value)} title="Lead stage" aria-label="Lead stage" style={{ height: 30 }}>
+                    {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                  </select>
+                </label>
+              </div>
+            )}
+
+            {active.live && active.waPhone && <CrmContext phone={active.waPhone} />}
+
+            <div className="thread" ref={threadRef}>
+              <div className="day-sep"><span>Today</span></div>
+              {active.messages.map((m) => {
+                // Buttons AND the header/cover image come from the template the message
+                // was sent with (matched by content_sid), so the inbox bubble shows the
+                // same card the recipient sees on WhatsApp (header image isn't stored on
+                // the message row, only on the template).
+                const tpl = m.from === "out" && m.contentSid ? approved.find((t) => t.sid === m.contentSid) : null;
+                const tplBtns = tpl?.buttons;
+                const tplMedia = !m.media ? tpl?.media : null;
+                return (
+                  <div key={m.id} className={`msg ${m.from}`}>
+                    <div className="msg-stack">
+                      <div className="msg-bubble">
+                        {tplMedia && <img src={mediaSrc(tplMedia)} alt="" onLoad={scrollToBottom} style={{ width: "100%", borderRadius: 8, marginBottom: 6, display: "block" }} />}
+                        {m.media && (/\.pdf($|\?)/i.test(m.media)
+                          ? <a href={mediaSrc(m.media)} target="_blank" rel="noreferrer" style={{ color: "var(--wa-blue)", display: "block", marginBottom: 4 }}>Open document ↗</a>
+                          : <img src={mediaSrc(m.media)} alt="" onLoad={scrollToBottom} />)}
+                        {m.t}
+                        <span className="msg-time">{m.at} {m.from === "out" && <Ticks status={m.status} />}</span>
+                      </div>
+                      {tplBtns && tplBtns.length > 0 && (
+                        <div className="wa-replies">
+                          {tplBtns.map((b, bi) => (
+                            <div key={bi} className="wa-reply">
+                              {b.type === "QUICK_REPLY"
+                                ? <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg>
+                                : <span aria-hidden style={{ fontSize: 12 }}>{b.type === "URL" ? "🔗" : "📞"}</span>}
+                              {b.title}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {active.live && !active.loaded && <div className="empty sm">Loading messages…</div>}
+            </div>
+
+            <div className="composer-bar">
+              {tplOpen && (
+                <div className="tpl-pop">
+                  <div className="tpl-pop-head">Insert approved template</div>
+                  {approved.map((t) => (
+                    <div key={t.sid} className="tpl-pop-item" onClick={() => insertTemplate(t)}>
+                      <div className="tp-n">{t.name}</div>
+                      <div className="tp-p">{(t.body || "").replace(/\s+/g, " ").trim()}</div>
+                    </div>
+                  ))}
+                  {approved.length === 0 && <div className="tpl-pop-item"><div className="tp-p">No approved templates.</div></div>}
+                </div>
+              )}
+              {senders.length > 1 && (
+                <select className="seltrig" value={sender} onChange={(e) => setSender(e.target.value)} title="Send from" aria-label="Send from number" style={{ height: 40, maxWidth: 150 }}>
+                  {senders.map((s) => <option key={s} value={s}>{formatPhone(s)}</option>)}
+                </select>
+              )}
+              <button className={`icon-btn ${tplOpen ? "on" : ""}`} title="Insert a template" aria-label="Insert a template" aria-haspopup="menu" aria-expanded={tplOpen} onClick={() => setTplOpen((o) => !o)}><Icon d={IC.tmpl} s={18} /></button>
+              {active.live && active.waPhone && <AttachMedia phone={active.waPhone} from={sender} onSent={() => loadMsgs(active.id)} notify={(text) => setToast({ kind: "bad", text })} />}
+              <input className="msg-input" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Type a message, or insert a template…" />
+              <button className="btn btn-primary send-btn" onClick={send} disabled={sending}><Icon d={IC.send} s={16} f="currentColor" w={0} />{sending ? "…" : "Send"}</button>
+            </div>
+          </div>
+        ) : (
+          <div className="thread-col empty-thread">Select a conversation</div>
+        )}
+      </div>
+      {toast && <Toast kind={toast.kind} onDone={() => setToast(null)}>{toast.text}</Toast>}
     </div>
   );
+
+  async function pushPipedrive(c: UIConv) {
+    if (!c.live || !c.waPhone) { setToast({ kind: "bad", text: "Pipedrive push needs a live conversation." }); return; }
+    try {
+      const res = await fetch("/api/pipedrive/push", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "+" + c.waPhone, name: c.name }) });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "Failed");
+      setToast({ kind: "good", text: "Pushed to Pipedrive as a Hot lead." });
+    } catch (e: any) {
+      setToast({ kind: "bad", text: "Pipedrive push failed: " + e.message });
+    }
+  }
+  async function markUnread(c: UIConv) {
+    setConvos((p) => p.map((x) => (x.id === c.id ? { ...x, unread: 1 } : x)));
+    if (c.live) patchConvo(c.id, { unread: true });
+  }
 }
 
-// Shows who this number is, pulled from the ERE CRM (if matched). Gives the
-// agent instant context - community, tier, transaction history - before replying.
+/* CRM context bar — who this number is, pulled from the Audience CRM. */
 function CrmContext({ phone }: { phone: string }) {
-  const [c, setC] = useState<any>(undefined); // undefined=loading, null=no match
+  const [c, setC] = useState<any>(undefined);
   useEffect(() => {
     setC(undefined);
-    fetch(`/api/crm/contact?phone=${encodeURIComponent(phone)}`)
-      .then((r) => r.json())
-      .then((d) => setC(d.contact || null))
-      .catch(() => setC(null));
+    fetch(`/api/crm/contact?phone=${encodeURIComponent(phone)}`).then((r) => r.json()).then((d) => setC(d.contact || null)).catch(() => setC(null));
   }, [phone]);
-
-  if (c === undefined) return <div style={ctxBar}><span style={{ color: "#9a958c" }}>Checking CRM…</span></div>;
-  if (c === null) return <div style={ctxBar}><span style={{ color: "#9a958c" }}>Not in Audience CRM yet</span></div>;
-
-  // Where this contact came from: portal / AI lookup (verified_source) and the
-  // import batch or file (source_batch / source_path).
-  const sourceLabel = (() => {
-    const via = c.verified_source && c.verified_source !== "#N/A" ? c.verified_source : null;
-    const batch = c.source_batch && c.source_batch !== "#N/A" ? c.source_batch : null;
-    if (via && batch) return `${via} · ${batch}`;
-    return via || batch || null;
-  })();
-
-  const aed = c.total_transaction_value_aed ? `AED ${Number(c.total_transaction_value_aed).toLocaleString()}` : null;
-  const chips = [
-    sourceLabel ? `via ${sourceLabel}` : null,
-    c.community, c.building, c.unit_type, c.nationality,
-    c.tier ? `Tier ${c.tier}` : null,
-    c.number_of_transactions ? `${c.number_of_transactions} deal${c.number_of_transactions === 1 ? "" : "s"}` : null,
-    aed,
-    c.has_bought_before === true || c.has_bought_before === "Y" ? "Buyer" : null,
-    c.has_sold_before === true || c.has_sold_before === "Y" ? "Seller" : null,
-  ].filter(Boolean);
-
+  if (c === undefined) return <div className="ctx-bar"><span style={{ color: "var(--muted)" }}>Checking CRM…</span></div>;
+  if (c === null) return <div className="ctx-bar"><span style={{ color: "var(--muted)" }}>Not in Audience CRM yet</span></div>;
+  const chips = [c.community, c.building, c.unit_type, c.nationality, c.tier ? `Tier ${c.tier}` : null].filter(Boolean);
   return (
-    <div style={ctxBar}>
-      {c.name && <span style={{ fontWeight: 700, color: "#141414" }}>{c.name}</span>}
-      {(c.do_not_call === "Y" || c.do_not_call === true) && <span style={{ color: "#b00020", fontWeight: 600 }}>Do not call</span>}
-      {chips.map((x: string, i: number) => (
-        <span key={i} style={{ background: "#EEEEEE", borderRadius: 12, padding: "2px 9px", color: "#3a3a3a" }}>{x}</span>
-      ))}
-      {chips.length === 0 && !c.name && <span style={{ color: "#9a958c" }}>In CRM (no details)</span>}
+    <div className="ctx-bar">
+      {c.name && <span style={{ fontWeight: 700, color: "var(--ink)" }}>{c.name}</span>}
+      {chips.map((x: string, i: number) => <span key={i} className="ctx-chip">{x}</span>)}
+      {chips.length === 0 && !c.name && <span style={{ color: "var(--muted)" }}>In CRM (no details)</span>}
     </div>
   );
 }
-const ctxBar: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "8px 18px", borderBottom: "1px solid #F0EEE9", background: "#FFFFFF", fontSize: 12 };
 
-// Attach an image or PDF and send it as a media message (within 24h window).
-function AttachMedia({ phone, from, onSent }: { phone: string; from?: string; onSent: () => void }) {
+/* Attach an image or PDF and send it as a media message (within 24h window). */
+function AttachMedia({ phone, from, onSent, notify }: { phone: string; from?: string; onSent: () => void; notify: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
   async function pick(e: React.ChangeEvent<HTMLInputElement>) {
@@ -440,48 +513,21 @@ function AttachMedia({ phone, from, onSent }: { phone: string; from?: string; on
       const up = await fetch("/api/upload", { method: "POST", body: fd });
       const ud = await up.json();
       if (!up.ok) throw new Error(ud.error || "Upload failed");
-      const res = await fetch("/api/send", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: "+" + phone, mediaUrl: ud.url, from: from || undefined }),
-      });
+      const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "+" + phone, mediaUrl: ud.url, from: from || undefined }) });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Send failed");
       onSent();
     } catch (err: any) {
-      alert(err.message);
+      notify(err.message);
     } finally {
       setBusy(false);
       if (ref.current) ref.current.value = "";
     }
   }
   return (
-    <div style={{ flexShrink: 0 }}>
-      <button onClick={() => ref.current?.click()} disabled={busy} title="Attach image or PDF" style={{ padding: "12px 14px", background: "#fff", border: "1px solid #E4E1DB", borderRadius: 8, cursor: "pointer", lineHeight: 0, color: "#141414" }}>
-        {busy ? <span style={{ fontSize: 13 }}>…</span> : (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
-        )}
-      </button>
+    <>
+      <button className="icon-btn" onClick={() => ref.current?.click()} disabled={busy} title="Attach image or PDF" aria-label="Attach image or PDF"><Icon d={IC.paperclip} s={18} /></button>
       <input ref={ref} type="file" accept="image/*,application/pdf" onChange={pick} style={{ display: "none" }} />
-    </div>
-  );
-}
-
-function NewMessage({ onSent }: { onSent: () => void }) {
-  const [phone, setPhone] = useState("");
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  async function go() {
-    setBusy(true);
-    const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone, body }) });
-    setBusy(false);
-    if (res.ok) { setPhone(""); setBody(""); onSent(); } else alert("Failed: " + (await res.json()).error);
-  }
-  return (
-    <div style={{ margin: "auto", width: "100%", maxWidth: 380, textAlign: "center", padding: 24, boxSizing: "border-box" }}>
-      <div style={{ marginBottom: 14, color: "#6B6862" }}>Start a conversation</div>
-      <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+9715XXXXXXXX" style={{ width: "100%", padding: 12, marginBottom: 8, border: "1px solid #E4E1DB", borderRadius: 8, boxSizing: "border-box" }} />
-      <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Message (within 24h window)" rows={3} style={{ width: "100%", padding: 12, marginBottom: 8, border: "1px solid #E4E1DB", borderRadius: 8, boxSizing: "border-box" }} />
-      <button onClick={go} disabled={busy} style={{ padding: "12px 24px", background: "#141414", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer" }}>{busy ? "Sending..." : "Send"}</button>
-    </div>
+    </>
   );
 }

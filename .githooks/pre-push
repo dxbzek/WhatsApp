@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Auto-push verification gate: never let a non-compiling change reach main
+# (main auto-deploys to the live Vercel console). Applies to anyone pushing -
+# the main session, subagents, skills, or a human. Bypass in a real emergency
+# with: git push --no-verify
+set -e
+echo "pre-push: typecheck (tsc --noEmit)…"
+if [ -f package.json ] && grep -q '"typecheck"' package.json; then
+  npm run -s typecheck
+else
+  npx -y tsc --noEmit
+fi
+echo "pre-push: OK"

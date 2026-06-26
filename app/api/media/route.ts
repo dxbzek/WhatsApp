@@ -14,7 +14,10 @@ export async function GET(req: NextRequest) {
   if (!host.endsWith("api.twilio.com")) return NextResponse.json({ error: "Forbidden host" }, { status: 403 });
 
   const { authHeader } = twilioCreds();
-  const res = await fetch(url, { headers: { Authorization: authHeader }, redirect: "follow" });
+  // redirect:manual so the Twilio Basic-auth header is never re-sent to a
+  // redirect target off api.twilio.com (the host check only covers the first hop).
+  const res = await fetch(url, { headers: { Authorization: authHeader }, redirect: "manual" });
+  if (res.status >= 300 && res.status < 400) return NextResponse.json({ error: "Unexpected redirect" }, { status: 502 });
   if (!res.ok) return NextResponse.json({ error: `Media ${res.status}` }, { status: res.status });
 
   const buf = await res.arrayBuffer();

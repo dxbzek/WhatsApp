@@ -56,6 +56,19 @@ export async function setLeadLabel(leadId: string, labelId: string | null) {
   await pd(`/leads/${leadId}`, { method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify({ label_ids: labelId ? [labelId] : [] }) });
 }
 
+// Assign a lead to an agent (Pipedrive user) so it lands in their queue.
+export async function setLeadOwner(leadId: string, ownerId: number) {
+  await pd(`/leads/${leadId}`, { method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify({ owner_id: ownerId }) });
+}
+
+// List active Pipedrive users (id + name + email), for mapping agents to
+// their Pipedrive owner id. Cached per process.
+let _users: any[] | null = null;
+export async function listPipedriveUsers(): Promise<{ id: number; name: string; email: string }[]> {
+  if (!_users) _users = (await pd(`/users`).catch(() => [])) || [];
+  return (_users || []).map((u: any) => ({ id: u.id, name: u.name, email: u.email }));
+}
+
 // Keep a single running WhatsApp-transcript note on the person up to date.
 export async function upsertWhatsAppNote(personId: number, content: string, noteId?: string | null) {
   if (noteId) {

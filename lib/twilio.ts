@@ -13,6 +13,23 @@ export function twilioCreds() {
   };
 }
 
+// Turn Twilio's terse REST errors into something a human can act on. A blocked
+// or wrong credential comes back as HTTP 401 + code 20003 with the bare message
+// "Authenticate" - which reads like a button, not a problem. Map the common
+// account-level failures to plain guidance; pass everything else through.
+export function twilioError(status: number, data: any, fallback: string): Error {
+  const code = data?.code;
+  if (status === 401 || code === 20003) {
+    return new Error(
+      "Twilio rejected the credentials. The account is likely suspended, or the API key/token changed. Check the Twilio console."
+    );
+  }
+  if (status === 403 || code === 20005) {
+    return new Error("Twilio account is not active (suspended or closed). Open the Twilio console to restore it.");
+  }
+  return new Error(data?.message || fallback);
+}
+
 // GET against any Twilio host (api.twilio.com or content.twilio.com).
 // `url` may be a full URL or a path beginning with "/".
 export async function twilioGet(url: string) {
@@ -20,8 +37,65 @@ export async function twilioGet(url: string) {
   const full = url.startsWith("http") ? url : `https://api.twilio.com${url}`;
   const res = await fetch(full, { headers: { Authorization: authHeader } });
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.message || `Twilio GET ${res.status}`);
+  if (!res.ok) throw twilioError(res.status, data, `Twilio GET ${res.status}`);
   return data;
+}
+
+// Resolve a template's header media URL (image / PDF / video) from its Content
+// SID, so outbound template messages render the creative in our own inbox just
+// like the recipient sees on WhatsApp. Returns null for text-only templates and
+// for variable media placeholders ("{{1}}") that aren't real URLs.
+export async function getContentMedia(contentSid: string): Promise<string | null> {
+  try {
+    const data: any = await twilioGet(`https://content.twilio.com/v1/Content/${contentSid}`);
+    const types = data?.types || {};
+    for (const key of Object.keys(types)) {
+      const m = types[key]?.media;
+      const url = Array.isArray(m) ? m[0] : m;
+      if (typeof url === "string" && /^https?:\/\//i.test(url)) return url;
+    }
+    return null;
+  } catch {
+    return null; // never block a send on media lookup
+  }
+}
+
+// Resolve a template's body TEXT from its Content SID, so logged messages show the
+// real message in our inbox instead of a bare "[template]" placeholder. Returns
+// null for templates with no text body (pure-media).
+export async function getContentBody(contentSid: string): Promise<string | null> {
+  try {
+    const data: any = await twilioGet(`https://content.twilio.com/v1/Content/${contentSid}`);
+    const types = data?.types || {};
+    for (const key of Object.keys(types)) {
+      const b = types[key]?.body;
+      if (typeof b === "string" && b.trim()) return b;
+    }
+    return null;
+  } catch {
+    return null; // never block a send on a body lookup
+  }
+}
+
+// Substitute {{1}},{{2}},... placeholders in a template body with content variables
+// (keyed "1","2",...). Unknown placeholders are left as-is. Empty input -> "".
+export function renderTemplateBody(body: string | null, vars?: Record<string, string> | null): string {
+  if (!body) return "";
+  if (!vars) return body;
+  return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (m, n) => (vars[n] != null ? String(vars[n]) : m));
+}
+
+// Read a message's current status from Twilio. Used to reconcile rows whose SID
+// was created via Twilio's own scheduler (our cron never sends those, so their DB
+// status would otherwise freeze at 'scheduled' even after Twilio sends/fails/cancels).
+export async function getMessageStatus(messageSid: string): Promise<{ status: string | null; errorCode: string | null } | null> {
+  try {
+    const { sid } = twilioCreds();
+    const data: any = await twilioGet(`/2010-04-01/Accounts/${sid}/Messages/${messageSid}.json`);
+    return { status: data?.status || null, errorCode: data?.error_code ? String(data.error_code) : null };
+  } catch {
+    return null; // never let a reconcile lookup break the cron
+  }
 }
 
 // JSON POST against content.twilio.com (Content API).
@@ -33,7 +107,7 @@ export async function twilioContentPost(path: string, body: any) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.message || `Twilio POST ${res.status}`);
+  if (!res.ok) throw twilioError(res.status, data, `Twilio POST ${res.status}`);
   return data;
 }
 
@@ -46,7 +120,7 @@ export async function twilioContentDelete(path: string) {
   });
   if (!res.ok && res.status !== 204) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data?.message || `Twilio DELETE ${res.status}`);
+    throw twilioError(res.status, data, `Twilio DELETE ${res.status}`);
   }
 }
 
@@ -57,7 +131,10 @@ function statusCallbackUrl() {
     (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${cleanEnv(process.env.VERCEL_PROJECT_PRODUCTION_URL)}` : "");
   if (!base) return "";
   const bypass = cleanEnv(process.env.VERCEL_AUTOMATION_BYPASS_SECRET);
-  return `${base}/api/twilio/status${bypass ? `?x-vercel-protection-bypass=${bypass}&x-vercel-set-bypass-cookie=true` : ""}`;
+  // Bypass as a query param only — NOT x-vercel-set-bypass-cookie=true, which
+  // would (a) 307-redirect the callback and (b) let a leaked URL mint a durable
+  // project-wide bypass cookie.
+  return `${base}/api/twilio/status${bypass ? `?x-vercel-protection-bypass=${bypass}` : ""}`;
 }
 
 // Messaging Service SID - required for Twilio's native scheduled sends.
@@ -99,7 +176,7 @@ async function postMessage(form: URLSearchParams, opts?: { sendAt?: string; from
     body: form,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.message || "Twilio send failed");
+  if (!res.ok) throw twilioError(res.status, data, "Twilio send failed");
   return data; // includes sid, status
 }
 
@@ -117,7 +194,7 @@ export async function cancelMessage(messageSid: string) {
     body: new URLSearchParams({ Status: "canceled" }),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.message || `Cancel failed (${res.status})`);
+  if (!res.ok) throw twilioError(res.status, data, `Cancel failed (${res.status})`);
   return data;
 }
 

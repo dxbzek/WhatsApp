@@ -5,42 +5,79 @@ import { supabaseAdmin } from "@/lib/supabase";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Lists Twilio Content templates with their WhatsApp approval status.
-// Uses /v1/ContentAndApprovals so status comes back in one call.
+// Parse a Content resource's `types` block into the fields the UI renders.
+function parseContent(c: any) {
+  const types = c.types || {};
+  const typeKey = Object.keys(types)[0] || null;
+  const t = (typeKey ? types[typeKey] : null) || {};
+  const actions = t.actions || [];
+  // Quick-reply button titles - these become the tappable keyword triggers
+  const replyButtons = actions
+    .filter((a: any) => (a?.type || "").toUpperCase() === "QUICK_REPLY")
+    .map((a: any) => a.title)
+    .filter(Boolean);
+  // Header image (real URL only - skip variable placeholders like "{{1}}")
+  const rawMedia = Array.isArray(t.media) ? t.media[0] : t.media;
+  const media = typeof rawMedia === "string" && /^https?:\/\//i.test(rawMedia) ? rawMedia : null;
+  // Full button list (type/title/url/phone) so the preview can render them
+  const buttons = actions
+    .map((a: any) => ({ type: (a?.type || "").toUpperCase(), title: a?.title || "", url: a?.url || null, phone: a?.phone || null }))
+    .filter((b: any) => b.title);
+  return {
+    type: typeKey, // e.g. whatsapp/card, whatsapp/text
+    variables: c.variables || {},
+    body: t.body || null,
+    media,
+    headerText: t.header_text || null,
+    footer: t.footer || null,
+    buttons,
+    replyButtons,
+  };
+}
+
+// Page through a Content API list endpoint, collecting items from `key`.
+async function twilioList(start: string, key: string) {
+  const items: any[] = [];
+  let url: string | null = start;
+  let guard = 0;
+  while (url && guard++ < 40) {
+    const data: any = await twilioGet(url);
+    for (const c of data[key] || []) items.push(c);
+    url = data.meta?.next_page_url || null;
+  }
+  return items;
+}
+
+// Lists templates from /v1/Content (the authoritative record - never drops an item)
+// and merges WhatsApp approval status from /v1/ContentAndApprovals as a lookup.
+// ContentAndApprovals is eventually consistent and can omit a template whose status
+// just changed; using it only for status (not existence) stops templates vanishing.
 export async function GET() {
   try {
-    const out: any[] = [];
-    let url: string | null = "https://content.twilio.com/v1/ContentAndApprovals?PageSize=50";
-    let guard = 0;
-    while (url && guard++ < 20) {
-      const data: any = await twilioGet(url);
-      for (const c of data.contents || []) {
-        const approval = c.approval_requests || {};
-        const types = c.types || {};
-        const typeKey = Object.keys(types)[0] || null;
-        const actions = (typeKey ? types[typeKey]?.actions : null) || [];
-        // Quick-reply button titles - these become the tappable keyword triggers
-        const replyButtons = actions
-          .filter((a: any) => (a?.type || "").toUpperCase() === "QUICK_REPLY")
-          .map((a: any) => a.title)
-          .filter(Boolean);
-        out.push({
-          sid: c.sid,
-          name: c.friendly_name,
-          language: c.language,
-          type: typeKey, // e.g. whatsapp/card, whatsapp/text
-          category: approval.category || null,
-          status: approval.status || "unsubmitted", // approved | pending | rejected | ...
-          rejection_reason: approval.rejection_reason || null,
-          variables: c.variables || {},
-          body: types[typeKey || ""]?.body || null,
-          replyButtons,
-          updated: c.date_updated,
-        });
-      }
-      const next = data.meta?.next_page_url;
-      url = next || null;
-    }
+    const [contents, approvals] = await Promise.all([
+      twilioList("https://content.twilio.com/v1/Content?PageSize=50", "contents"),
+      twilioList("https://content.twilio.com/v1/ContentAndApprovals?PageSize=50", "contents").catch(() => []),
+    ]);
+    // sid -> approval_requests
+    const approvalBySid = new Map<string, any>();
+    for (const a of approvals) if (a?.sid) approvalBySid.set(a.sid, a.approval_requests || {});
+
+    const out = contents.map((c: any) => {
+      const approval = approvalBySid.get(c.sid) || {};
+      const parsed = parseContent(c);
+      return {
+        sid: c.sid,
+        name: c.friendly_name,
+        language: c.language,
+        ...parsed,
+        category: approval.category || null,
+        status: approval.status || "unsubmitted", // approved | pending | rejected | received | ...
+        rejection_reason: approval.rejection_reason || null,
+        updated: c.date_updated,
+      };
+    });
+    // newest first
+    out.sort((a, b) => String(b.updated || "").localeCompare(String(a.updated || "")));
     return NextResponse.json({ templates: out });
   } catch (e: any) {
     return NextResponse.json({ error: e.message || "Failed to load templates" }, { status: 500 });

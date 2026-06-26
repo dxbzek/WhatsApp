@@ -1,334 +1,77 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { Icon, IC, Badge, PageHead, Skeleton, CHECK2, sm, kindOf, TYPE_LABEL, LANG_LABEL, isRTL, renderVars, fmtUpdated, LANGUAGES } from "@/lib/ui";
+import { type Tpl } from "@/lib/fixtures";
 
-type Tpl = {
-  sid: string;
-  name: string;
-  language: string;
-  type: string | null;
-  category: string | null;
-  status: string;
-  rejection_reason: string | null;
-  variables: Record<string, string>;
-  body: string | null;
-  replyButtons: string[];
-  updated: string;
-};
+type Btn = { type: "url" | "phone" | "quick-reply"; title: string; url?: string; phone?: string };
 
-const STATUS_COLOR: Record<string, string> = {
-  approved: "#137333",
-  pending: "#9a6700",
-  received: "#9a6700",
-  rejected: "#b00020",
-  unsubmitted: "#6B6862",
-};
-
-// WhatsApp template language codes, weighted to ERE's Dubai audience.
-const LANGUAGES = [
-  { code: "en", label: "English" },
-  { code: "en_GB", label: "English (UK)" },
-  { code: "ar", label: "Arabic" },
-  { code: "hi", label: "Hindi" },
-  { code: "ur", label: "Urdu" },
-  { code: "fa", label: "Persian / Farsi" },
-  { code: "ru", label: "Russian" },
-  { code: "fr", label: "French" },
-  { code: "fil", label: "Filipino" },
-  { code: "zh_CN", label: "Chinese (Simplified)" },
-  { code: "es", label: "Spanish" },
-  { code: "de", label: "German" },
-];
-
-export default function Templates() {
-  const [tpls, setTpls] = useState<Tpl[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [showNew, setShowNew] = useState(false);
-  const [autoFor, setAutoFor] = useState<string | null>(null);
-  const [open, setOpen] = useState<Set<string>>(new Set()); // expanded template cards
-  const toggle = (sid: string) => setOpen((p) => { const n = new Set(p); n.has(sid) ? n.delete(sid) : n.add(sid); return n; });
-  const [seed, setSeed] = useState<any>(null); // prefill for the create form (from Duplicate)
-
-  async function load() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const res = await fetch("/api/templates");
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed");
-      setTpls(data.templates || []);
-    } catch (e: any) {
-      setErr(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => {
-    load();
-  }, []);
-
-  const [busySid, setBusySid] = useState<string | null>(null);
-
-  async function deleteTpl(t: Tpl) {
-    if (!confirm(`Delete template "${t.name}"? This removes it from Twilio and cannot be undone.`)) return;
-    setBusySid(t.sid);
-    setErr(null);
-    try {
-      const res = await fetch(`/api/templates?sid=${encodeURIComponent(t.sid)}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Delete failed");
-      setTpls((prev) => prev.filter((x) => x.sid !== t.sid));
-    } catch (e: any) {
-      setErr(e.message);
-    } finally {
-      setBusySid(null);
-    }
-  }
-
-  // Duplicate = open the create form pre-filled with this template's content,
-  // so it can be edited before submitting (nothing is created until you submit).
-  function duplicateTpl(t: Tpl) {
-    const type = (t.type || "").toLowerCase();
-    const kind = type.includes("card") ? "card" : (t.replyButtons.length || type.includes("quick")) ? "quick-reply" : "text";
-    setSeed({
-      kind,
-      name: `${t.name}_copy`.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
-      category: t.category || "MARKETING",
-      language: t.language || "en",
-      body: t.body || "",
-      buttons: kind === "quick-reply" ? t.replyButtons.map((title) => ({ type: "quick-reply", title })) : [],
-      varDefaults: t.variables || {},
-    });
-    setShowNew(true);
-    // Scroll the form into view (the app scrolls an inner container, not window).
-    setTimeout(() => document.getElementById("tpl-form-top")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
-  }
-
+/* ── Live phone preview ── */
+function PhonePreview({ kind, headerType, headerText, mediaUrl, mediaIsVideo, body, footer, buttons, vars }: {
+  kind: string; headerType: string; headerText: string; mediaUrl: string; mediaIsVideo: boolean; body: string; footer: string; buttons: Btn[]; vars: Record<string, string>;
+}) {
+  const render = (t: string) => (t || "").replace(/\{\{(\d+)\}\}/g, (_, n) => vars[n] || `{{${n}}}`);
+  const btns = kind === "card" || kind === "quick-reply" ? buttons.filter((b) => b.title) : [];
   return (
-    <div style={{ maxWidth: 1000, margin: "0 auto", padding: "28px 24px" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-        <h1 style={{ fontFamily: "Georgia, serif", fontWeight: 400, fontSize: 24, margin: 0 }}>
-          WhatsApp Templates
-        </h1>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Link href="/templates/performance" style={{ fontSize: 13, color: "#6B6862", textDecoration: "none", whiteSpace: "nowrap" }}>Performance →</Link>
-          <button onClick={() => { if (!showNew) setSeed(null); setShowNew((s) => !s); }} style={{ ...btn, background: showNew ? "#6B6862" : "#137333" }}>
-            {showNew ? "Close" : "+ New template"}
-          </button>
-          <button onClick={load} style={btn}>{loading ? "Loading…" : "Refresh"}</button>
+    <div className="phone">
+      <div className="phone-notch" />
+      <div className="wa-top"><div className="wa-ava">E</div><div><div className="wa-name">ERE Homes</div><div className="wa-status">online</div></div></div>
+      <div className="wa-chat">
+        <div className="wa-bubble">
+          {kind === "card" && headerType === "media" && mediaUrl && (mediaIsVideo ? <video src={mediaUrl} muted playsInline className="bimg" /> : <img className="bimg" src={mediaUrl} alt="" />)}
+          {kind === "card" && headerType === "media" && !mediaUrl && <div className="bimgph">Image / Video header</div>}
+          {kind === "card" && headerType === "text" && headerText && <div className="bhead">{render(headerText)}</div>}
+          <div className="bbody">{render(body) || <span className="placeholder">Your message will appear here…</span>}</div>
+          {kind === "card" && footer && <div className="bfoot">{render(footer)}</div>}
+          <div className="btime">12:30 PM <span style={{ color: "#53bdeb" }}>{CHECK2}</span></div>
         </div>
-      </div>
-
-      {showNew && (
-        <NewTemplate
-          key={seed ? seed.name : "new"}
-          seed={seed}
-          onCreated={() => {
-            setShowNew(false);
-            setSeed(null);
-            load();
-          }}
-        />
-      )}
-
-      {err && <div style={errBox}>{err}</div>}
-      {!err && !loading && tpls.length === 0 && (
-        <div style={{ color: "#6B6862" }}>No content templates found on this Twilio account.</div>
-      )}
-
-      <div style={{ display: "grid", gap: 12 }}>
-        {tpls.map((t) => (
-          <div key={t.sid} style={card}>
-            <div onClick={() => toggle(t.sid)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, cursor: "pointer" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                <span style={{ color: "#9a958c", fontSize: 12, transform: open.has(t.sid) ? "rotate(90deg)" : "none", transition: "transform .15s", flexShrink: 0 }}>▶</span>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name}</div>
-                  {open.has(t.sid) && <div style={{ fontSize: 12, color: "#9a958c", marginTop: 2 }}>{t.sid} · {t.type || "-"} · {t.language || "-"}</div>}
-                </div>
-              </div>
-              <span
-                style={{
-                  fontSize: 11,
-                  textTransform: "uppercase",
-                  letterSpacing: 1,
-                  color: "#fff",
-                  background: STATUS_COLOR[t.status] || "#6B6862",
-                  padding: "4px 10px",
-                  borderRadius: 20,
-                  whiteSpace: "nowrap",
-                  flexShrink: 0,
-                }}
-              >
-                {t.status}
-              </span>
-            </div>
-
-            {open.has(t.sid) && (
-              <>
-                {t.category && (
-                  <div style={{ fontSize: 12, color: "#6B6862", marginTop: 8 }}>Category: {t.category}</div>
-                )}
-                {t.body && (
-                  <div style={{ marginTop: 10, padding: 12, background: "#F5F5F5", borderRadius: 8, fontSize: 14, whiteSpace: "pre-wrap" }}>
-                    {t.body}
-                  </div>
-                )}
-                {Object.keys(t.variables || {}).length > 0 && (
-                  <div style={{ fontSize: 12, color: "#6B6862", marginTop: 8 }}>
-                    Variables: {Object.entries(t.variables).map(([k, v]) => `{{${k}}}=${v}`).join(", ")}
-                  </div>
-                )}
-                {t.rejection_reason && (
-                  <div style={{ fontSize: 12, color: "#b00020", marginTop: 8 }}>
-                    Rejected: {t.rejection_reason}
-                  </div>
-                )}
-
-                <div style={{ display: "flex", gap: 8, marginTop: 14, borderTop: "1px solid #F0EEE9", paddingTop: 12, flexWrap: "wrap" }}>
-                  {t.replyButtons.length > 0 && (
-                    <button onClick={() => setAutoFor(autoFor === t.sid ? null : t.sid)} style={{ ...action, fontWeight: 600 }}>
-                      {autoFor === t.sid ? "Hide auto-replies" : `Auto-replies (${t.replyButtons.length})`}
-                    </button>
-                  )}
-                  <button onClick={() => duplicateTpl(t)} disabled={busySid === t.sid} style={action}>
-                    {busySid === t.sid ? "…" : "Duplicate"}
-                  </button>
-                  <button onClick={() => deleteTpl(t)} disabled={busySid === t.sid} style={{ ...action, color: "#b00020", borderColor: "#f0c5c0" }}>
-                    Delete
-                  </button>
-                </div>
-
-                {autoFor === t.sid && <AutoReplyConfig buttons={t.replyButtons} />}
-              </>
-            )}
-          </div>
-        ))}
+        {btns.length > 0 && <div className="wa-replies">{btns.map((b, i) => <div key={i} className="wa-reply"><Icon d={IC.reply} s={13} /> {b.title}</div>)}</div>}
       </div>
     </div>
   );
 }
 
-// Template-first auto-reply setup: shows the selected template's reply
-// buttons (keywords) and lets you set what each one replies with.
-function AutoReplyConfig({ buttons }: { buttons: string[] }) {
-  const [rules, setRules] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
-  const [savedKey, setSavedKey] = useState<string | null>(null);
+type Seed = { kind: "text" | "card" | "quick-reply"; name: string; category: string; language: string; body: string; buttons: Btn[]; varDefaults: Record<string, string>; headerType?: "none" | "text" | "image" | "media"; headerText?: string; mediaUrl?: string; footer?: string } | null;
 
-  async function load() {
-    setLoading(true);
-    const res = await fetch("/api/auto-replies");
-    const d = await res.json();
-    const byTrigger: Record<string, any> = {};
-    for (const r of d.rules || []) byTrigger[(r.trigger || "").toLowerCase()] = r;
-    const map: Record<string, any> = {};
-    for (const b of buttons) {
-      const ex = byTrigger[b.toLowerCase()];
-      map[b] = ex
-        ? { id: ex.id, reply: ex.reply || "", push_pipedrive: !!ex.push_pipedrive, block: !!ex.block, enabled: ex.enabled !== false }
-        : { reply: "", push_pipedrive: false, block: false, enabled: true };
-    }
-    setRules(map);
-    setLoading(false);
-  }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
-
-  async function save(trigger: string) {
-    const r = rules[trigger];
-    const res = await fetch("/api/auto-replies", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: r.id, trigger, reply: r.reply, push_pipedrive: r.push_pipedrive, block: r.block, enabled: r.enabled }),
-    });
-    const d = await res.json();
-    if (res.ok) { setRules({ ...rules, [trigger]: { ...r, id: d.rule.id } }); setSavedKey(trigger); setTimeout(() => setSavedKey(null), 1500); }
-    else alert(d.error || "Save failed");
-  }
-  function set(trigger: string, patch: any) { setRules({ ...rules, [trigger]: { ...rules[trigger], ...patch } }); }
-
-  return (
-    <div style={{ marginTop: 12, padding: 14, background: "#FFFFFF", border: "1px solid #F0EEE9", borderRadius: 10 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Auto-replies for this template’s buttons</div>
-      <div style={{ fontSize: 12, color: "#6B6862", marginBottom: 10 }}>When a contact taps a button, the app sends the reply (and optionally creates a Pipedrive lead).</div>
-      {loading && <div style={{ color: "#6B6862", fontSize: 13 }}>Loading…</div>}
-      {!loading && buttons.map((b) => {
-        const r = rules[b] || {};
-        return (
-          <div key={b} style={{ borderTop: "1px solid #F0EEE9", paddingTop: 10, marginTop: 10 }}>
-            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Keyword: “{b}”</div>
-            <textarea value={r.reply || ""} onChange={(e) => set(b, { reply: e.target.value })} rows={2} placeholder="Reply sent automatically when this button is tapped…" style={{ ...input, resize: "vertical" }} />
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
-              <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", color: "#137333" }}>
-                <input type="checkbox" checked={!!r.push_pipedrive} onChange={(e) => set(b, { push_pipedrive: e.target.checked })} /> Create Hot lead in Pipedrive
-              </label>
-              <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", color: "#b00020" }}>
-                <input type="checkbox" checked={!!r.block} onChange={(e) => set(b, { block: e.target.checked })} /> Block (opt-out)
-              </label>
-              <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
-                <input type="checkbox" checked={r.enabled !== false} onChange={(e) => set(b, { enabled: e.target.checked })} /> Enabled
-              </label>
-              <button onClick={() => save(b)} style={{ ...pillActive, padding: "6px 16px", borderRadius: 8, cursor: "pointer", border: "none" }}>
-                {savedKey === b ? "Saved ✓" : "Save"}
-              </button>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-type Btn = {
-  type: "url" | "phone" | "quick-reply";
-  title: string;
-  url?: string;
-  phone?: string;
-  auto?: boolean; // auto-reply when this button is tapped
-  reply?: string; // the auto-reply text
-  pushLead?: boolean; // create a Hot lead in Pipedrive on tap
-};
-
-function NewTemplate({ onCreated, seed }: { onCreated: () => void; seed?: any }) {
-  // Card templates start from a ready scaffold: image header + 3 buttons.
-  // (Applies to both a brand-new card and a duplicated card, since header/
-  // buttons aren't carried over in the list data.) Quick-reply keeps its
-  // copied buttons; text gets none.
-  const DEFAULT_BUTTONS: Btn[] = [
-    { type: "quick-reply", title: "" },
-    { type: "quick-reply", title: "" },
-    { type: "quick-reply", title: "" },
-  ];
-  const initialKind: "text" | "card" | "quick-reply" = seed?.kind ?? "card";
+/* ── Composer modal ── */
+function Composer({ onClose, onCreated, seed }: { onClose: () => void; onCreated: (t: Tpl | null) => void; seed: Seed }) {
+  const DEFAULT_BUTTONS: Btn[] = [{ type: "quick-reply", title: "" }, { type: "quick-reply", title: "" }, { type: "quick-reply", title: "" }];
+  const initialKind = seed?.kind ?? "card";
   const isBtnKind = initialKind === "card" || initialKind === "quick-reply";
   const [kind, setKind] = useState<"text" | "card" | "quick-reply">(initialKind);
   const [name, setName] = useState(seed?.name ?? "");
   const [category, setCategory] = useState(seed?.category ?? "MARKETING");
   const [language, setLanguage] = useState(seed?.language ?? "en");
   const [body, setBody] = useState(seed?.body ?? "");
-  const [headerType, setHeaderType] = useState<"none" | "text" | "media">(initialKind === "card" ? "media" : "none");
-  const [headerText, setHeaderText] = useState("");
-  const [footer, setFooter] = useState("");
-  const [mediaUrl, setMediaUrl] = useState("");
+  const [headerType, setHeaderType] = useState<"none" | "text" | "media">(seed?.headerType === "image" ? "media" : (seed?.headerType as "none" | "text" | "media" | undefined) ?? (initialKind === "card" ? "media" : "none"));
+  const [headerText, setHeaderText] = useState(seed?.headerText ?? "");
+  const [footer, setFooter] = useState(seed?.footer ?? "");
+  const [mediaUrl, setMediaUrl] = useState(seed?.mediaUrl ?? "");
   const [mediaIsVideo, setMediaIsVideo] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [buttons, setButtons] = useState<Btn[]>(seed?.buttons?.length ? seed.buttons : (isBtnKind ? DEFAULT_BUTTONS : []));
+  const [buttons, setButtons] = useState<Btn[]>(seed?.buttons?.length ? seed.buttons : isBtnKind ? DEFAULT_BUTTONS : []);
   const [varDefaults, setVarDefaults] = useState<Record<string, string>>(seed?.varDefaults ?? {});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Detect {{1}}, {{2}}… across all text fields so we can offer a default per variable.
-  const detectedVars = Array.from(
-    new Set([...`${body} ${headerText} ${footer}`.matchAll(/\{\{(\d+)\}\}/g)].map((m) => m[1]))
-  ).sort((a, b) => Number(a) - Number(b));
+  const detectedVars = Array.from(new Set([...`${body} ${headerText} ${footer}`.matchAll(/\{\{(\d+)\}\}/g)].map((m) => m[1]))).sort((a, b) => Number(a) - Number(b));
+  const maxButtons = 3;
+  const addButton = () => buttons.length < maxButtons && setButtons([...buttons, { type: "quick-reply", title: "" }]);
+  const setBtn = (i: number, patch: Partial<Btn>) => setButtons(buttons.map((b, idx) => (idx === i ? { ...b, ...patch } : b)));
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
     setUploading(true);
     setErr(null);
+    // Prefer the real uploader (Supabase storage); fall back to an inline data URL.
     try {
       const fd = new FormData();
       fd.append("file", f);
@@ -337,336 +80,522 @@ function NewTemplate({ onCreated, seed }: { onCreated: () => void; seed?: any })
       if (!res.ok) throw new Error(d.error || "Upload failed");
       setMediaUrl(d.url);
       setMediaIsVideo(f.type.startsWith("video/"));
-    } catch (e: any) {
-      setErr(e.message);
-    } finally {
       setUploading(false);
+    } catch {
+      const r = new FileReader();
+      r.onload = () => { setMediaUrl(String(r.result)); setMediaIsVideo(false); setUploading(false); };
+      r.onerror = () => { setErr("Upload failed"); setUploading(false); };
+      r.readAsDataURL(f);
     }
-  }
-
-  const maxButtons = 3;
-  function addButton() {
-    if (buttons.length >= maxButtons) return;
-    setButtons([...buttons, { type: "quick-reply", title: "" }]);
-  }
-  function setBtn(i: number, patch: Partial<Btn>) {
-    setButtons(buttons.map((b, idx) => (idx === i ? { ...b, ...patch } : b)));
   }
 
   async function submit() {
     setErr(null);
     setMsg(null);
+    if (!name.trim()) return setErr("Template name is required.");
+    if (!body.trim()) return setErr("Body text is required.");
+    // A data: URI means the image never uploaded to a public URL; Twilio rejects it.
+    if (kind === "card" && headerType === "media" && mediaUrl && !/^https?:\/\//i.test(mediaUrl)) {
+      return setErr("The header media has not finished uploading to a public URL. Re-add the file, wait for the preview, then submit.");
+    }
     setBusy(true);
+
+    const vars: Record<string, string> = {};
+    for (const k of detectedVars) if ((varDefaults[k] || "").trim()) vars[k] = varDefaults[k].trim();
+    const replyButtons = kind === "card" || kind === "quick-reply"
+      ? buttons.filter((b) => b.title && (kind === "quick-reply" || b.type === "quick-reply")).map((b) => b.title)
+      : [];
+
+    const payload: any = { name, category, language, kind, body };
+    if (Object.keys(vars).length) payload.variables = vars;
+    if (kind === "card") {
+      if (headerType === "text" && headerText) payload.headerText = headerText;
+      if (headerType === "media" && mediaUrl) payload.mediaUrl = mediaUrl;
+      if (footer) payload.footer = footer;
+      payload.buttons = buttons;
+    }
+    if (kind === "quick-reply") payload.buttons = buttons;
+
+    const localTpl: Tpl = {
+      sid: "HX" + Math.random().toString(16).slice(2).padEnd(32, "0").slice(0, 32),
+      name, language, category,
+      type: kind === "card" ? "whatsapp/card" : kind === "quick-reply" ? "twilio/quick-reply" : "twilio/text",
+      status: "pending", rejection_reason: null, variables: vars, body, replyButtons,
+      updated: new Date().toISOString(),
+    };
+
     try {
-      const payload: any = { name, category, language, kind };
-      // Default values for any {{n}} the recipient may be missing
-      const vars: Record<string, string> = {};
-      for (const k of detectedVars) if ((varDefaults[k] || "").trim()) vars[k] = varDefaults[k].trim();
-      if (Object.keys(vars).length) payload.variables = vars;
-      payload.body = body;
-      if (kind === "card") {
-        if (headerType === "text" && headerText) payload.headerText = headerText;
-        if (headerType === "media" && mediaUrl) payload.mediaUrl = mediaUrl;
-        if (footer) payload.footer = footer;
-        payload.buttons = buttons;
-      }
-      if (kind === "quick-reply") {
-        payload.buttons = buttons;
-      }
-      const res = await fetch("/api/templates", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetch("/api/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed");
-      if (data.approvalError) {
-        setMsg(`Created ${data.sid}, but approval submit failed: ${data.approvalError}`);
-      } else {
-        setMsg(`Submitted "${data.name}" - status: ${data.status}. Refreshing…`);
-        setTimeout(onCreated, 900);
+      if (!res.ok) throw new Error(data.error || "Failed to create the template");
+      // Only treat it as created if Twilio actually returned a real Content SID.
+      if (!data.sid || !String(data.sid).startsWith("HX")) {
+        throw new Error(data.approvalError || "Twilio did not return a template SID, so nothing was created.");
       }
+      const note = data.approvalError
+        ? `Created “${name}” but approval was NOT submitted: ${data.approvalError}`
+        : `Submitted “${name}” to Meta for review. Status: ${data.status || "pending"}.`;
+      setMsg(note);
+      setBusy(false);
+      setTimeout(() => onCreated({ ...localTpl, sid: data.sid, status: data.status === "approved" ? "approved" : "pending" }), 850);
     } catch (e: any) {
-      setErr(e.message);
-    } finally {
+      // Surface the real failure instead of faking a phantom template that vanishes on refresh.
+      setErr(e?.message || "Could not create the template. Nothing was saved to Twilio.");
       setBusy(false);
     }
   }
 
   return (
-    <div id="tpl-form-top" style={{ ...card, marginBottom: 18, background: "#FFFFFF", scrollMarginTop: 12, display: "flex", gap: 22, alignItems: "flex-start", flexWrap: "wrap" }}>
-      <div style={{ flex: "1 1 440px", minWidth: 0 }}>
-      <div style={{ fontWeight: 600, marginBottom: 14 }}>{seed ? "Duplicate template - edit, then submit" : "New WhatsApp template"}</div>
-      {seed && kind === "card" && (
-        <div style={{ fontSize: 12, color: "#9a6700", background: "#FFF8E6", border: "1px solid #F0E2B8", borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>
-          Card header image, footer and buttons aren’t carried over - re-add them below before submitting.
+    <div className="modal">
+      <div className="modal-head">
+        <button className="icon-btn" onClick={onClose} title="Cancel"><Icon d={IC.x} s={18} /></button>
+        <div>
+          <div className="mt">{seed ? "Duplicate content template" : "Create content template"}</div>
+          <div className="ms">{seed ? "Edit the copy, then submit for approval" : "Compose a message and submit it to Meta"}</div>
         </div>
-      )}
-
-      {/* Type selector */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        {([["text", "Text"], ["card", "WhatsApp Card"], ["quick-reply", "Quick Reply"]] as const).map(([k, label]) => (
-          <button
-            key={k}
-            onClick={() => {
-              setKind(k);
-              setButtons([]);
-              setHeaderType(k === "card" ? "media" : "none");
-              setHeaderText("");
-              setMediaUrl("");
-              setMediaIsVideo(false);
-            }}
-            style={{ ...pill, ...(kind === k ? pillActive : {}) }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
-        <Field label="Name (a-z, 0-9, _)">
-          <input value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="property_offer_v2" style={input} />
-        </Field>
-        <Field label="Category">
-          <select value={category} onChange={(e) => setCategory(e.target.value)} style={input}>
-            <option>MARKETING</option>
-            <option>UTILITY</option>
-          </select>
-        </Field>
-        <Field label="Language">
-          <select value={language} onChange={(e) => setLanguage(e.target.value)} style={input}>
-            {LANGUAGES.map((l) => (
-              <option key={l.code} value={l.code}>{l.label}</option>
-            ))}
-          </select>
-        </Field>
-      </div>
-
-      {/* Card header (text or image) - shown above the body on WhatsApp */}
-      {kind === "card" && (
-        <>
-          <Field label="Header (optional)">
-            <select value={headerType} onChange={(e) => setHeaderType(e.target.value as any)} style={{ ...input, marginBottom: 8 }}>
-              <option value="none">No header</option>
-              <option value="text">Text header</option>
-              <option value="media">Image / Video header</option>
-            </select>
-            {headerType === "text" && (
-              <input value={headerText} onChange={(e) => setHeaderText(e.target.value)} placeholder="Header text (max 60)" maxLength={60} style={input} />
-            )}
-            {headerType === "media" && (
-              <>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
-                  <input type="file" accept="image/*,video/mp4" onChange={handleUpload} disabled={uploading} style={{ fontSize: 13 }} />
-                  {uploading && <span style={{ fontSize: 12, color: "#9a6700" }}>Uploading…</span>}
-                </div>
-                <input
-                  value={mediaUrl}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setMediaUrl(val);
-                    setMediaIsVideo(/\.(mp4|mov|webm)$/i.test(val));
-                  }}
-                  placeholder="…or paste an image or video URL"
-                  style={input}
-                />
-                {mediaUrl && !uploading && (
-                  mediaIsVideo
-                    ? <video src={mediaUrl} controls style={{ width: "100%", maxHeight: 160, marginTop: 8, borderRadius: 8, border: "1px solid #E4E1DB" }} />
-                    : <img src={mediaUrl} alt="header preview" style={{ maxHeight: 90, marginTop: 8, borderRadius: 8, border: "1px solid #E4E1DB" }} />
-                )}
-              </>
-            )}
-          </Field>
-        </>
-      )}
-
-      {/* Body - required for every type */}
-      <Field label={`Body${kind === "card" ? " (max 1024)" : ""}  ·  use {{1}}, {{2}} for variables`}>
-        <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={4} maxLength={kind === "card" ? 1024 : undefined} placeholder="Hi {{1}}, here's your update…" style={{ ...input, resize: "vertical" }} />
-      </Field>
-
-      {/* Footer - card only */}
-      {kind === "card" && (
-        <Field label="Footer (optional, max 60)">
-          <input value={footer} onChange={(e) => setFooter(e.target.value)} placeholder="ERE Homes · Reply STOP to opt out" maxLength={60} style={input} />
-        </Field>
-      )}
-
-      {/* Variable defaults - fallback used when the recipient is missing this value */}
-      {detectedVars.length > 0 && (
-        <div style={{ marginTop: 6, marginBottom: 6 }}>
-          <div style={{ fontSize: 12, color: "#6B6862", marginBottom: 6 }}>
-            Default values (used if the recipient is missing one)
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
-            {detectedVars.map((k) => (
-              <div key={k} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 13, color: "#141414", fontWeight: 600, whiteSpace: "nowrap" }}>{`{{${k}}}`}</span>
-                <input
-                  value={varDefaults[k] || ""}
-                  onChange={(e) => setVarDefaults({ ...varDefaults, [k]: e.target.value })}
-                  placeholder={k === "1" ? "e.g. there" : "default"}
-                  style={input}
-                />
-              </div>
-            ))}
-          </div>
+        <div className="mr">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={submit} disabled={busy}><Icon d={IC.bolt} s={15} f="currentColor" w={0} />{busy ? "Submitting…" : "Create & submit"}</button>
         </div>
-      )}
-
-      {/* Buttons for card + quick-reply */}
-      {(kind === "card" || kind === "quick-reply") && (
-        <div style={{ marginTop: 6 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-            <span style={{ fontSize: 12, color: "#6B6862" }}>
-              Buttons {kind === "quick-reply" ? "(quick replies, up to 3)" : "(up to 3 reply, or 2 link/call)"}
-            </span>
-            <button onClick={addButton} disabled={buttons.length >= maxButtons} style={{ ...pill, padding: "4px 12px" }}>+ Add</button>
-          </div>
-          {buttons.map((bt, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-              {kind === "card" && (
-                <select value={bt.type} onChange={(e) => setBtn(i, { type: e.target.value as any })} style={{ ...input, width: 110, marginBottom: 0 }}>
-                  <option value="url">Link</option>
-                  <option value="phone">Call</option>
-                  <option value="quick-reply">Reply</option>
-                </select>
-              )}
-              <input value={bt.title} onChange={(e) => setBtn(i, { title: e.target.value })} placeholder="Button text" style={{ ...input, flex: 1, marginBottom: 0 }} />
-              {kind === "card" && bt.type === "url" && (
-                <input value={bt.url || ""} onChange={(e) => setBtn(i, { url: e.target.value })} placeholder="https://…" style={{ ...input, flex: 1, marginBottom: 0 }} />
-              )}
-              {kind === "card" && bt.type === "phone" && (
-                <input value={bt.phone || ""} onChange={(e) => setBtn(i, { phone: e.target.value })} placeholder="+9715…" style={{ ...input, flex: 1, marginBottom: 0 }} />
-              )}
-              <button onClick={() => setButtons(buttons.filter((_, idx) => idx !== i))} style={{ ...pill, padding: "6px 10px", color: "#b00020" }}>✕</button>
-            </div>
-          ))}
-          {kind === "quick-reply" && (
-            <div style={{ fontSize: 12, color: "#9a958c", marginTop: 4 }}>
-              Set up what these buttons reply with under “Auto-replies” on the template card after it’s created.
-            </div>
-          )}
-        </div>
-      )}
-
-      {err && <div style={{ ...errBox, marginTop: 12 }}>{err}</div>}
-      {msg && <div style={{ background: "#e7f4ea", color: "#137333", padding: 12, borderRadius: 8, marginTop: 12, fontSize: 14 }}>{msg}</div>}
-
-      <div style={{ marginTop: 14 }}>
-        <button onClick={submit} disabled={busy} style={{ ...btn, background: "#137333" }}>
-          {busy ? "Submitting…" : "Create & submit for approval"}
-        </button>
-        <span style={{ fontSize: 12, color: "#9a958c", marginLeft: 12 }}>
-          Goes to Meta for review; status shows here as pending → approved/rejected.
-        </span>
       </div>
-      </div>
-
-      <PhonePreview kind={kind} headerType={headerType} headerText={headerText} mediaUrl={mediaUrl} mediaIsVideo={mediaIsVideo} body={body} footer={footer} buttons={buttons} vars={varDefaults} />
-    </div>
-  );
-}
-
-// Live WhatsApp-style phone mockup of the template being built.
-function PhonePreview({ kind, headerType, headerText, mediaUrl, mediaIsVideo, body, footer, buttons, vars }: {
-  kind: string; headerType: string; headerText: string; mediaUrl: string; mediaIsVideo: boolean; body: string; footer: string; buttons: Btn[]; vars: Record<string, string>;
-}) {
-  const render = (text: string) => (text || "").replace(/\{\{(\d+)\}\}/g, (_, n) => vars[n] || `{{${n}}}`);
-  const btns = (kind === "card" || kind === "quick-reply") ? buttons.filter((b) => b.title) : [];
-  return (
-    <div style={{ flex: "0 0 290px", position: "sticky", top: 12, margin: "0 auto" }}>
-      <div style={{ fontSize: 12, color: "#6B6862", marginBottom: 8, textAlign: "center" }}>Preview</div>
-      <div style={{ width: 290, border: "9px solid #111", borderRadius: 34, overflow: "hidden", boxShadow: "0 12px 30px rgba(0,0,0,.18)" }}>
-        <div style={{ background: "#075E54", color: "#fff", padding: "12px 14px", display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ width: 30, height: 30, borderRadius: 30, background: "#cfe9e2", flexShrink: 0 }} />
-          <div><div style={{ fontSize: 13, fontWeight: 600 }}>ERE Homes</div><div style={{ fontSize: 10, opacity: 0.85 }}>online</div></div>
-        </div>
-        <div style={{ background: "#E5DDD5", padding: 12, minHeight: 280 }}>
-          <div style={{ background: "#fff", borderRadius: 10, padding: 9, maxWidth: "90%", boxShadow: "0 1px 1px rgba(0,0,0,.13)", fontSize: 13, lineHeight: 1.45 }}>
-            {kind === "card" && headerType === "media" && mediaUrl && (
-              mediaIsVideo
-                ? <video src={mediaUrl} muted playsInline style={{ width: "100%", borderRadius: 6, marginBottom: 6, display: "block" }} />
-                : <img src={mediaUrl} alt="" style={{ width: "100%", borderRadius: 6, marginBottom: 6, display: "block" }} />
-            )}
-            {kind === "card" && headerType === "text" && headerText && <div style={{ fontWeight: 700, marginBottom: 4 }}>{render(headerText)}</div>}
-            <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{render(body) || <span style={{ color: "#9a958c" }}>Your message will appear here…</span>}</div>
-            {kind === "card" && footer && <div style={{ fontSize: 11, color: "#8a8d91", marginTop: 6 }}>{render(footer)}</div>}
-            <div style={{ fontSize: 10, color: "#8a8d91", textAlign: "right", marginTop: 4 }}>12:30 PM</div>
-          </div>
-          {btns.length > 0 && (
-            <div style={{ maxWidth: "90%", marginTop: 4 }}>
-              {btns.map((b, i) => (
-                <div key={i} style={{ background: "#fff", color: "#0a84ff", textAlign: "center", padding: "10px", borderRadius: 8, fontSize: 13, fontWeight: 500, marginTop: 4, boxShadow: "0 1px 1px rgba(0,0,0,.13)" }}>
-                  {b.title}
-                </div>
+      <div className="modal-body">
+        <div className="composer-form">
+          <div className="sect">
+            <div className="sect-t">Template type</div>
+            <div className="sect-d">Pick the message structure. Cards support a header, footer and buttons.</div>
+            <div className="seg">
+              {([["text", "Text"], ["card", "Card"], ["quick-reply", "Quick reply"]] as const).map(([k, l]) => (
+                <button key={k} className={kind === k ? "on" : ""} onClick={() => { setKind(k); setButtons(k === "text" ? [] : DEFAULT_BUTTONS); setHeaderType(k === "card" ? "media" : "none"); setHeaderText(""); setMediaUrl(""); setMediaIsVideo(false); }}>{l}</button>
               ))}
             </div>
+          </div>
+
+          <div className="sect">
+            <div className="sect-t">Details</div>
+            <div className="sect-d">A unique name, message category and language.</div>
+            <div className="fgrid">
+              <div className="field" style={{ marginBottom: 0 }}><label className="label">Name</label>
+                <input className="input" value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))} placeholder="property_offer_v2" /></div>
+              <div className="field" style={{ marginBottom: 0 }}><label className="label">Category</label>
+                <select className="input" value={category} onChange={(e) => setCategory(e.target.value)}><option>MARKETING</option><option>UTILITY</option></select></div>
+              <div className="field" style={{ marginBottom: 0 }}><label className="label">Language</label>
+                <select className="input" value={language} onChange={(e) => setLanguage(e.target.value)}>{LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}</select></div>
+            </div>
+          </div>
+
+          <div className="sect">
+            <div className="sect-t">Message content</div>
+            <div className="sect-d">Use {"{{1}}"}, {"{{2}}"} for variables that get personalized per contact.</div>
+            {kind === "card" && (
+              <div className="field"><label className="label">Header <span className="opt">· optional</span></label>
+                <select className="input" style={{ marginBottom: 8 }} value={headerType} onChange={(e) => setHeaderType(e.target.value as any)}>
+                  <option value="none">No header</option><option value="text">Text header</option><option value="media">Image / Video header</option>
+                </select>
+                {headerType === "text" && <input className="input" value={headerText} onChange={(e) => setHeaderText(e.target.value)} placeholder="Header text (max 60)" maxLength={60} />}
+                {headerType === "media" && (
+                  <>
+                    <div className="btn-row"><input type="file" accept="image/*,video/mp4" onChange={handleUpload} disabled={uploading} style={{ fontSize: 12.5 }} />{uploading && <span style={{ fontSize: 12, color: "var(--amber-ink)" }}>Uploading…</span>}</div>
+                    <input className="input" value={mediaUrl.startsWith("data:") ? "" : mediaUrl} onChange={(e) => { const val = e.target.value; setMediaUrl(val); setMediaIsVideo(/\.(mp4|mov|webm)$/i.test(val)); }} placeholder="…or paste an image or video URL" />
+                    {mediaUrl && !uploading && (mediaIsVideo ? <video src={mediaUrl} controls style={{ width: "100%", maxHeight: 120, marginTop: 8, borderRadius: 4, border: "1px solid var(--border)" }} /> : <img src={mediaUrl} alt="" style={{ maxHeight: 90, marginTop: 8, borderRadius: 4, border: "1px solid var(--border)" }} />)}
+                  </>
+                )}
+              </div>
+            )}
+            <div className="field"><label className="label">Body{kind === "card" ? <span className="opt"> · max 1024</span> : null}</label>
+              <textarea className="input" rows={4} value={body} maxLength={kind === "card" ? 1024 : undefined} onChange={(e) => setBody(e.target.value)} placeholder="Hi {{1}}, here's your update…" /></div>
+            {kind === "card" && (
+              <div className="field" style={{ marginBottom: 0 }}><label className="label">Footer <span className="opt">· optional, max 60</span></label>
+                <input className="input" value={footer} onChange={(e) => setFooter(e.target.value)} placeholder="ERE Homes · Reply STOP to opt out" maxLength={60} /></div>
+            )}
+          </div>
+
+          {detectedVars.length > 0 && (
+            <div className="sect">
+              <div className="sect-t">Sample values</div>
+              <div className="sect-d">Used as a fallback when a contact is missing a value, and to render the preview.</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
+                {detectedVars.map((k) => (
+                  <div key={k} style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                    <span className="varkey">{`{{${k}}}`}</span>
+                    <input className="input" value={varDefaults[k] || ""} onChange={(e) => setVarDefaults({ ...varDefaults, [k]: e.target.value })} placeholder={k === "1" ? "e.g. there" : "default"} />
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
+
+          {(kind === "card" || kind === "quick-reply") && (
+            <div className="sect">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div className="sect-t">Buttons</div>
+                <button className="add-btn" onClick={addButton} disabled={buttons.length >= maxButtons}>+ Add button</button>
+              </div>
+              <div className="sect-d">{kind === "quick-reply" ? "Up to 3 quick replies." : "Up to 3 reply buttons, or 2 link/call buttons."}</div>
+              {buttons.map((bt, i) => (
+                <div key={i} className="btn-row">
+                  {kind === "card" && (
+                    <select className="input" style={{ width: 100, flex: "none" }} value={bt.type} onChange={(e) => setBtn(i, { type: e.target.value as Btn["type"] })}>
+                      <option value="url">Link</option><option value="phone">Call</option><option value="quick-reply">Reply</option>
+                    </select>
+                  )}
+                  <input className="input" style={{ flex: 1 }} value={bt.title} onChange={(e) => setBtn(i, { title: e.target.value })} placeholder="Button text" />
+                  {kind === "card" && bt.type === "url" && <input className="input" style={{ flex: 1 }} value={bt.url || ""} onChange={(e) => setBtn(i, { url: e.target.value })} placeholder="https://…" />}
+                  {kind === "card" && bt.type === "phone" && <input className="input" style={{ flex: 1 }} value={bt.phone || ""} onChange={(e) => setBtn(i, { phone: e.target.value })} placeholder="+9715…" />}
+                  <button className="icon-x" onClick={() => setButtons(buttons.filter((_, idx) => idx !== i))}><Icon d={IC.x} s={15} /></button>
+                </div>
+              ))}
+              {kind === "quick-reply" && <div className="hint">Set what each button replies with under “Auto-replies” once the template is created.</div>}
+            </div>
+          )}
+
+          {err && <div className="err-box">{err}</div>}
+          {msg && <div className="ok-box">{msg}</div>}
+          <div style={{ height: 20 }} />
+        </div>
+        <div className="composer-aside">
+          <div className="sticky">
+            <div className="preview-lab">Live preview</div>
+            <PhonePreview kind={kind} headerType={headerType} headerText={headerText} mediaUrl={mediaUrl} mediaIsVideo={mediaIsVideo} body={body} footer={footer} buttons={buttons} vars={varDefaults} />
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+/* ── Auto-reply config (wired to /api/auto-replies, local fallback) ── */
+type Rule = { id?: string; reply: string; push: boolean; block: boolean; enabled: boolean };
+function AutoReplyConfig({ buttons }: { buttons: string[] }) {
+  const [rules, setRules] = useState<Record<string, Rule>>(() => { const m: Record<string, Rule> = {}; for (const b of buttons) m[b] = { reply: "", push: false, block: false, enabled: true }; return m; });
+  const [savedKey, setSavedKey] = useState<string | null>(null);
+  const set = (t: string, patch: Partial<Rule>) => setRules((r) => ({ ...r, [t]: { ...r[t], ...patch } }));
+
+  useEffect(() => {
+    fetch("/api/auto-replies")
+      .then((r) => r.json())
+      .then((d) => {
+        const byTrigger: Record<string, any> = {};
+        for (const r of d.rules || []) byTrigger[(r.trigger || "").toLowerCase()] = r;
+        setRules((prev) => {
+          const next = { ...prev };
+          for (const b of buttons) {
+            const ex = byTrigger[b.toLowerCase()];
+            if (ex) next[b] = { id: ex.id, reply: ex.reply || "", push: !!ex.push_pipedrive, block: !!ex.block, enabled: ex.enabled !== false };
+          }
+          return next;
+        });
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function save(trigger: string) {
+    const r = rules[trigger];
+    try {
+      const res = await fetch("/api/auto-replies", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: r.id, trigger, reply: r.reply, push_pipedrive: r.push, block: r.block, enabled: r.enabled }),
+      });
+      const d = await res.json();
+      if (res.ok && d.rule?.id) set(trigger, { id: d.rule.id });
+    } catch { /* local-only */ }
+    setSavedKey(trigger);
+    setTimeout(() => setSavedKey(null), 1500);
+  }
+
   return (
-    <label style={{ display: "block", marginBottom: 12 }}>
-      <span style={{ display: "block", fontSize: 12, color: "#6B6862", marginBottom: 4 }}>{label}</span>
-      {children}
-    </label>
+    <div>
+      <div className="autocard">
+        {buttons.map((b) => {
+          const r = rules[b] || { reply: "", push: false, block: false, enabled: true };
+          return (
+            <div key={b} className="autorule">
+              <div className="kw">When a contact taps <span className="tag">{b}</span></div>
+              <textarea className="input" rows={2} value={r.reply} onChange={(e) => set(b, { reply: e.target.value })} placeholder="Auto-reply sent back to the contact…" />
+              <div className="checkrow">
+                <label><input type="checkbox" checked={r.push} onChange={(e) => set(b, { push: e.target.checked })} /> Create Hot lead in Pipedrive</label>
+                <label><input type="checkbox" checked={r.block} onChange={(e) => set(b, { block: e.target.checked })} /> Block / opt-out</label>
+                <label><input type="checkbox" checked={r.enabled} onChange={(e) => set(b, { enabled: e.target.checked })} /> Enabled</label>
+                <button className="btn btn-sec btn-sm" onClick={() => save(b)}>{savedKey === b ? "Saved ✓" : "Save"}</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
-const btn: React.CSSProperties = {
-  padding: "9px 18px",
-  background: "#141414",
-  color: "#fff",
-  border: "none",
-  borderRadius: 8,
-  cursor: "pointer",
-  fontSize: 12,
-  letterSpacing: 1,
-  textTransform: "uppercase",
-};
-const pill: React.CSSProperties = {
-  padding: "8px 16px",
-  background: "#fff",
-  border: "1px solid #E4E1DB",
-  borderRadius: 20,
-  cursor: "pointer",
-  fontSize: 13,
-};
-const pillActive: React.CSSProperties = { background: "#141414", color: "#fff", borderColor: "#141414" };
-const action: React.CSSProperties = {
-  padding: "7px 16px",
-  background: "#fff",
-  border: "1px solid #E4E1DB",
-  borderRadius: 8,
-  cursor: "pointer",
-  fontSize: 13,
-};
-const input: React.CSSProperties = {
-  width: "100%",
-  padding: "10px 12px",
-  border: "1px solid #E4E1DB",
-  borderRadius: 8,
-  fontSize: 14,
-  boxSizing: "border-box",
-  background: "#fff",
-};
-const card: React.CSSProperties = {
-  background: "#fff",
-  border: "1px solid #E4E1DB",
-  borderRadius: 12,
-  padding: 18,
-};
-const errBox: React.CSSProperties = {
-  background: "#fdecea",
-  color: "#b00020",
-  padding: 12,
-  borderRadius: 8,
-  marginBottom: 14,
-  fontSize: 14,
-};
+/* ── Detail drawer ── */
+function Drawer({ t, onClose, onDuplicate, onDelete, busy }: { t: Tpl; onClose: () => void; onDuplicate: (t: Tpl) => void; onDelete: (t: Tpl) => void; busy: boolean }) {
+  const [tab, setTab] = useState<"details" | "auto">("details");
+  const varCount = Object.keys(t.variables || {}).length;
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  return (
+    <>
+      <div className="scrim" onClick={onClose} />
+      <div className="drawer">
+        <div className="dr-head">
+          <div className="dh-main">
+            <div className="dh-name">{t.name}</div>
+            <div className="dh-meta">{TYPE_LABEL(t.type)} · {LANG_LABEL(t.language)} · {t.category || "—"}</div>
+          </div>
+          <Badge status={t.status} />
+          <button className="icon-btn" onClick={onClose}><Icon d={IC.x} s={18} /></button>
+        </div>
+        {t.replyButtons.length > 0 && (
+          <div className="dr-tabs">
+            {([["details", "Details"], ["auto", `Auto-replies (${t.replyButtons.length})`]] as const).map(([id, l]) => (
+              <button key={id} className={`tab ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>{l}</button>
+            ))}
+          </div>
+        )}
+        <div className="dr-body">
+          {tab === "details" && (
+            <>
+              <div className="dlabel">Message preview</div>
+              <div className="bubble">
+                <div className={`inner ${isRTL(t.language) ? "rtl" : ""}`}>
+                  {t.media && <img src={t.media} alt="" style={{ width: "100%", borderRadius: 6, marginBottom: 7, display: "block" }} />}
+                  {t.headerText && <div style={{ fontWeight: 700, marginBottom: 4 }}>{renderVars(t.headerText)}</div>}
+                  {renderVars(t.body)}
+                  {t.footer && <div style={{ fontSize: 11.5, color: "#8a9398", marginTop: 6 }}>{renderVars(t.footer)}</div>}
+                  <div className="btime">12:30 PM <span style={{ color: "#53bdeb" }}>{CHECK2}</span></div>
+                </div>
+                {(() => {
+                  const pv = t.buttons && t.buttons.length ? t.buttons : t.replyButtons.map((title) => ({ type: "QUICK_REPLY", title }));
+                  return pv.length > 0 ? (
+                    <div className="replies">{pv.map((b, i) => (
+                      <div key={i} className="reply"><Icon d={b.type === "URL" ? IC.ext : b.type === "PHONE_NUMBER" ? IC.phone : IC.reply} s={13} />{b.title}</div>
+                    ))}</div>
+                  ) : null;
+                })()}
+              </div>
+              {t.rejection_reason && (<><div className="dlabel">Rejection reason</div><div className="reject"><b>Rejected by Meta</b>{t.rejection_reason}</div></>)}
+              {varCount > 0 && (
+                <>
+                  <div className="dlabel">Variables</div>
+                  <div>{Object.entries(t.variables).map(([k, v]) => (
+                    <div key={k} className="vrow"><span className="vk">{`{{${k}}}`}</span><span className="vv">{v || <em style={{ opacity: 0.6 }}>empty</em>}</span></div>
+                  ))}</div>
+                </>
+              )}
+              <div className="dlabel">Properties</div>
+              <div className="kv2">
+                <div><div className="k">Content SID</div><div className="v mono">{t.sid}</div></div>
+                <div><div className="k">Type</div><div className="v">{TYPE_LABEL(t.type)}</div></div>
+                <div><div className="k">Language</div><div className="v">{LANG_LABEL(t.language)}</div></div>
+                <div><div className="k">Category</div><div className="v">{t.category || "—"}</div></div>
+                <div><div className="k">Last updated</div><div className="v">{fmtUpdated(t.updated)}</div></div>
+                <div><div className="k">Buttons</div><div className="v">{t.replyButtons.length || "—"}</div></div>
+              </div>
+            </>
+          )}
+          {tab === "auto" && (
+            <>
+              <div className="dlabel">Button automations</div>
+              <p style={{ fontSize: 13, color: "var(--ink-2)", marginBottom: 14 }}>When a contact taps a button, the app sends your reply automatically — and can push a lead into Pipedrive or opt them out.</p>
+              <AutoReplyConfig buttons={t.replyButtons} />
+            </>
+          )}
+        </div>
+        <div className="dr-foot">
+          <button className="btn btn-sec" onClick={() => onDuplicate(t)} disabled={busy}><Icon d={IC.copy} s={15} />Duplicate</button>
+          <button className="btn btn-ghost danger" onClick={() => onDelete(t)} disabled={busy}><Icon d={IC.trash} s={15} />Delete</button>
+          <a className="btn btn-ghost" style={{ marginLeft: "auto" }} href={`https://console.twilio.com/us1/develop/content-template-builder/${t.sid}`} target="_blank" rel="noreferrer">Open in Twilio <Icon d={IC.ext} s={14} /></a>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function Row({ t, selected, onOpen }: { t: Tpl; selected: boolean; onOpen: (t: Tpl) => void }) {
+  const k = kindOf(t.type);
+  const preview = (t.body || "").replace(/\s+/g, " ").trim();
+  const varCount = Object.keys(t.variables || {}).length;
+  return (
+    <tr className={selected ? "sel" : ""} onClick={() => onOpen(t)}>
+      <td>
+        <div className="cell-name">
+          <span className={`tkind ${k}`} style={t.media ? { overflow: "hidden", padding: 0 } : undefined}>
+            {t.media ? <img src={t.media} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Icon d={k === "card" ? IC.tmpl : k === "qr" ? IC.reply : IC.hash} s={15} />}
+          </span>
+          <div className="nm"><div className="t">{t.name}</div><div className="p">{preview}</div></div>
+        </div>
+      </td>
+      <td className="tcol-type">{TYPE_LABEL(t.type)}</td>
+      <td className="tcol-muted">{t.category || "—"}</td>
+      <td className="tcol-muted">{LANG_LABEL(t.language)}</td>
+      <td>
+        {t.replyButtons.length > 0 && <span className="metric"><Icon d={IC.reply} s={12} />{t.replyButtons.length}</span>}
+        {varCount > 0 && <span className="metric"><Icon d={IC.vars} s={12} />{varCount}</span>}
+        {t.replyButtons.length === 0 && varCount === 0 && <span className="tcol-muted">—</span>}
+      </td>
+      <td><Badge status={t.status} /></td>
+      <td className="tcol-muted" style={{ whiteSpace: "nowrap" }}>{fmtUpdated(t.updated)}</td>
+      <td style={{ textAlign: "right" }}><span className="row-chev"><Icon d={IC.chev} s={16} /></span></td>
+    </tr>
+  );
+}
+
+const FILTERS = [
+  { id: "all", label: "All" }, { id: "approved", label: "Approved" }, { id: "pending", label: "Pending" },
+  { id: "rejected", label: "Rejected" }, { id: "unsubmitted", label: "Drafts" },
+];
+
+export default function Templates() {
+  const [tpls, setTpls] = useState<Tpl[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [composer, setComposer] = useState(false);
+  const [seed, setSeed] = useState<Seed>(null);
+  const [active, setActive] = useState<Tpl | null>(null);
+  const [busySid, setBusySid] = useState<string | null>(null);
+  const [filter, setFilter] = useState("all");
+  const [cat, setCat] = useState("all");
+  const [q, setQ] = useState("");
+
+  // background=true => quiet refresh (no spinner, keep current rows on a transient
+  // error) so the 20s poll never flashes the list or blanks it on a blip.
+  async function load(background = false) {
+    if (!background) { setLoading(true); setError(null); }
+    try {
+      const res = await fetch("/api/templates");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load templates");
+      // Show exactly what Twilio returns - never substitute demo data, which
+      // would look like templates nobody created (e.g. when the account is down).
+      setTpls(data.templates || []);
+      if (background) setError(null);
+    } catch (e: any) {
+      if (!background) {
+        setTpls([]);
+        setError(e?.message || "Couldn't reach Twilio. Check the connection and try again.");
+      }
+      // a background blip keeps the last good list rather than wiping it
+    } finally {
+      if (!background) setLoading(false);
+    }
+  }
+  // Initial load + keep approval statuses live (received -> pending -> approved)
+  // without a manual reload. Pause while the tab is hidden to avoid wasted calls.
+  useEffect(() => {
+    load();
+    const poll = setInterval(() => { if (!document.hidden) load(true); }, 20000);
+    return () => clearInterval(poll);
+  }, []);
+
+  const matchStatus = (st: string, f: string) => (f === "all" ? true : f === "pending" ? st === "pending" || st === "received" : st === f);
+  const counts = useMemo(() => {
+    const c = { total: tpls.length, approved: 0, pending: 0, rejected: 0, unsubmitted: 0 };
+    for (const t of tpls) {
+      if (t.status === "approved") c.approved++;
+      else if (t.status === "pending" || t.status === "received") c.pending++;
+      else if (t.status === "rejected") c.rejected++;
+      else c.unsubmitted++;
+    }
+    return c;
+  }, [tpls]);
+
+  const filtered = useMemo(() => tpls.filter((t) => {
+    if (!matchStatus(t.status, filter)) return false;
+    if (cat !== "all" && (t.category || "") !== cat) return false;
+    if (q.trim()) { const s = q.toLowerCase(); if (!t.name.toLowerCase().includes(s) && !(t.body || "").toLowerCase().includes(s)) return false; }
+    return true;
+  }), [tpls, filter, cat, q]);
+
+  async function deleteTpl(t: Tpl) {
+    if (!confirm(`Delete template "${t.name}"? This removes it from Twilio and cannot be undone.`)) return;
+    setBusySid(t.sid);
+    try {
+      const res = await fetch(`/api/templates?sid=${encodeURIComponent(t.sid)}`, { method: "DELETE" });
+      if (!res.ok) throw new Error();
+    } catch { /* fall through to local removal */ }
+    setTpls((p) => p.filter((x) => x.sid !== t.sid));
+    setBusySid(null);
+    setActive(null);
+  }
+
+  function duplicateTpl(t: Tpl) {
+    const k: "text" | "card" | "quick-reply" = kindOf(t.type) === "card" ? "card" : t.replyButtons.length || kindOf(t.type) === "qr" ? "quick-reply" : "text";
+    // Map Twilio button types back to the composer's shape so the copy is complete.
+    const btnType = (api: string): Btn["type"] => (api === "URL" ? "url" : api === "PHONE_NUMBER" ? "phone" : "quick-reply");
+    const buttons: Btn[] = k === "text"
+      ? []
+      : (t.buttons && t.buttons.length
+          ? t.buttons.map((b) => ({ type: btnType(b.type), title: b.title, url: b.url || undefined, phone: b.phone || undefined }))
+          : t.replyButtons.map((title) => ({ type: "quick-reply" as const, title })));
+    setSeed({
+      kind: k,
+      name: `${t.name}_copy`.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+      category: t.category || "MARKETING",
+      language: t.language || "en",
+      body: t.body || "",
+      headerType: t.media ? "media" : t.headerText ? "text" : "none",
+      headerText: t.headerText || "",
+      mediaUrl: t.media || "",
+      footer: t.footer || "",
+      buttons,
+      varDefaults: t.variables || {},
+    });
+    setActive(null);
+    setComposer(true);
+  }
+
+  return (
+    <div className="page">
+      <div className="maxw">
+        <PageHead title="Content templates" sub="Pre-approved WhatsApp messages your team sends to owners and buyers. Compose, submit to Meta, and track approval.">
+          <Link className="btn btn-sec" href="/templates/performance"><Icon d={IC.insights} s={15} />Performance</Link>
+          <button className="btn btn-sec" onClick={() => load()}><Icon d={IC.refresh} s={15} />{loading ? "Loading…" : "Refresh"}</button>
+          <button className="btn btn-primary" onClick={() => { setSeed(null); setComposer(true); }}><Icon d={IC.plus} s={16} />Create new</button>
+        </PageHead>
+
+        <div className="kpis">
+          <div className="kpi"><div className="kl">Total templates</div><div className="kv">{counts.total}</div><div className="ks">across {new Set(tpls.map((t) => t.language)).size} languages</div></div>
+          <div className="kpi"><div className="kl"><span className="dot" style={{ background: "var(--green-dot)" }} />Approved</div><div className="kv">{counts.approved}</div><div className="ks">ready to send</div></div>
+          <div className="kpi"><div className="kl"><span className="dot" style={{ background: "var(--amber-dot)" }} />Pending</div><div className="kv">{counts.pending}</div><div className="ks">in Meta review</div></div>
+          <div className="kpi"><div className="kl"><span className="dot" style={{ background: "var(--red)" }} />Rejected</div><div className="kv">{counts.rejected}</div><div className="ks">needs changes</div></div>
+          <div className="kpi"><div className="kl"><span className="dot" style={{ background: "var(--ink-3)" }} />Drafts</div><div className="kv">{counts.unsubmitted}</div><div className="ks">not submitted</div></div>
+        </div>
+
+        <div className="bar">
+          <div className="tabs">
+            {FILTERS.map((f) => {
+              const n = f.id === "all" ? counts.total : (counts as any)[f.id] ?? 0;
+              return <button key={f.id} className={`tab ${filter === f.id ? "active" : ""}`} onClick={() => setFilter(f.id)}>{f.label}<span className="cnt">{n}</span></button>;
+            })}
+          </div>
+          <div className="bar-right">
+            {["MARKETING", "UTILITY"].map((c) => (
+              <button key={c} className={`seltrig ${cat === c ? "on" : ""}`} onClick={() => setCat(cat === c ? "all" : c)} style={{ textTransform: "capitalize" }}>{c.toLowerCase()}</button>
+            ))}
+            <div className="list-search"><Icon d={IC.search} s={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search templates…" /></div>
+          </div>
+        </div>
+
+        <div className="panel">
+          {loading ? <Skeleton rows={6} /> : error ? (
+            <div className="empty"><div className="ei"><Icon d={IC.refresh} s={22} /></div><h4>Couldn&apos;t load templates</h4><div>{error}</div><button className="btn btn-sec" style={{ marginTop: 12 }} onClick={() => load()}><Icon d={IC.refresh} s={15} />Try again</button></div>
+          ) : tpls.length === 0 ? (
+            <div className="empty"><div className="ei"><Icon d={IC.plus} s={22} /></div><h4>No templates yet</h4><div>Create your first WhatsApp template and submit it to Meta for approval.</div></div>
+          ) : filtered.length > 0 ? (
+            <table className="ttable">
+              <thead><tr><th>Template</th><th>Type</th><th>Category</th><th>Language</th><th>Content</th><th>Status</th><th>Updated</th><th></th></tr></thead>
+              <tbody>{filtered.map((t) => <Row key={t.sid} t={t} selected={active?.sid === t.sid} onOpen={setActive} />)}</tbody>
+            </table>
+          ) : (
+            <div className="empty"><div className="ei"><Icon d={IC.search} s={22} /></div><h4>No templates match</h4><div>Try a different status, category, or search term.</div></div>
+          )}
+        </div>
+      </div>
+
+      {active && <Drawer t={active} onClose={() => setActive(null)} onDuplicate={duplicateTpl} onDelete={deleteTpl} busy={busySid === active.sid} />}
+      {composer && <Composer key={seed ? seed.name : "new"} seed={seed} onClose={() => { setComposer(false); setSeed(null); }} onCreated={(c) => { setComposer(false); setSeed(null); if (c) setTpls((p) => [c, ...p]); }} />}
+    </div>
+  );
+}

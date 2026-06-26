@@ -1,118 +1,136 @@
 import { NextRequest, NextResponse } from "next/server";
-import { twilioCreds, twilioGet } from "@/lib/twilio";
+import { supabaseAdmin } from "@/lib/supabase";
+import { DEAD_NUMBER_CODES } from "@/lib/twilioErrors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
-// Twilio messaging insights + logs, computed from the Messages list API.
-// Mirrors the Console "Messaging Insights" page: volume, delivery/read rate,
-// error-code breakdown, by-day trend, plus the raw message log.
+// Account/sender-lock failures: 63051 means Meta LOCKED the WhatsApp sender or
+// account (the suspension), so EVERY send fails regardless of recipient. That's a
+// global-outage signal, not a per-number deliverability signal — exclude from the
+// delivery-rate denominator and surface separately. (See lib/twilioErrors 63051.)
+const ACCOUNT_LOCKED_CODES = new Set(["63051"]);
+// Meta's per-user marketing throttle: a real non-delivery to a LIVE, valid number
+// (over-messaging), so it DOES count against the rate — but we also surface it.
+const MARKETING_THROTTLE_CODE = "63049";
+
+// Messaging insights computed from OUR messages table — the same source the
+// campaign log trusts — not Twilio's list API. The Twilio API was capped at a
+// few thousand rows (undercounting volume), slow, and its error-code buckets
+// drifted from the rest of the app. Our table has every console message with its
+// live status (delivery callbacks update it) and is complete + fast.
 export async function GET(req: NextRequest) {
   try {
-    const { sid } = twilioCreds();
-    const days = Math.min(Math.max(parseInt(req.nextUrl.searchParams.get("days") || "7", 10), 1), 90);
-    const maxPages = Math.min(parseInt(req.nextUrl.searchParams.get("maxPages") || "10", 10), 40);
+    const db = supabaseAdmin();
 
-    // DateSent>=YYYY-MM-DD filter (UTC).
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const sinceStr = since.toISOString().slice(0, 10);
+    // Window: explicit from/to (ISO) take priority; otherwise fall back to days.
+    const fromParam = req.nextUrl.searchParams.get("from");
+    const toParam = req.nextUrl.searchParams.get("to");
+    const days = Math.min(Math.max(parseInt(req.nextUrl.searchParams.get("days") || "1", 10), 1), 365);
+    const fromMs = fromParam ? Date.parse(fromParam) : Date.now() - days * 24 * 60 * 60 * 1000;
+    const toMs = toParam ? Date.parse(toParam) : Date.now();
+    const fromDate = new Date(isNaN(fromMs) ? Date.now() - 86400000 : fromMs);
+    const toDate = new Date(isNaN(toMs) ? Date.now() : toMs);
 
-    let url: string | null =
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json` +
-      `?PageSize=200&DateSent%3E=${sinceStr}`;
-
-    const messages: any[] = [];
-    let pages = 0;
-    while (url && pages++ < maxPages) {
-      const data: any = await twilioGet(url);
-      messages.push(...(data.messages || []));
-      url = data.next_page_uri ? `https://api.twilio.com${data.next_page_uri}` : null;
-    }
-
-    // Aggregate
     const byStatus: Record<string, number> = {};
     const byErr: Record<string, number> = {};
     const byDay: Record<string, { out: number; in: number }> = {};
-    let outbound = 0,
-      inbound = 0,
-      delivered = 0,
-      read = 0,
-      failed = 0,
-      undelivered = 0,
-      priceTotal = 0;
-    let currency = "USD";
+    let outbound = 0, inbound = 0, delivered = 0, read = 0, failed = 0,
+      undelivered = 0, notOnWhatsApp = 0, queued = 0, total = 0,
+      neverSent = 0, accountLocked = 0, marketingThrottled = 0;
 
-    for (const m of messages) {
-      const status = m.status || "unknown";
-      byStatus[status] = (byStatus[status] || 0) + 1;
+    // Page through the window. Only the columns we aggregate, so this stays light
+    // even over a wide range.
+    let capped = false;
+    const MAX_ROWS = 200000;
+    for (let from = 0; from < MAX_ROWS; from += 1000) {
+      const { data, error } = await db
+        .from("messages")
+        .select("direction, status, error_code, created_at")
+        .gte("created_at", fromDate.toISOString())
+        .lte("created_at", toDate.toISOString())
+        .order("created_at", { ascending: true })
+        .range(from, from + 999);
+      if (error) throw error;
+      const rows = data || [];
+      for (const m of rows as any[]) {
+        total++;
+        const status = m.status || "unknown";
+        byStatus[status] = (byStatus[status] || 0) + 1;
+        const isOut = m.direction === "out";
 
-      const isOut = (m.direction || "").startsWith("outbound");
-      if (isOut) outbound++;
-      else inbound++;
+        const dayKey = (m.created_at || "").slice(0, 10);
+        if (dayKey) {
+          if (!byDay[dayKey]) byDay[dayKey] = { out: 0, in: 0 };
+          byDay[dayKey][isOut ? "out" : "in"]++;
+        }
 
-      if (status === "delivered") delivered++;
-      if (status === "read") read++;
-      if (status === "failed") failed++;
-      if (status === "undelivered") undelivered++;
+        if (!isOut) { inbound++; continue; }
 
-      if (m.error_code) {
-        const k = String(m.error_code);
-        byErr[k] = (byErr[k] || 0) + 1;
+        // Still in our queue (server drip) or in flight — NOT yet a real attempt,
+        // so it must not deflate the delivery rate.
+        if (status === "scheduled" || status === "sending" || status === "queued" || status === "accepted" || status === "sent") {
+          queued++;
+          continue;
+        }
+        // Never actually sent: canceled (killed before send, e.g. a suspension)
+        // or skipped (suppressed — blocked/invalid — before send). These never
+        // hit Twilio/Meta, so counting them as failed attempts is wrong.
+        if (status === "canceled" || status === "skipped") {
+          neverSent++;
+          continue;
+        }
+
+        const code = m.error_code ? String(m.error_code) : null;
+
+        // Sender/account locked by Meta (the suspension) — fails every send
+        // regardless of recipient, so it's a global-outage signal, not per-number
+        // deliverability. Keep it out of the rate; report it on its own.
+        if (code && ACCOUNT_LOCKED_CODES.has(code)) {
+          accountLocked++;
+          byErr[code] = (byErr[code] || 0) + 1;
+          continue;
+        }
+
+        outbound++;
+        if (status === "delivered") delivered++;
+        else if (status === "read") read++;
+        else if (status === "failed") failed++;
+        else if (status === "undelivered") undelivered++;
+
+        if (code) {
+          byErr[code] = (byErr[code] || 0) + 1;
+          if (DEAD_NUMBER_CODES.has(code)) notOnWhatsApp++;
+          if (code === MARKETING_THROTTLE_CODE) marketingThrottled++;
+        }
       }
-
-      if (m.price) {
-        priceTotal += Math.abs(parseFloat(m.price));
-        if (m.price_unit) currency = m.price_unit;
-      }
-
-      const d = (m.date_sent || m.date_created || "").slice(0, 16); // "Wed, 03 Jun 2026"
-      const dayKey = m.date_sent ? new Date(m.date_sent).toISOString().slice(0, 10) : d;
-      if (!byDay[dayKey]) byDay[dayKey] = { out: 0, in: 0 };
-      if (isOut) byDay[dayKey].out++;
-      else byDay[dayKey].in++;
+      if (rows.length < 1000) break;
+      if (from + 1000 >= MAX_ROWS) capped = true;
     }
 
-    // delivered+read count as reaching the handset
+    // delivered + read = reached the handset. outbound = resolved attempts
+    // (delivered/read/failed/undelivered) — in-flight/queued excluded above.
     const reached = delivered + read;
-    const deliveryRate = outbound ? Math.round((reached / outbound) * 1000) / 10 : 0;
-    const readRate = reached ? Math.round((read / reached) * 1000) / 10 : 0;
-    const failRate = outbound ? Math.round(((failed + undelivered) / outbound) * 1000) / 10 : 0;
-
-    const logs = messages.map((m) => ({
-      sid: m.sid,
-      date: m.date_sent || m.date_created,
-      direction: m.direction,
-      from: m.from,
-      to: m.to,
-      status: m.status,
-      error_code: m.error_code || null,
-      body: (m.body || "").slice(0, 140),
-      price: m.price || null,
-    }));
+    const validOutbound = Math.max(0, outbound - notOnWhatsApp);
+    const pct = (num: number, den: number) => (den ? Math.round((num / den) * 1000) / 10 : 0);
+    const deliveryRate = pct(reached, outbound);
+    const deliveryRateValid = pct(reached, validOutbound);
+    const readRate = pct(read, reached);
+    const failRate = pct(failed + undelivered, outbound);
 
     return NextResponse.json({
-      range: { days, since: sinceStr },
+      range: { from: fromDate.toISOString(), to: toDate.toISOString() },
       totals: {
-        total: messages.length,
-        outbound,
-        inbound,
-        delivered,
-        read,
-        failed,
-        undelivered,
-        deliveryRate,
-        readRate,
-        failRate,
-        priceTotal: Math.round(priceTotal * 10000) / 10000,
-        currency,
-        capped: pages >= maxPages,
+        total, outbound, validOutbound, notOnWhatsApp, inbound, queued,
+        neverSent, accountLocked, marketingThrottled,
+        delivered, read, failed, undelivered,
+        deliveryRate, deliveryRateValid, readRate, failRate, capped,
       },
       byStatus,
       byErr,
-      byDay: Object.entries(byDay)
-        .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-        .map(([day, v]) => ({ day, ...v })),
-      logs,
+      byDay: Object.entries(byDay).sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([day, v]) => ({ day, ...v })),
+      logs: [],
     });
   } catch (e: any) {
     return NextResponse.json({ error: e.message || "Failed to load insights" }, { status: 500 });

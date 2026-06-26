@@ -1,0 +1,2 @@
+# Keep shell hooks LF so git-bash can execute them on Windows clones.
+.githooks/** text eol=lf

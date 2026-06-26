@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
+import { DEAD_NUMBER_CODES } from "@/lib/twilioErrors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,13 +16,21 @@ export async function GET() {
     const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
 
     // Page through outbound template messages.
-    const out: { content_sid: string; conversation: string; status: string | null; created_at: string }[] = [];
+    const out: { content_sid: string; conversation: string; status: string | null; created_at: string; error_code: string | null }[] = [];
     for (let from = 0; ; from += 1000) {
       const { data, error } = await db
         .from("messages")
-        .select("content_sid, conversation, status, created_at")
+        .select("content_sid, conversation, status, created_at, error_code")
         .not("content_sid", "is", null)
         .eq("direction", "out")
+        // Only count messages Twilio actually attempted to send. Three statuses were
+        // never transmitted to a recipient and must NOT count as "Sent":
+        //   scheduled — drip queue rows pre-created, not yet handed to Twilio
+        //   canceled  — killed before send (e.g. the account-suspension abort)
+        //   skipped   — auto-skipped because the number was already reached
+        // Counting them inflates the denominator and makes delivery rate read far
+        // lower than reality, and leaves ghost recipients unaccounted in the funnel.
+        .not("status", "in", "(scheduled,canceled,skipped)")
         .gte("created_at", since)
         .order("created_at", { ascending: true })
         .range(from, from + 999);
@@ -45,6 +54,22 @@ export async function GET() {
       if (!data || data.length < 1000) break;
     }
 
+    // Lead conversations = anyone who tapped "Interested" / is flagged hot. The
+    // inbox Hot tab is the lead home now (Pipedrive was cut from the flow), so a
+    // lead is an expression of interest an agent can work — whether or not it was
+    // ever pushed to Pipedrive. Set of conversation ids that became a lead.
+    const leadConvs = new Set<string>();
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await db
+        .from("conversations")
+        .select("id")
+        .eq("lead_status", "hot")
+        .range(from, from + 999);
+      if (error) throw error;
+      for (const c of data as any[]) leadConvs.add(c.id);
+      if (!data || data.length < 1000) break;
+    }
+
     const stats: Record<string, any> = {};
     // Track distinct conversations + replied conversations per template.
     const convsSeen: Record<string, Set<string>> = {};
@@ -52,13 +77,22 @@ export async function GET() {
 
     for (const m of out) {
       const sid = m.content_sid;
-      const s = (stats[sid] ||= { sent: 0, delivered: 0, read: 0, failed: 0 });
+      const s = (stats[sid] ||= { sent: 0, delivered: 0, read: 0, failed: 0, dead: 0, errors: {} as Record<string, number> });
       convsSeen[sid] ||= new Set();
       convsReplied[sid] ||= new Set();
       s.sent++;
       if (m.status === "read") { s.read++; s.delivered++; }
       else if (m.status === "delivered") s.delivered++;
-      else if (m.status === "failed" || m.status === "undelivered") s.failed++;
+      else if (m.status === "failed" || m.status === "undelivered") {
+        s.failed++;
+        // Tally the real Twilio/Meta reason so the card explains WHY it failed
+        // (sender lock vs over-messaging vs dead number) instead of guessing.
+        const code = m.error_code ? String(m.error_code) : "none";
+        s.errors[code] = (s.errors[code] || 0) + 1;
+        // Dead = not a WhatsApp user. These can never deliver, so they're a list-
+        // quality issue, not a delivery failure — excluded from the delivery rate.
+        if (code !== "none" && DEAD_NUMBER_CODES.has(code)) s.dead++;
+      }
 
       convsSeen[sid].add(m.conversation);
       const t = new Date(m.created_at).getTime();
@@ -70,9 +104,36 @@ export async function GET() {
       const seen = convsSeen[sid].size;
       stats[sid].conversations = seen;
       stats[sid].replied = convsReplied[sid].size;
-      stats[sid].deliveryRate = stats[sid].sent ? Math.round((stats[sid].delivered / stats[sid].sent) * 100) : 0;
-      stats[sid].readRate = stats[sid].sent ? Math.round((stats[sid].read / stats[sid].sent) * 100) : 0;
-      stats[sid].replyRate = seen ? Math.round((stats[sid].replied / seen) * 100) : 0;
+      // Leads = distinct conversations that got this template AND turned hot
+      // (tapped Interested). Rate is of DELIVERED (the real conversion: of
+      // everyone who actually received it, how many turned into a lead).
+      let leads = 0;
+      for (const cid of convsSeen[sid]) if (leadConvs.has(cid)) leads++;
+      stats[sid].leads = leads;
+      // One decimal: cold-outreach interest rates are well under 1%, so rounding
+      // to whole percent would flatten a real 0.6% down to "0% / 1%".
+      stats[sid].leadRate = stats[sid].delivered ? Math.round((leads / stats[sid].delivered) * 1000) / 10 : 0;
+      // Delivery judged on REACHABLE numbers (sent minus dead), so a dirty list
+      // doesn't read as a delivery problem. Dead numbers get their own rate.
+      const reachable = Math.max(0, stats[sid].sent - stats[sid].dead);
+      stats[sid].reachable = reachable;
+      stats[sid].deliveryRate = reachable ? Math.round((stats[sid].delivered / reachable) * 100) : 0;
+      stats[sid].deadRate = stats[sid].sent ? Math.round((stats[sid].dead / stats[sid].sent) * 100) : 0;
+      stats[sid].failedRate = stats[sid].sent ? Math.round((stats[sid].failed / stats[sid].sent) * 100) : 0;
+      // Read rate is of DELIVERED — a message that never arrived can't be read,
+      // so measuring it against sent (which includes failures) fakes it down.
+      stats[sid].readRate = stats[sid].delivered ? Math.round((stats[sid].read / stats[sid].delivered) * 100) : 0;
+      // Bucket the failure reasons the same way the Insights page does, so both
+      // screens tell the same story: locked sender, marketing throttle, or dead.
+      const e: Record<string, number> = stats[sid].errors;
+      stats[sid].errLocked = e["63051"] || 0;
+      stats[sid].errThrottled = e["63049"] || 0;
+      stats[sid].errHold = e["63032"] || 0;
+      stats[sid].errDead = Object.keys(e).filter((c) => DEAD_NUMBER_CODES.has(c)).reduce((n, c) => n + e[c], 0);
+      // Reply rate is of DELIVERED, not of every conversation we attempted —
+      // failed/undelivered sends never reached anyone, so they don't belong in
+      // the denominator of an engagement KPI.
+      stats[sid].replyRate = stats[sid].delivered ? Math.round((stats[sid].replied / stats[sid].delivered) * 100) : 0;
     }
 
     return NextResponse.json({ stats });

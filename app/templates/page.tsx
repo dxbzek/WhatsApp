@@ -408,7 +408,14 @@ function NewTemplate({ onCreated, seed }: { onCreated: () => void; seed?: any })
         {([["text", "Text"], ["card", "WhatsApp Card"], ["quick-reply", "Quick Reply"]] as const).map(([k, label]) => (
           <button
             key={k}
-            onClick={() => { setKind(k); setButtons([]); }}
+            onClick={() => {
+              setKind(k);
+              setButtons([]);
+              setHeaderType(k === "card" ? "media" : "none");
+              setHeaderText("");
+              setMediaUrl("");
+              setMediaIsVideo(false);
+            }}
             style={{ ...pill, ...(kind === k ? pillActive : {}) }}
           >
             {label}

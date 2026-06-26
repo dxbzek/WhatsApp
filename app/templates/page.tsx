@@ -307,10 +307,11 @@ function NewTemplate({ onCreated, seed }: { onCreated: () => void; seed?: any })
   const [category, setCategory] = useState(seed?.category ?? "MARKETING");
   const [language, setLanguage] = useState(seed?.language ?? "en");
   const [body, setBody] = useState(seed?.body ?? "");
-  const [headerType, setHeaderType] = useState<"none" | "text" | "image">(initialKind === "card" ? "image" : "none");
+  const [headerType, setHeaderType] = useState<"none" | "text" | "media">(initialKind === "card" ? "media" : "none");
   const [headerText, setHeaderText] = useState("");
   const [footer, setFooter] = useState("");
   const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaIsVideo, setMediaIsVideo] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [buttons, setButtons] = useState<Btn[]>(seed?.buttons?.length ? seed.buttons : (isBtnKind ? DEFAULT_BUTTONS : []));
   const [varDefaults, setVarDefaults] = useState<Record<string, string>>(seed?.varDefaults ?? {});
@@ -335,6 +336,7 @@ function NewTemplate({ onCreated, seed }: { onCreated: () => void; seed?: any })
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Upload failed");
       setMediaUrl(d.url);
+      setMediaIsVideo(f.type.startsWith("video/"));
     } catch (e: any) {
       setErr(e.message);
     } finally {
@@ -364,7 +366,7 @@ function NewTemplate({ onCreated, seed }: { onCreated: () => void; seed?: any })
       payload.body = body;
       if (kind === "card") {
         if (headerType === "text" && headerText) payload.headerText = headerText;
-        if (headerType === "image" && mediaUrl) payload.mediaUrl = mediaUrl;
+        if (headerType === "media" && mediaUrl) payload.mediaUrl = mediaUrl;
         if (footer) payload.footer = footer;
         payload.buttons = buttons;
       }
@@ -440,20 +442,31 @@ function NewTemplate({ onCreated, seed }: { onCreated: () => void; seed?: any })
             <select value={headerType} onChange={(e) => setHeaderType(e.target.value as any)} style={{ ...input, marginBottom: 8 }}>
               <option value="none">No header</option>
               <option value="text">Text header</option>
-              <option value="image">Image header</option>
+              <option value="media">Image / Video header</option>
             </select>
             {headerType === "text" && (
               <input value={headerText} onChange={(e) => setHeaderText(e.target.value)} placeholder="Header text (max 60)" maxLength={60} style={input} />
             )}
-            {headerType === "image" && (
+            {headerType === "media" && (
               <>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
-                  <input type="file" accept="image/*" onChange={handleUpload} disabled={uploading} style={{ fontSize: 13 }} />
+                  <input type="file" accept="image/*,video/mp4" onChange={handleUpload} disabled={uploading} style={{ fontSize: 13 }} />
                   {uploading && <span style={{ fontSize: 12, color: "#9a6700" }}>Uploading…</span>}
                 </div>
-                <input value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)} placeholder="…or paste an image URL" style={input} />
+                <input
+                  value={mediaUrl}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setMediaUrl(val);
+                    setMediaIsVideo(/\.(mp4|mov|webm)$/i.test(val));
+                  }}
+                  placeholder="…or paste an image or video URL"
+                  style={input}
+                />
                 {mediaUrl && !uploading && (
-                  <img src={mediaUrl} alt="header preview" style={{ maxHeight: 90, marginTop: 8, borderRadius: 8, border: "1px solid #E4E1DB" }} />
+                  mediaIsVideo
+                    ? <video src={mediaUrl} controls style={{ width: "100%", maxHeight: 160, marginTop: 8, borderRadius: 8, border: "1px solid #E4E1DB" }} />
+                    : <img src={mediaUrl} alt="header preview" style={{ maxHeight: 90, marginTop: 8, borderRadius: 8, border: "1px solid #E4E1DB" }} />
                 )}
               </>
             )}
@@ -544,14 +557,14 @@ function NewTemplate({ onCreated, seed }: { onCreated: () => void; seed?: any })
       </div>
       </div>
 
-      <PhonePreview kind={kind} headerType={headerType} headerText={headerText} mediaUrl={mediaUrl} body={body} footer={footer} buttons={buttons} vars={varDefaults} />
+      <PhonePreview kind={kind} headerType={headerType} headerText={headerText} mediaUrl={mediaUrl} mediaIsVideo={mediaIsVideo} body={body} footer={footer} buttons={buttons} vars={varDefaults} />
     </div>
   );
 }
 
 // Live WhatsApp-style phone mockup of the template being built.
-function PhonePreview({ kind, headerType, headerText, mediaUrl, body, footer, buttons, vars }: {
-  kind: string; headerType: string; headerText: string; mediaUrl: string; body: string; footer: string; buttons: Btn[]; vars: Record<string, string>;
+function PhonePreview({ kind, headerType, headerText, mediaUrl, mediaIsVideo, body, footer, buttons, vars }: {
+  kind: string; headerType: string; headerText: string; mediaUrl: string; mediaIsVideo: boolean; body: string; footer: string; buttons: Btn[]; vars: Record<string, string>;
 }) {
   const render = (text: string) => (text || "").replace(/\{\{(\d+)\}\}/g, (_, n) => vars[n] || `{{${n}}}`);
   const btns = (kind === "card" || kind === "quick-reply") ? buttons.filter((b) => b.title) : [];
@@ -565,7 +578,11 @@ function PhonePreview({ kind, headerType, headerText, mediaUrl, body, footer, bu
         </div>
         <div style={{ background: "#E5DDD5", padding: 12, minHeight: 280 }}>
           <div style={{ background: "#fff", borderRadius: 10, padding: 9, maxWidth: "90%", boxShadow: "0 1px 1px rgba(0,0,0,.13)", fontSize: 13, lineHeight: 1.45 }}>
-            {kind === "card" && headerType === "image" && mediaUrl && <img src={mediaUrl} alt="" style={{ width: "100%", borderRadius: 6, marginBottom: 6, display: "block" }} />}
+            {kind === "card" && headerType === "media" && mediaUrl && (
+              mediaIsVideo
+                ? <video src={mediaUrl} muted playsInline style={{ width: "100%", borderRadius: 6, marginBottom: 6, display: "block" }} />
+                : <img src={mediaUrl} alt="" style={{ width: "100%", borderRadius: 6, marginBottom: 6, display: "block" }} />
+            )}
             {kind === "card" && headerType === "text" && headerText && <div style={{ fontWeight: 700, marginBottom: 4 }}>{render(headerText)}</div>}
             <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{render(body) || <span style={{ color: "#9a958c" }}>Your message will appear here…</span>}</div>
             {kind === "card" && footer && <div style={{ fontSize: 11, color: "#8a8d91", marginTop: 6 }}>{render(footer)}</div>}

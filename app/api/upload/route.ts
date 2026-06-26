@@ -16,13 +16,15 @@ export async function POST(req: NextRequest) {
     if (!file) return NextResponse.json({ error: "No file provided" }, { status: 400 });
 
     const isImage = file.type.startsWith("image/");
+    const isVideo = file.type === "video/mp4";
     const isDoc = file.type === "application/pdf";
     if (kind === "chat") {
       if (!isImage && !isDoc) return NextResponse.json({ error: "Images or PDF only" }, { status: 400 });
-    } else if (!isImage) {
-      return NextResponse.json({ error: "Image files only" }, { status: 400 });
+    } else {
+      // kind === "card": accept images and MP4 video
+      if (!isImage && !isVideo) return NextResponse.json({ error: "Image or MP4 video files only" }, { status: 400 });
     }
-    // WhatsApp limits: ~5 MB images, ~16 MB documents.
+    // WhatsApp limits: 5 MB images, 16 MB video/documents
     const max = isImage ? 5 * 1024 * 1024 : 16 * 1024 * 1024;
     if (file.size > max)
       return NextResponse.json({ error: `File must be under ${Math.round(max / 1048576)} MB` }, { status: 400 });
@@ -31,7 +33,7 @@ export async function POST(req: NextRequest) {
     // Idempotent: ignore "already exists" on repeat calls.
     await sb.storage.createBucket(BUCKET, { public: true }).catch(() => {});
 
-    const ext = (file.name.split(".").pop() || (isImage ? "jpg" : "pdf")).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const ext = (file.name.split(".").pop() || (isImage ? "jpg" : isVideo ? "mp4" : "pdf")).toLowerCase().replace(/[^a-z0-9]/g, "");
     const folder = kind === "chat" ? "chat" : "cards";
     const key = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
     const buf = Buffer.from(await file.arrayBuffer());

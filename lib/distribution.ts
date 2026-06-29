@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendWhatsApp, sendTemplate } from "@/lib/twilio";
+import { sendWhatsApp, sendTemplate, getContentMedia } from "@/lib/twilio";
 
 // Approved "lead alert" template (Utility). Lets us notify an agent any time,
 // not just inside their 24h WhatsApp window. Variables: {{1}} lead name,
@@ -138,7 +138,7 @@ export async function distributeLead(opts: {
 
     const { data: camp } = await db
       .from("campaigns")
-      .select("id, name, blurb, agent_ids, distribution, rr_pointer")
+      .select("id, name, blurb, agent_ids, distribution, rr_pointer, template_sid")
       .eq("id", lastOut.campaign)
       .maybeSingle();
     const ids: string[] = (camp?.agent_ids as string[]) || [];
@@ -163,7 +163,12 @@ export async function distributeLead(opts: {
 
     const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
     // What the campaign is about — the per-campaign blurb if set, else the name.
-    const about = (camp.blurb && camp.blurb.trim()) ? camp.blurb.trim() : `Campaign: ${camp.name}`;
+    const baseAbout = (camp.blurb && camp.blurb.trim()) ? camp.blurb.trim() : `Campaign: ${camp.name}`;
+    // Tappable "see what we sent" link to the exact creative we broadcast (the
+    // campaign template's header image), so the agent knows what the lead responded
+    // to. Best-effort: a text-only template just yields no link.
+    const sentImg = camp.template_sid ? await getContentMedia(camp.template_sid) : null;
+    const about = sentImg ? `${baseAbout} · See what we sent: ${sentImg}` : baseAbout;
     const results = await alertAgents(targets, leadName, opts.contactPhone, about);
     return { assigned: results.map((r) => r.name) };
   } catch {

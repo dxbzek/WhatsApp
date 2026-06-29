@@ -48,10 +48,12 @@ export async function POST(req: NextRequest) {
     [pick("ad_name", "adName"), pick("campaign_name", "campaignName"), pick("form_name", "formName")]
       .filter(Boolean)
       .join(" · ");
+  // The specific ad set / property the lead enquired about, shown in the agent alert.
+  const listing = pick("listing", "adset_name", "adsetName", "ad_set_name", "ad_name", "adName");
 
   // Hand off to the shared ingest (same path the meta-leads cron uses): normalises
   // the phone, upserts the hot lead, routes it, and logs a lead_events row.
-  const res = await ingestMetaLead({ name, phone: rawPhone, email, ref, detail });
+  const res = await ingestMetaLead({ name, phone: rawPhone, email, ref, detail, listing });
   if (!res.ok) {
     const status = res.error === "Missing or invalid phone" ? 400 : 500;
     return NextResponse.json({ error: res.error || "Ingest failed" }, { status });

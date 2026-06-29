@@ -63,6 +63,7 @@ async function run(req: NextRequest) {
         phone: lead.phone,
         email: lead.email,
         detail: lead.detail,
+        listing: lead.listing, // the specific ad set (e.g. "Marina Residences 6") shown in the agent alert
       });
       if (res.status === "routed") routed++;
 

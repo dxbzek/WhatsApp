@@ -54,7 +54,13 @@ async function sendMetaAlert(agentName: string, toWa: string, leadName: string, 
     }
     return true;
   } catch {
-    try { await sendWhatsApp(toWa, fallback); return true; } catch { return false; }
+    // If the Meta-specific template failed (pending/rejected), fall back to the
+    // already-approved utility template — NOT free text, which only works inside
+    // the 24h window and would silently drop every agent alert.
+    try {
+      await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, { "1": leadName, "2": contactPhone, "3": `From Meta Ad: ${enquiry}` });
+      return true;
+    } catch { return false; }
   }
 }
 

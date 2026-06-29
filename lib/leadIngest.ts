@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { distributeMetaLead } from "@/lib/distribution";
 import { syncLeadToCrm } from "@/lib/crmSync";
+import { resolveAdPreview } from "@/lib/adCreatives";
 
 // Shared ingest for a single Meta Instant-Form lead, regardless of how it arrived
 // (the Zapier bridge POSTing to /api/leads/meta, or the meta-leads cron pulling it
@@ -71,18 +72,10 @@ export async function ingestMetaLead(opts: {
   });
 
   // Resolve a stable public preview link for the exact ad (Instagram permalink,
-  // FB permalink fallback) from the synced creative cache, so the agent can tap to
-  // see the ad. No Meta token needed at send time — the cache is populated offline.
+  // FB permalink fallback) so the agent can tap to see the ad. Real-time: a cache
+  // hit is instant; a never-seen ad is fetched live from Meta and cached on the fly.
   const adId = (opts.adId || "").trim();
-  let previewUrl = "";
-  if (adId) {
-    const { data: cr } = await db
-      .from("ad_creatives")
-      .select("ig_permalink, fb_permalink")
-      .eq("ad_id", adId)
-      .maybeSingle();
-    previewUrl = (cr?.ig_permalink || cr?.fb_permalink || "").trim();
-  }
+  const previewUrl = adId ? await resolveAdPreview(adId) : "";
 
   // Round-robin to the listing's agent pool and ping them with the Meta context.
   const dist = await distributeMetaLead({

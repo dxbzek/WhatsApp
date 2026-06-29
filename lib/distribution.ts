@@ -9,6 +9,11 @@ import { sendWhatsApp, sendTemplate, getContentMedia } from "@/lib/twilio";
 // template (ere_lead_alert) was deleted — never reintroduce a non-UTILITY alert.
 const META_LEAD_ALERT_SID = "HX031a430ae0b08ec0cd081c92c3dcbe98";
 
+// Approved WhatsApp-campaign lead-alert template (category UTILITY). For leads who
+// tapped a button on one of our WhatsApp broadcasts (vs a Meta lead form). Variables:
+// {{1}} agent name, {{2}} lead name, {{3}} number, {{4}} what they responded to + "see what we sent" link.
+const WA_LEAD_ALERT_SID = "HX15dc0ab3d6557582da6cab535d77ded6";
+
 type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: string | null; active?: boolean };
 
 // Send the lead-alert to one WhatsApp number. Routes through the SAME approved
@@ -16,7 +21,14 @@ type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: 
 // per-recipient MARKETING throttle (63049) that was silently dropping campaign +
 // stale-nudge alerts on the old MARKETING template. Returns true if accepted.
 async function sendAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
-  return (await sendMetaAlert(agentName, toWa, leadName, contactPhone, about)).ok;
+  try {
+    // Approved UTILITY WhatsApp-campaign template (accurate "new ERE lead from WhatsApp" wording).
+    await sendTemplate(toWa, WA_LEAD_ALERT_SID, { "1": agentName, "2": leadName, "3": contactPhone, "4": about });
+    return true;
+  } catch {
+    // Fall back to the approved Meta UTILITY template if the WA one ever fails.
+    return (await sendMetaAlert(agentName, toWa, leadName, contactPhone, about)).ok;
+  }
 }
 
 // Ping a single agent's WhatsApp with a lead reminder/alert (used by the

@@ -208,7 +208,7 @@ export default function Insights() {
         <div className="card">
           <div className="card-head">
             <div className="card-t">Agent performance</div>
-            <div className="card-meta">leads owned · all-time</div>
+            <div className="card-meta">WhatsApp leads owned · all-time</div>
           </div>
           <div className="perf">
             {perf === null && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading…</div></div>}
@@ -242,7 +242,7 @@ export default function Insights() {
         <div className="card">
           <div className="card-head">
             <div className="card-t">Campaign → deals</div>
-            <div className="card-meta">what actually converts · all-time</div>
+            <div className="card-meta">WhatsApp campaigns · all-time</div>
           </div>
           <div className="perf">
             {perf === null && <div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading…</div></div>}

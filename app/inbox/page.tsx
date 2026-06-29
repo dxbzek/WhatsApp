@@ -10,6 +10,7 @@ type UIConv = {
   tag: "Hot" | "Warm" | ""; lead?: string; unread: number; time: string; community: string;
   live: boolean; loaded: boolean; messages: UIMsg[]; blocked?: boolean;
   lastBody?: string; lastDirection?: string; replied?: boolean; assignedAgentId?: string; leadStage?: string;
+  sourceKind?: "meta" | "whatsapp" | "other"; // where the lead came from, for the inbox label
 };
 
 // Pipeline progress of a transferred lead, distinct from the Hot/Warm
@@ -114,6 +115,7 @@ export default function Inbox() {
         community: c.community || "", live: true, loaded: false, messages: [], blocked: c.status === "blocked",
         lastBody: c.last_body || "", lastDirection: c.last_direction || "", replied: !!c.replied,
         assignedAgentId: c.assigned_agent_id || undefined, leadStage: c.lead_stage || "",
+        sourceKind: c.source === "meta_lead_form" ? "meta" : (c.source_campaign_id ? "whatsapp" : "other"),
       }));
       setLive(true);
       setConvos((prev) => {
@@ -324,8 +326,10 @@ export default function Inbox() {
                     })()}</span>
                     {c.unread > 0 && <span className="unread">{c.unread}</span>}
                   </div>
-                  {(c.tag || c.community || c.blocked || c.leadStage || c.assignedAgentId) && (
+                  {(c.tag || c.community || c.blocked || c.leadStage || c.assignedAgentId || (c.sourceKind && c.sourceKind !== "other")) && (
                     <div className="ci-tags">
+                      {c.sourceKind === "meta" && <span className="ci-comm" style={{ color: "#1877F2", fontWeight: 700 }}>Meta</span>}
+                      {c.sourceKind === "whatsapp" && <span className="ci-comm" style={{ color: "var(--green-dot)", fontWeight: 700 }}>WhatsApp</span>}
                       {c.blocked
                         ? <span className="leadtag"><span className="d" style={{ background: "var(--ink-3)" }} />Opt-out</span>
                         : <TagDot tag={c.tag} />}

@@ -18,7 +18,7 @@ export async function GET() {
     // (distributed leads), so we aggregate in memory.
     const { data: rows, error } = await db
       .from("conversations")
-      .select("assigned_agent_id, source_campaign_id, lead_stage, first_response_at, assigned_at")
+      .select("assigned_agent_id, source_campaign_id, lead_stage, first_response_at, assigned_at, source")
       .eq("is_internal", false)
       .or("source_campaign_id.not.is.null,assigned_agent_id.not.is.null")
       .limit(50000);
@@ -38,6 +38,9 @@ export async function GET() {
     let pool = 0;
 
     for (const r of (rows || []) as any[]) {
+      // WhatsApp insights only — this console is WhatsApp, so exclude Meta lead-form
+      // leads (they have an owner but did not come through a WhatsApp campaign).
+      if (r.source === "meta_lead_form") continue;
       const stage = r.lead_stage as string | null;
       const active = stage === "contacted" || stage === "viewing";
       const respMin = r.first_response_at && r.assigned_at
@@ -57,14 +60,16 @@ export async function GET() {
         byAgent.set(r.assigned_agent_id, a);
       }
 
-      // Per-campaign attribution (keeps source even after the lead is released).
+      // Per-campaign attribution by NAME, so re-runs of the same campaign (same
+      // name, different id) merge into ONE row instead of showing 4 duplicates.
       if (r.source_campaign_id) {
-        const c = byCamp.get(r.source_campaign_id) || blank();
+        const cname = campName.get(r.source_campaign_id) || "Unknown";
+        const c = byCamp.get(cname) || blank();
         c.leads++;
         if (active) c.active++;
         if (stage === "won") c.won++;
         if (stage === "lost") c.lost++;
-        byCamp.set(r.source_campaign_id, c);
+        byCamp.set(cname, c);
       }
     }
 
@@ -77,8 +82,8 @@ export async function GET() {
       .sort((x, y) => y.won - x.won || y.leads - x.leads);
 
     const campRows = Array.from(byCamp.entries())
-      .map(([id, c]) => ({
-        id, name: campName.get(id) || "Unknown",
+      .map(([name, c]) => ({
+        id: name, name,
         leads: c.leads, active: c.active, won: c.won, lost: c.lost,
         winRate: c.won + c.lost > 0 ? Math.round((c.won / (c.won + c.lost)) * 100) : null,
       }))

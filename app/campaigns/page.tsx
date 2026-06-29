@@ -22,13 +22,31 @@ const CRM_VAR_FIELDS = [
   { id: "nationality", label: "Nationality" },
   { id: "tier", label: "Tier" },
 ];
+// Names that aren't real names — placeholders / junk that must never reach a
+// greeting ("Hi Aa," / "Hi NA,"). Falls back to a neutral greeting word.
+const NAME_PLACEHOLDERS = new Set(["na", "n/a", "none", "null", "nil", "tbd", "test", "customer", "owner", "sir", "madam", "xx", "xxx", "unknown"]);
+// Clean a NAME value for use in a greeting. Junk (under 2 letters, a single
+// repeated letter like "Aa"/"AA", a placeholder word, or no real letters) becomes
+// "there" so we send "Hi there," not "Hi Aa,". Real short names (Jo, Al, Li) pass.
+function cleanName(raw: string): string {
+  const s = (raw || "").trim();
+  const letters = s.replace(/[^a-zA-Z]/g, "");
+  if (letters.length < 2) return "there";
+  if (new Set(letters.toLowerCase()).size === 1) return "there"; // "Aa", "AAA", "oo"
+  if (NAME_PLACEHOLDERS.has(s.toLowerCase())) return "there";
+  return s;
+}
 function recordValue(rec: any, field: string): string {
-  if (!rec) return "";
+  if (!rec) return field === "first_name" || field === "name" ? "there" : "";
   // Pasted-CSV records carry named columns (first_name, community, ...) directly;
   // use them as-is so a value like "Abdul Aziz" is not truncated to one word.
-  if (rec[field] != null && String(rec[field]).trim() !== "") return String(rec[field]).trim();
-  if (field === "first_name") return String(rec.name || "").trim().split(/\s+/)[0] || "";
-  return rec[field] != null ? String(rec[field]) : "";
+  let v = "";
+  if (rec[field] != null && String(rec[field]).trim() !== "") v = String(rec[field]).trim();
+  else if (field === "first_name") v = String(rec.name || "").trim().split(/\s+/)[0] || "";
+  else v = rec[field] != null ? String(rec[field]) : "";
+  // Guard name fields against junk so the greeting never prints garbage.
+  if (field === "first_name" || field === "name") return cleanName(v);
+  return v;
 }
 
 // Parse a pasted / uploaded CSV that has a header row including a phone column,

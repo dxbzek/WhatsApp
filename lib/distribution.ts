@@ -251,10 +251,13 @@ export async function distributeMetaLead(opts: {
       await db.from("lead_routes").update({ rr_pointer: nextPointer }).eq("ref", route.ref);
     }
 
-    // Lead with the specific property the lead enquired about (ad set), falling
-    // back to the route label / campaign; append the lead's email if we have it.
-    const label = listing || (route.label && String(route.label).trim()) || (opts.detail && opts.detail.trim()) || String(route.ref);
-    const enquiry = `${label}${emailPart}`;
+    // Give the agent the full context of what the lead is about: the specific
+    // property they enquired about (ad set) AND the campaign it came from, so the
+    // {{4}} "Enquiry" line reads e.g. "Sobha The Crest — ERE | Keeley Listings".
+    // Dedupe so we never repeat the same string, and append the email if we have it.
+    const place = listing || (route.label && String(route.label).trim()) || String(route.ref);
+    const campaign = (opts.detail || "").trim();
+    const enquiry = [place, campaign].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" — ") + emailPart;
     const results = await alertMetaAgents(targets, leadName, opts.contactPhone, enquiry);
     const assigned = results.map((r) => r.name);
     const alertOk = results.some((r) => r.ok);

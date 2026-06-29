@@ -15,28 +15,18 @@ const META_LEAD_ALERT_SID = "HX031a430ae0b08ec0cd081c92c3dcbe98";
 
 type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: string | null; active?: boolean };
 
-// Send the lead-alert to one WhatsApp number. Prefer the approved template (works
-// any time); if it is rejected — e.g. still pending — fall back to free text,
-// which only delivers inside an open 24h window. Returns true if either send was
-// accepted by Twilio (so the caller can tell a real delivery failure from a hit).
-async function sendAlert(toWa: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
-  const vars = { "1": leadName, "2": contactPhone, "3": about };
-  const fallback =
-    `New ERE lead from WhatsApp.\n\n` +
-    `Name: ${leadName}\nNumber: ${contactPhone}\nCampaign: ${about}\n\n` +
-    `They just came in. Call or message them now while it is hot.`;
-  try {
-    await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, vars);
-    return true;
-  } catch {
-    try { await sendWhatsApp(toWa, fallback); return true; } catch { return false; }
-  }
+// Send the lead-alert to one WhatsApp number. Routes through the SAME approved
+// UTILITY template as the Meta path (sendMetaAlert) so it is exempt from Meta's
+// per-recipient MARKETING throttle (63049) that was silently dropping campaign +
+// stale-nudge alerts on the old MARKETING template. Returns true if accepted.
+async function sendAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
+  return (await sendMetaAlert(agentName, toWa, leadName, contactPhone, about)).ok;
 }
 
 // Ping a single agent's WhatsApp with a lead reminder/alert (used by the
-// stale-lead watcher). Reuses the approved alert template, free-text fallback.
-export async function pingAgent(wa_number: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
-  return sendAlert(wa_number, leadName, contactPhone, about);
+// stale-lead watcher). Reuses the approved UTILITY alert template.
+export async function pingAgent(agentName: string, wa_number: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
+  return sendAlert(agentName, wa_number, leadName, contactPhone, about);
 }
 
 // Meta-ad lead alert — its OWN variant so the agent can tell a Meta form lead
@@ -79,7 +69,7 @@ async function alertMetaAgents(targets: Agent[], leadName: string, contactPhone:
 async function alertAgents(targets: Agent[], leadName: string, contactPhone: string, about: string): Promise<{ name: string; ok: boolean }[]> {
   const results: { name: string; ok: boolean }[] = [];
   for (const a of targets) {
-    const ok = await sendAlert(a.wa_number, leadName, contactPhone, about);
+    const ok = await sendAlert(a.name, a.wa_number, leadName, contactPhone, about);
     results.push({ name: a.name, ok });
   }
   return results;

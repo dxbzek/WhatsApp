@@ -53,7 +53,7 @@ async function run(req: NextRequest) {
     const hrs = c.assigned_at ? Math.max(1, Math.round((Date.now() - new Date(c.assigned_at).getTime()) / 3600_000)) : STALE_HOURS;
     const leadName = c.name && c.name !== ("+" + c.wa_phone) ? c.name : "New contact";
     const about = `REMINDER: assigned to you ~${hrs}h ago, still no update. Reach out now, then reply here with a status: contacted, viewing, won or lost.`;
-    const ok = await pingAgent(agent.wa_number, leadName, "+" + c.wa_phone, about);
+    const ok = await pingAgent(agent.name, agent.wa_number, leadName, "+" + c.wa_phone, about);
     // Stamp regardless so we don't re-nudge in a tight loop; if the send truly
     // failed the lead still surfaces as stale on the board.
     await db.from("conversations").update({ stale_alerted_at: new Date().toISOString() }).eq("id", c.id);

@@ -1,23 +1,40 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Icon, IC, PageHead, Skeleton } from "@/lib/ui";
 import { TWILIO_ERRORS } from "@/lib/twilioErrors";
 
+// Sort options for the template list. Each picks a value off the stats blob.
+const SORTS: { key: string; label: string; val: (s: any) => number }[] = [
+  { key: "sent", label: "Most sent", val: (s) => s.sent || 0 },
+  { key: "reply", label: "Best reply rate", val: (s) => s.replyRate || 0 },
+  { key: "lead", label: "Best lead rate", val: (s) => s.leadRate || 0 },
+  { key: "leads", label: "Most leads", val: (s) => s.leads || 0 },
+  { key: "delivery", label: "Best delivery", val: (s) => s.deliveryRate || 0 },
+];
+
 export default function TemplatePerformance() {
   const [tpls, setTpls] = useState<any[]>([]);
   const [stats, setStats] = useState<Record<string, any> | null>(null);
+  const [sort, setSort] = useState("sent");
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetch("/api/templates").then((r) => r.json()).then((d) => setTpls(d.templates || []));
     fetch("/api/templates/performance").then((r) => r.json()).then((d) => setStats(d.stats || {}));
   }, []);
 
-  // Show templates that have actually been sent, busiest first.
-  const rows = tpls
-    .map((t) => ({ ...t, s: stats?.[t.sid] }))
-    .filter((t) => t.s && t.s.sent > 0)
-    .sort((a, b) => b.s.sent - a.s.sent);
+  // Templates that have actually been sent, then filtered + sorted by the chosen key.
+  const rows = useMemo(() => {
+    const sorter = SORTS.find((x) => x.key === sort) || SORTS[0];
+    const needle = q.trim().toLowerCase();
+    return tpls
+      .map((t) => ({ ...t, s: stats?.[t.sid] }))
+      .filter((t) => t.s && t.s.sent > 0)
+      .filter((t) => !needle || (t.name || "").toLowerCase().includes(needle))
+      .sort((a, b) => sorter.val(b.s) - sorter.val(a.s));
+  }, [tpls, stats, sort, q]);
 
   // Headline rollups across all sent templates (pure derived view, no extra fetch).
   // Every RATE is of delivered, never of sent — a message that failed/undelivered
@@ -29,18 +46,23 @@ export default function TemplatePerformance() {
   const totalLeads = rows.reduce((n, t) => n + (t.s.leads || 0), 0);
   const avgLeadRate = totalDelivered ? Math.round((totalLeads / totalDelivered) * 100) : 0;
 
+  const allOpen = rows.length > 0 && rows.every((t) => open.has(t.sid));
+  const toggle = (sid: string) =>
+    setOpen((p) => { const n = new Set(p); n.has(sid) ? n.delete(sid) : n.add(sid); return n; });
+  const toggleAll = () => setOpen(allOpen ? new Set() : new Set(rows.map((t) => t.sid)));
+
   return (
     <div className="page"><div className="maxw">
       <PageHead
         title="Template performance"
-        sub="How each template actually performs (last 90 days). Each funnel shows where recipients drop off, with the biggest leak and the next action. Reply rate = share of recipients who messaged back."
+        sub="How each template performs over the last 90 days. Tap a row to see the full funnel and where recipients drop off."
       >
         <Link href="/templates" className="btn btn-sec"><Icon d={IC.tmpl} s={15} />Templates</Link>
       </PageHead>
 
       {stats === null && <Skeleton rows={6} />}
 
-      {stats && rows.length === 0 && (
+      {stats && rows.length === 0 && q.trim() === "" && (
         <div className="empty">
           <div className="ei"><Icon d={IC.trend} s={22} /></div>
           <h4>No template sends yet</h4>
@@ -48,7 +70,7 @@ export default function TemplatePerformance() {
         </div>
       )}
 
-      {rows.length > 0 && (
+      {stats && rows.length > 0 && (
         <>
           <div className="kpis k5">
             <div className="kpi"><div className="kl">Total sent</div><div className="kv">{totalSent.toLocaleString()}</div><div className="ks">last 90 days</div></div>
@@ -58,22 +80,42 @@ export default function TemplatePerformance() {
             <div className="kpi"><div className="kl">Lead rate</div><div className="kv">{avgLeadRate}%</div><div className="ks">of delivered</div></div>
           </div>
 
-          {rows.map((t) => <TemplateCard key={t.sid} t={t} />)}
-
-          <div className="hint" style={{ marginTop: 12 }}>
-            Sent counts only messages actually handed to Twilio (canceled and skipped rows are excluded). Failed = undelivered + failed
-            receipts; Delivered and Read come from WhatsApp receipts; reply counts conversations that messaged back after the send.
-            Each bar is a share of how many were sent. Cold-outreach benchmarks: delivery 85%+ of reachable (sent minus dead numbers), read 45%+ of delivered, reply 1-3%+, interested 0.3-1%+ of delivered. Dead numbers are a list-quality issue, not a delivery failure.
+          {/* Toolbar: filter by name, sort, expand/collapse all */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+            <div style={{ position: "relative", flex: "1 1 200px", minWidth: 0 }}>
+              <span style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", color: "var(--ink-3)", pointerEvents: "none" }}><Icon d={IC.search} s={15} /></span>
+              <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter templates" style={{ paddingLeft: 32 }} />
+            </div>
+            <select className="input" value={sort} onChange={(e) => setSort(e.target.value)} style={{ width: "auto", flex: "0 0 auto" }}>
+              {SORTS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+            </select>
+            <button className="btn btn-sec" onClick={toggleAll} style={{ flex: "0 0 auto" }}>
+              <Icon d={IC.cdown} s={15} />{allOpen ? "Collapse all" : "Expand all"}
+            </button>
           </div>
+
+          {rows.map((t) => <TemplateCard key={t.sid} t={t} open={open.has(t.sid)} onToggle={() => toggle(t.sid)} />)}
+
+          {rows.length === 0 && q.trim() !== "" && (
+            <div className="hint" style={{ textAlign: "center", padding: 18 }}>No templates match “{q}”.</div>
+          )}
+
+          <details className="card" style={{ marginTop: 6 }}>
+            <summary style={{ cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: "var(--ink-2)" }}>How to read this</summary>
+            <div className="hint" style={{ marginTop: 10 }}>
+              Sent counts only messages handed to Twilio (canceled and skipped rows excluded). Failed = undelivered + failed receipts; Delivered and Read come from WhatsApp receipts; reply counts conversations that messaged back after the send. Every rate is a share of delivered, never of sent. Cold-outreach benchmarks: delivery 85%+ of reachable, read 45%+ of delivered, reply 1-3%+, interested 0.3-1%+ of delivered. Dead numbers are a list-quality issue, not a delivery failure.
+            </div>
+          </details>
         </>
       )}
     </div></div>
   );
 }
 
-// One template = one funnel card: name + reply pill, a stage-by-stage funnel you
-// can actually read the drop-off from, and the single biggest leak + next action.
-function TemplateCard({ t }: { t: any }) {
+// One template = one collapsible row. Collapsed shows name, headline metrics, the
+// reply/lead pills and the single biggest leak + next action. Expanding reveals the
+// full stage-by-stage funnel and the failure-reason breakdown.
+function TemplateCard({ t, open, onToggle }: { t: any; open: boolean; onToggle: () => void }) {
   const s = t.s;
   const d = diagnose(s);
   const stages = [
@@ -86,60 +128,64 @@ function TemplateCard({ t }: { t: any }) {
   ];
   const base = Math.max(1, s.sent);
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-        <div className="cell-name" style={{ minWidth: 0 }}>
+    <div className="card" style={{ marginBottom: 10, padding: open ? undefined : "13px 16px" }}>
+      <div onClick={onToggle} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: "pointer" }}>
+        <div className="cell-name" style={{ minWidth: 0, flex: 1 }}>
           <span className="tkind text"><Icon d={IC.tmpl} s={16} /></span>
           <div className="nm" style={{ minWidth: 0 }}>
             <div className="t" title={t.name} style={{ maxWidth: "none" }}>{t.name}</div>
             <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 1 }}>{s.sent.toLocaleString()} sent · {s.replied.toLocaleString()} replied · {(s.leads || 0).toLocaleString()} leads</div>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0, alignItems: "center" }}>
           <span className="badge" style={{ color: replyColor(s.replyRate), borderColor: replyColor(s.replyRate), background: "transparent" }}>
             <span className="bd" style={{ background: replyColor(s.replyRate) }} />{s.replyRate}% reply
           </span>
           <span className="badge" style={{ color: leadColor(s.leadRate || 0), borderColor: leadColor(s.leadRate || 0), background: "transparent" }}>
             <span className="bd" style={{ background: leadColor(s.leadRate || 0) }} />{(s.leads || 0).toLocaleString()} leads
           </span>
+          <span style={{ color: "var(--ink-3)", transform: open ? "rotate(180deg)" : "none", transition: "transform .18s", display: "inline-flex" }}><Icon d={IC.cdown} s={16} /></span>
         </div>
       </div>
 
-      <div style={{ display: "grid", gap: 9 }}>
-        {stages.map((st) => (
-          <div key={st.label} style={{ display: "grid", gridTemplateColumns: "78px 56px 1fr", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{st.label}</span>
-            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)", textAlign: "right" }}>{st.n.toLocaleString()}</span>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ flex: 1, height: 9, borderRadius: 20, background: "var(--chip)", overflow: "hidden" }}>
-                <div style={{ width: `${(st.n / base) * 100}%`, height: "100%", background: st.color, borderRadius: 20, transition: "width .4s" }} />
-              </div>
-              <span style={{ fontSize: 11.5, color: "var(--ink-3)", width: 108, flexShrink: 0 }}>{st.note}</span>
-            </div>
-          </div>
-        ))}
+      {/* Always-visible one-line diagnosis: the value of the whole row. */}
+      <div style={{ display: "flex", gap: 9, marginTop: 12, padding: "9px 12px", borderRadius: "var(--r)", background: d.bg, border: `1px solid ${d.border}` }}>
+        <Icon d={d.icon} s={16} />
+        <div style={{ fontSize: 12.5, lineHeight: 1.5, color: d.color }}><b>{d.leak}.</b> {d.action}</div>
       </div>
 
-      {s.failed > 0 && topErrors(s.errors).length > 0 && (
-        <div style={{ marginTop: 14, padding: "11px 13px", borderRadius: "var(--r)", background: "var(--chip)", border: "1px solid var(--border)" }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)", marginBottom: 7 }}>Why {s.failed.toLocaleString()} didn&apos;t arrive</div>
-          <div style={{ display: "grid", gap: 5 }}>
-            {topErrors(s.errors).map(([code, n]) => (
-              <div key={code} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5, color: "var(--ink-2)" }}>
-                <span style={{ minWidth: 0 }}>{code === "none" ? "No reason reported by Twilio" : (TWILIO_ERRORS[code] || `Twilio error ${code}`)}{code !== "none" && <span style={{ color: "var(--ink-3)" }}> · {code}</span>}</span>
-                <b style={{ color: "var(--ink)", flexShrink: 0 }}>{n.toLocaleString()}</b>
+      {open && (
+        <>
+          <div style={{ display: "grid", gap: 9, marginTop: 14 }}>
+            {stages.map((st) => (
+              <div key={st.label} style={{ display: "grid", gridTemplateColumns: "78px 56px 1fr", alignItems: "center", gap: 12 }}>
+                <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{st.label}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)", textAlign: "right" }}>{st.n.toLocaleString()}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1, height: 9, borderRadius: 20, background: "var(--chip)", overflow: "hidden" }}>
+                    <div style={{ width: `${(st.n / base) * 100}%`, height: "100%", background: st.color, borderRadius: 20, transition: "width .4s" }} />
+                  </div>
+                  <span style={{ fontSize: 11.5, color: "var(--ink-3)", width: 108, flexShrink: 0 }}>{st.note}</span>
+                </div>
               </div>
             ))}
           </div>
-        </div>
-      )}
 
-      <div style={{ display: "flex", gap: 9, marginTop: 14, padding: "11px 13px", borderRadius: "var(--r)", background: d.bg, border: `1px solid ${d.border}` }}>
-        <Icon d={d.icon} s={16} />
-        <div style={{ fontSize: 12.5, lineHeight: 1.5, color: d.color }}>
-          <b>{d.leak}.</b> {d.action}
-        </div>
-      </div>
+          {s.failed > 0 && topErrors(s.errors).length > 0 && (
+            <div style={{ marginTop: 14, padding: "11px 13px", borderRadius: "var(--r)", background: "var(--chip)", border: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)", marginBottom: 7 }}>Why {s.failed.toLocaleString()} didn&apos;t arrive</div>
+              <div style={{ display: "grid", gap: 5 }}>
+                {topErrors(s.errors).map(([code, n]) => (
+                  <div key={code} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5, color: "var(--ink-2)" }}>
+                    <span style={{ minWidth: 0 }}>{code === "none" ? "No reason reported by Twilio" : (TWILIO_ERRORS[code] || `Twilio error ${code}`)}{code !== "none" && <span style={{ color: "var(--ink-3)" }}> · {code}</span>}</span>
+                    <b style={{ color: "var(--ink)", flexShrink: 0 }}>{n.toLocaleString()}</b>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

@@ -21,6 +21,10 @@ export type MetaLead = {
   email: string;
   detail: string;        // campaign name — what routing matches on
   listing: string;       // cleaned ad-set/ad name — the specific property, for the alert
+  ad_id: string;         // exact ad — resolves the creative preview link + clean attribution
+  adset_id: string;
+  campaign_id: string;
+  adset_name: string;    // raw ad-set name, for attribution
 };
 
 // Turn a pipe-named ad asset ("ERE | Marina Residences 1 | Palm Jumeirah | 24 Jun
@@ -76,7 +80,7 @@ export async function listActiveForms(pageToken: string): Promise<{ id: string; 
 export async function fetchFormLeads(pageToken: string, formId: string, limit = 50): Promise<MetaLead[]> {
   const j = await graphGet(
     `${formId}/leads`,
-    { fields: "id,created_time,ad_name,adset_name,campaign_name,field_data", limit: String(limit) },
+    { fields: "id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,field_data", limit: String(limit) },
     pageToken
   );
   return (j.data || []).map((l: any) => {
@@ -94,6 +98,10 @@ export async function fetchFormLeads(pageToken: string, formId: string, limit = 
     // Route on the campaign name; show the specific listing (ad set / ad) in the alert.
     const detail = l.campaign_name || l.adset_name || l.ad_name || "";
     const listing = cleanLabel(l.adset_name || l.ad_name || "");
-    return { id: String(l.id), created_time: l.created_time, name, phone, email, detail, listing };
+    return {
+      id: String(l.id), created_time: l.created_time, name, phone, email, detail, listing,
+      ad_id: String(l.ad_id || ""), adset_id: String(l.adset_id || ""),
+      campaign_id: String(l.campaign_id || ""), adset_name: String(l.adset_name || ""),
+    };
   });
 }

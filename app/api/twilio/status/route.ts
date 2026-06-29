@@ -28,6 +28,24 @@ export async function POST(req: NextRequest) {
     const errorCode = String(form.get("ErrorCode") || "");
     if (sid && status) {
       const db = supabaseAdmin();
+
+      // Agent lead-alerts are sent straight via Twilio (not logged in `messages`),
+      // so reconcile their TRUE delivery onto lead_events here. This is what makes
+      // alert_delivery honest: "delivered"/"read" vs "undelivered" + the error code
+      // (e.g. 63049 marketing throttle), instead of the optimistic "sent" attempt.
+      {
+        const { data: le } = await db.from("lead_events").select("id, alert_delivery").eq("alert_sid", sid).maybeSingle();
+        if (le) {
+          const isFail = status === "undelivered" || status === "failed";
+          const newRank = RANK[status] ?? 0;
+          const curRank = RANK[(le as any).alert_delivery || ""] ?? 0;
+          const apply = isFail ? curRank < 3 : newRank >= curRank;
+          if (apply) {
+            await db.from("lead_events").update({ alert_delivery: status, alert_error: errorCode || null }).eq("id", (le as any).id);
+          }
+        }
+      }
+
       const { data: cur } = await db.from("messages").select("id, status, conversation").eq("twilio_sid", sid).maybeSingle();
       if (cur) {
         const isFail = status === "undelivered" || status === "failed";

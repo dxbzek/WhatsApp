@@ -45,27 +45,30 @@ export async function pingAgent(wa_number: string, leadName: string, contactPhon
 // 2=lead name, 3=number, 4=enquiry); until that template is approved + its SID
 // is set, it sends via the existing approved alert template so delivery is never
 // lost, and on any rejection falls back to Meta-worded free text (24h window).
-async function sendMetaAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, enquiry: string): Promise<boolean> {
+type AlertOutcome = { ok: boolean; sid: string | null; error: string | null };
+async function sendMetaAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, enquiry: string): Promise<AlertOutcome> {
   try {
-    // Approved UTILITY Meta template (not throttled). 4 vars: agent, lead, number, ad set + campaign.
-    await sendTemplate(toWa, META_LEAD_ALERT_SID, { "1": agentName, "2": leadName, "3": contactPhone, "4": enquiry });
-    return true;
+    // Approved UTILITY Meta template (not throttled). 4 vars: agent, lead, number, ad set + preview.
+    const r: any = await sendTemplate(toWa, META_LEAD_ALERT_SID, { "1": agentName, "2": leadName, "3": contactPhone, "4": enquiry });
+    return { ok: true, sid: r?.sid || null, error: null };
   } catch {
     // Last resort if the Meta template ever fails: the older approved alert template.
     // NOT free text, which only works inside the 24h window and would silently drop.
     try {
-      await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, { "1": leadName, "2": contactPhone, "3": `From Meta Ad: ${enquiry}` });
-      return true;
-    } catch { return false; }
+      const r: any = await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, { "1": leadName, "2": contactPhone, "3": `From Meta Ad: ${enquiry}` });
+      return { ok: true, sid: r?.sid || null, error: null };
+    } catch (e: any) {
+      return { ok: false, sid: null, error: String(e?.message || e).slice(0, 200) };
+    }
   }
 }
 
 // Ping each Meta-lead target agent, personalised by name. Mirrors alertAgents.
-async function alertMetaAgents(targets: Agent[], leadName: string, contactPhone: string, enquiry: string): Promise<{ name: string; ok: boolean }[]> {
-  const results: { name: string; ok: boolean }[] = [];
+async function alertMetaAgents(targets: Agent[], leadName: string, contactPhone: string, enquiry: string): Promise<{ name: string; ok: boolean; sid: string | null; error: string | null }[]> {
+  const results: { name: string; ok: boolean; sid: string | null; error: string | null }[] = [];
   for (const a of targets) {
-    const ok = await sendMetaAlert(a.name, a.wa_number, leadName, contactPhone, enquiry);
-    results.push({ name: a.name, ok });
+    const r = await sendMetaAlert(a.name, a.wa_number, leadName, contactPhone, enquiry);
+    results.push({ name: a.name, ...r });
   }
   return results;
 }
@@ -89,7 +92,7 @@ async function notifyFallback(reason: string, leadName: string, contactPhone: st
   const to = (process.env.LEAD_FALLBACK_WA || "").trim();
   if (!to) return false;
   const about = `UNROUTED (${reason})${context ? ` — ${context}` : ""}. Reassign this lead.`;
-  return sendMetaAlert("team", to, leadName, contactPhone, about);
+  return (await sendMetaAlert("team", to, leadName, contactPhone, about)).ok;
 }
 
 // Pick the target agent(s) from an ordered pool: "all" notifies everyone (owner =
@@ -186,6 +189,8 @@ export type MetaLeadResult = {
   assigned: string[];          // agent names pinged (empty if unrouted)
   alertOk: boolean;            // an assigned agent's alert was accepted by Twilio
   fallbackOk: boolean;         // the safety-net owner was notified (only on failure)
+  alertSid: string | null;     // Twilio SID of the owner's alert, for delivery reconciliation
+  alertError: string | null;   // why the alert send failed (if it did)
 };
 
 // Auto-distribute an inbound Meta ad lead (Instant Lead Form -> console) to the
@@ -206,6 +211,7 @@ export async function distributeMetaLead(opts: {
   detail?: string;       // campaign name, for matching + context
   listing?: string;      // specific property (ad set/ad) shown in the alert
   email?: string;        // lead's email, shown in the alert
+  previewUrl?: string;   // stable public link to the exact ad creative (IG/FB permalink)
 }): Promise<MetaLeadResult> {
   const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
   const listing = (opts.listing || "").trim();
@@ -231,7 +237,7 @@ export async function distributeMetaLead(opts: {
     // No matching route -> safety net.
     if (!route) {
       const fallbackOk = await notifyFallback("no_route", leadName, opts.contactPhone, context);
-      return { status: "no_route", ref: null, assigned: [], alertOk: false, fallbackOk };
+      return { status: "no_route", ref: null, assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
     }
 
     const ids: string[] = (route.agent_ids as string[]) || [];
@@ -239,7 +245,7 @@ export async function distributeMetaLead(opts: {
     // Route exists but nobody active to take it -> safety net.
     if (ordered.length === 0) {
       const fallbackOk = await notifyFallback("no_active_agents", leadName, opts.contactPhone, context);
-      return { status: "no_active_agents", ref: String(route.ref), assigned: [], alertOk: false, fallbackOk };
+      return { status: "no_active_agents", ref: String(route.ref), assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
     }
 
     const { targets, nextPointer } = pickTargets(ordered, route.distribution, route.rr_pointer ?? 0);
@@ -253,20 +259,25 @@ export async function distributeMetaLead(opts: {
     // Dedupe so we never repeat the same string, and append the email if we have it.
     const place = listing || (route.label && String(route.label).trim()) || String(route.ref);
     const campaign = (opts.detail || "").trim();
-    const enquiry = [place, campaign].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" — ") + emailPart;
+    // Tappable "See the ad" link to the exact creative so the agent knows what the
+    // lead responded to. Single line: WhatsApp template params can't carry newlines.
+    const previewPart = (opts.previewUrl || "").trim() ? ` · See the ad: ${opts.previewUrl!.trim()}` : "";
+    const enquiry = [place, campaign].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" — ") + emailPart + previewPart;
     const results = await alertMetaAgents(targets, leadName, opts.contactPhone, enquiry);
     const assigned = results.map((r) => r.name);
     const alertOk = results.some((r) => r.ok);
+    const alertSid = results.find((r) => r.ok)?.sid ?? null;
+    const alertError = results.find((r) => r.error)?.error ?? null;
 
     // Agent(s) chosen but no alert got through -> safety net so it is not silent.
     if (!alertOk) {
       const fallbackOk = await notifyFallback("alert_failed", leadName, opts.contactPhone, `${context} (agent: ${assigned.join(", ")})`);
-      return { status: "alert_failed", ref: String(route.ref), assigned, alertOk: false, fallbackOk };
+      return { status: "alert_failed", ref: String(route.ref), assigned, alertOk: false, fallbackOk, alertSid: null, alertError };
     }
-    return { status: "routed", ref: String(route.ref), assigned, alertOk: true, fallbackOk: false };
+    return { status: "routed", ref: String(route.ref), assigned, alertOk: true, fallbackOk: false, alertSid, alertError: null };
   } catch {
     // Unexpected error -> still try the safety net, never throw into the webhook.
     const fallbackOk = await notifyFallback("error", leadName, opts.contactPhone, context).catch(() => false);
-    return { status: "error", ref: null, assigned: [], alertOk: false, fallbackOk };
+    return { status: "error", ref: null, assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
   }
 }

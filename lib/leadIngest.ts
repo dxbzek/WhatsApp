@@ -23,6 +23,10 @@ export async function ingestMetaLead(opts: {
   ref?: string;          // listing/ad code, e.g. CAYAN-BH (usually blank for cron)
   detail?: string;       // campaign name — drives routing
   listing?: string;      // specific property (ad set/ad), shown in the agent alert
+  adId?: string;         // exact Meta ad — resolves the creative preview link + attribution
+  adsetId?: string;
+  campaignId?: string;
+  adsetName?: string;
 }): Promise<IngestResult> {
   const e164 = normalizePhone(opts.phone || "");
   if (!e164) return { ok: false, error: "Missing or invalid phone" };
@@ -66,10 +70,24 @@ export async function ingestMetaLead(opts: {
     conversation: conv.id, direction: "in", body: noteLines.join("\n"), status: "received",
   });
 
+  // Resolve a stable public preview link for the exact ad (Instagram permalink,
+  // FB permalink fallback) from the synced creative cache, so the agent can tap to
+  // see the ad. No Meta token needed at send time — the cache is populated offline.
+  const adId = (opts.adId || "").trim();
+  let previewUrl = "";
+  if (adId) {
+    const { data: cr } = await db
+      .from("ad_creatives")
+      .select("ig_permalink, fb_permalink")
+      .eq("ad_id", adId)
+      .maybeSingle();
+    previewUrl = (cr?.ig_permalink || cr?.fb_permalink || "").trim();
+  }
+
   // Round-robin to the listing's agent pool and ping them with the Meta context.
   const dist = await distributeMetaLead({
     contactPhone: e164, contactName: leadName, ref, detail,
-    listing: (opts.listing || "").trim(), email,
+    listing: (opts.listing || "").trim(), email, previewUrl,
   });
   const alertStatus = dist.alertOk ? "sent" : dist.fallbackOk ? "fallback" : "none";
 
@@ -90,6 +108,8 @@ export async function ingestMetaLead(opts: {
   }
 
   // Append a permanent lead-tracking row (never overwritten, unlike the chat).
+  // alert_status = our send attempt; alert_delivery (set later by the Twilio status
+  // callback, keyed on alert_sid) = the TRUE handset outcome (delivered/undelivered).
   await db.from("lead_events").insert({
     conversation: conv.id,
     wa_phone: bare,
@@ -97,8 +117,16 @@ export async function ingestMetaLead(opts: {
     ref: dist.ref ?? (ref || null),
     detail: detail || null,
     routing_status: dist.status,
+    matched_route: dist.ref ?? null,
     assigned_agent: dist.assigned[0] ?? null,
     alert_status: alertStatus,
+    alert_sid: dist.alertSid ?? null,
+    alert_error: dist.alertError ?? null,
+    ad_id: adId || null,
+    adset_id: (opts.adsetId || "").trim() || null,
+    campaign_id: (opts.campaignId || "").trim() || null,
+    adset_name: (opts.adsetName || "").trim() || null,
+    preview_url: previewUrl || null,
   });
 
   return { ok: true, conversationId: conv.id, status: dist.status, assigned: dist.assigned, alert: alertStatus };

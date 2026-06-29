@@ -64,6 +64,10 @@ async function run(req: NextRequest) {
         email: lead.email,
         detail: lead.detail,
         listing: lead.listing, // the specific ad set (e.g. "Marina Residences 6") shown in the agent alert
+        adId: lead.ad_id,
+        adsetId: lead.adset_id,
+        campaignId: lead.campaign_id,
+        adsetName: lead.adset_name,
       });
       if (res.status === "routed") routed++;
 

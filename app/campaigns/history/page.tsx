@@ -104,7 +104,7 @@ export default function CampaignHistory() {
               <Coverage c={c} f={funnels[c.id]} />
               <FailureReasons f={funnels[c.id]} />
               <DripTracker c={c} f={funnels[c.id]} />
-              {c.template_sid_b && <ABResults campaignId={c.id} />}
+              {c.template_sid_b && (() => { const rr = reach(c, funnels[c.id]); return <ABResults campaignId={c.id} live={rr.scheduled + rr.pending > 0} />; })()}
 
               <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
                 <button className="btn btn-sec btn-sm" onClick={() => setOpenId(openId === c.id ? null : c.id)}>
@@ -124,12 +124,20 @@ export default function CampaignHistory() {
 }
 
 // A/B comparison: variant A vs B by reach, taps, and tap rate; leader starred.
-function ABResults({ campaignId }: { campaignId: string }) {
+function ABResults({ campaignId, live }: { campaignId: string; live?: boolean }) {
   const [data, setData] = useState<{ ab: boolean; variants: any[] } | null>(null);
   useEffect(() => {
-    fetch(`/api/campaign/ab?campaign=${encodeURIComponent(campaignId)}&t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => r.json()).then(setData).catch(() => setData(null));
-  }, [campaignId]);
+    let stop = false;
+    const load = () => fetch(`/api/campaign/ab?campaign=${encodeURIComponent(campaignId)}&t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => { if (!stop) setData(d); }).catch(() => { if (!stop) setData(null); });
+    load();
+    // While the campaign is still sending, the reached/taps counts keep climbing —
+    // poll so the panel reflects live receipts instead of freezing at the 0 it had
+    // the instant the send started. A finished campaign fetches once.
+    if (!live) return () => { stop = true; };
+    const id = setInterval(load, 15000);
+    return () => { stop = true; clearInterval(id); };
+  }, [campaignId, live]);
   if (!data?.ab || !Array.isArray(data.variants)) return null;
   const vs = data.variants;
   const someTaps = vs.some((v) => v.taps > 0);

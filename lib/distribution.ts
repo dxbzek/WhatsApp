@@ -1,16 +1,12 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp, sendTemplate, getContentMedia } from "@/lib/twilio";
 
-// Approved "lead alert" template (Utility). Lets us notify an agent any time,
-// not just inside their 24h WhatsApp window. Variables: {{1}} lead name,
-// {{2}} number, {{3}} campaign heads-up.
-const LEAD_ALERT_CONTENT_SID = "HXc2cd73732854096291ff396e13c5cb73";
-
-// Approved Meta-lead alert template (category UTILITY, so it is exempt from Meta's
+// Approved agent lead-alert template (category UTILITY, so it is exempt from Meta's
 // per-recipient MARKETING throttle that silently drops bursts with error 63049).
-// Variables: {{1}} agent name, {{2}} lead name, {{3}} number, {{4}} ad set + campaign.
-// Hardcoded (like LEAD_ALERT_CONTENT_SID) on purpose: a stale META_LEAD_ALERT_SID
-// env var pointing at an UNAPPROVED template was the original silent-failure bug.
+// Variables: {{1}} agent name, {{2}} lead name, {{3}} number, {{4}} ad set/campaign + preview link.
+// Hardcoded on purpose: a stale META_LEAD_ALERT_SID env var pointing at an
+// UNAPPROVED template was the original silent-failure bug. The old MARKETING
+// template (ere_lead_alert) was deleted — never reintroduce a non-UTILITY alert.
 const META_LEAD_ALERT_SID = "HX031a430ae0b08ec0cd081c92c3dcbe98";
 
 type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: string | null; active?: boolean };
@@ -38,18 +34,14 @@ export async function pingAgent(agentName: string, wa_number: string, leadName: 
 type AlertOutcome = { ok: boolean; sid: string | null; error: string | null };
 async function sendMetaAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, enquiry: string): Promise<AlertOutcome> {
   try {
-    // Approved UTILITY Meta template (not throttled). 4 vars: agent, lead, number, ad set + preview.
+    // Approved UTILITY template (not throttled). 4 vars: agent, lead, number, ad set/campaign + preview.
     const r: any = await sendTemplate(toWa, META_LEAD_ALERT_SID, { "1": agentName, "2": leadName, "3": contactPhone, "4": enquiry });
     return { ok: true, sid: r?.sid || null, error: null };
-  } catch {
-    // Last resort if the Meta template ever fails: the older approved alert template.
-    // NOT free text, which only works inside the 24h window and would silently drop.
-    try {
-      const r: any = await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, { "1": leadName, "2": contactPhone, "3": `From Meta Ad: ${enquiry}` });
-      return { ok: true, sid: r?.sid || null, error: null };
-    } catch (e: any) {
-      return { ok: false, sid: null, error: String(e?.message || e).slice(0, 200) };
-    }
+  } catch (e: any) {
+    // No throttled-MARKETING fallback by design: a failure here is rare (the UTILITY
+    // template is reliable), and the caller still pings the safety-net owner + the
+    // lead stays hot in the inbox. Record the real error instead of a silent drop.
+    return { ok: false, sid: null, error: String(e?.message || e).slice(0, 200) };
   }
 }
 

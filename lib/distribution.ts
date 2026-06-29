@@ -6,6 +6,13 @@ import { sendWhatsApp, sendTemplate } from "@/lib/twilio";
 // {{2}} number, {{3}} campaign heads-up.
 const LEAD_ALERT_CONTENT_SID = "HXc2cd73732854096291ff396e13c5cb73";
 
+// Approved Meta-lead alert template (category UTILITY, so it is exempt from Meta's
+// per-recipient MARKETING throttle that silently drops bursts with error 63049).
+// Variables: {{1}} agent name, {{2}} lead name, {{3}} number, {{4}} ad set + campaign.
+// Hardcoded (like LEAD_ALERT_CONTENT_SID) on purpose: a stale META_LEAD_ALERT_SID
+// env var pointing at an UNAPPROVED template was the original silent-failure bug.
+const META_LEAD_ALERT_SID = "HX031a430ae0b08ec0cd081c92c3dcbe98";
+
 type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: string | null; active?: boolean };
 
 // Send the lead-alert to one WhatsApp number. Prefer the approved template (works
@@ -39,24 +46,13 @@ export async function pingAgent(wa_number: string, leadName: string, contactPhon
 // is set, it sends via the existing approved alert template so delivery is never
 // lost, and on any rejection falls back to Meta-worded free text (24h window).
 async function sendMetaAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, enquiry: string): Promise<boolean> {
-  const metaSid = (process.env.META_LEAD_ALERT_SID || "").trim();
-  const fallback =
-    `Hi ${agentName}, you have a new ERE lead from a Meta ad.\n\n` +
-    `Name: ${leadName}\nNumber: ${contactPhone}\nEnquiry: ${enquiry}\n\n` +
-    `They just submitted the lead form. Call or WhatsApp them now while it's hot.`;
   try {
-    if (metaSid) {
-      await sendTemplate(toWa, metaSid, { "1": agentName, "2": leadName, "3": contactPhone, "4": enquiry });
-    } else {
-      // No Meta template yet: use the existing approved template for guaranteed
-      // delivery. Its {{3}} already carries "From Meta Ad: …" so it still reads right.
-      await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, { "1": leadName, "2": contactPhone, "3": `From Meta Ad: ${enquiry}` });
-    }
+    // Approved UTILITY Meta template (not throttled). 4 vars: agent, lead, number, ad set + campaign.
+    await sendTemplate(toWa, META_LEAD_ALERT_SID, { "1": agentName, "2": leadName, "3": contactPhone, "4": enquiry });
     return true;
   } catch {
-    // If the Meta-specific template failed (pending/rejected), fall back to the
-    // already-approved utility template — NOT free text, which only works inside
-    // the 24h window and would silently drop every agent alert.
+    // Last resort if the Meta template ever fails: the older approved alert template.
+    // NOT free text, which only works inside the 24h window and would silently drop.
     try {
       await sendTemplate(toWa, LEAD_ALERT_CONTENT_SID, { "1": leadName, "2": contactPhone, "3": `From Meta Ad: ${enquiry}` });
       return true;

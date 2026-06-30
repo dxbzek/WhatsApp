@@ -12,8 +12,13 @@ import { sendWhatsApp } from "@/lib/twilio";
 //   viewing  -> "viewing", "booked", "appointment", "meeting", "site visit"
 //   contacted-> "contacted", "called", "spoke", "reached", "messaged", "no answer"
 //
-// The lead is matched by a phone number in the message if present, else the
-// agent's most-recently-assigned still-open lead.
+// The lead is matched, in priority order:
+//   1. an explicit lead_ref token in the text (e.g. "won L3f9k2a")
+//   2. an explicit phone number in the text
+//   3. the lead from the agent's most recent alert (last 48h) — this is the
+//      quick-reply BUTTON-TAP case, where the body is just "Contacted" with no
+//      reference at all, so we correlate via agent_alert_log
+//   4. the agent's most-recently-assigned still-open lead (legacy fallback)
 
 type Stage = "contacted" | "viewing" | "won" | "lost";
 
@@ -75,35 +80,70 @@ export async function handleAgentReport(from: string, body: string): Promise<boo
   const stage = parseStage(body);
   if (!stage) { await reply(HELP); return true; }
 
-  // Find the lead: explicit phone in the text wins, else their newest open lead.
-  const phone = leadPhoneFrom(body);
-  let lead: { id: string; name: string | null; wa_phone: string; assigned_agent_id: string | null; first_response_at: string | null } | null = null;
-  if (phone) {
-    const { data } = await db
-      .from("conversations")
-      .select("id, name, wa_phone, assigned_agent_id, first_response_at")
-      .eq("wa_phone", phone)
-      .maybeSingle();
-    lead = data || null;
+  // Find the lead in priority order (see header). LEAD_FIELDS keeps every lookup
+  // selecting the same shape.
+  const LEAD_FIELDS = "id, name, wa_phone, assigned_agent_id, first_response_at, lead_ref";
+  type Lead = { id: string; name: string | null; wa_phone: string; assigned_agent_id: string | null; first_response_at: string | null; lead_ref: string | null };
+  let lead: Lead | null = null;
+
+  // 1. Explicit lead_ref token, e.g. "won L3f9k2a".
+  const refMatch = body.match(/\bL[0-9a-z]{6}\b/i);
+  if (refMatch) {
+    const ref = refMatch[0].toLowerCase();
+    const { data } = await db.from("conversations").select(LEAD_FIELDS).ilike("lead_ref", ref).maybeSingle();
+    lead = (data as Lead) || null;
+    if (!lead) { await reply(`We could not find a lead with the reference ${refMatch[0].toUpperCase()}. Double-check it and try again.`); return true; }
+  }
+
+  // 2. Explicit phone in the text.
+  const phone = lead ? null : leadPhoneFrom(body);
+  if (!lead && phone) {
+    const { data } = await db.from("conversations").select(LEAD_FIELDS).eq("wa_phone", phone).maybeSingle();
+    lead = (data as Lead) || null;
     if (!lead) { await reply(`We could not find a lead with the number ${phone}. Double-check it and try again.`); return true; }
-  } else {
+  }
+
+  // 3. Button-tap case: no reference in the body, so correlate via the most recent
+  //    alert we sent to THIS agent number within the last 48h.
+  if (!lead) {
+    const cutoff = new Date(Date.now() - 48 * 3600000).toISOString();
+    const { data: lastAlert } = await db
+      .from("agent_alert_log")
+      .select("conversation_id, sent_at")
+      .eq("agent_wa", from)
+      .gte("sent_at", cutoff)
+      .order("sent_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastAlert?.conversation_id) {
+      const { data } = await db.from("conversations").select(LEAD_FIELDS).eq("id", lastAlert.conversation_id).maybeSingle();
+      lead = (data as Lead) || null;
+    }
+  }
+
+  // 4. Legacy fallback: the agent's most-recently-assigned still-open lead.
+  if (!lead) {
     // Open = not yet won or lost. A brand-new lead has a NULL stage, and
     // `NULL NOT IN (...)` is NOT true in SQL, so we must match null explicitly.
     const { data } = await db
       .from("conversations")
-      .select("id, name, wa_phone, assigned_agent_id, first_response_at")
+      .select(LEAD_FIELDS)
       .eq("assigned_agent_id", agent.id)
       .or("lead_stage.is.null,lead_stage.in.(contacted,viewing)")
       .eq("is_internal", false)
       .order("assigned_at", { ascending: false })
       .limit(2);
-    const open = data || [];
-    if (open.length === 0) { await reply("We could not find an open lead assigned to you. Include the lead's number, e.g. 'contacted 0501234567'."); return true; }
+    const open = (data as Lead[]) || [];
+    if (open.length === 0) { await reply("We could not find an open lead assigned to you. Include the lead's number or reference, e.g. 'contacted 0501234567' or 'contacted L3f9k2a'."); return true; }
     lead = open[0];
   }
 
   const now = new Date().toISOString();
-  const who = lead.name && lead.name !== ("+" + lead.wa_phone) ? lead.name : "+" + lead.wa_phone;
+  // Name the lead in the confirmation, plus its ref so the agent can see exactly
+  // which lead we matched (vital for the button-tap case, where the body had no
+  // reference of its own).
+  const name = lead.name && lead.name !== ("+" + lead.wa_phone) ? lead.name : "+" + lead.wa_phone;
+  const who = lead.lead_ref ? `${name} (${lead.lead_ref.toUpperCase()})` : name;
   const patch: Record<string, any> = { lead_stage: stage, stage_updated_at: now };
 
   if (stage === "lost") {

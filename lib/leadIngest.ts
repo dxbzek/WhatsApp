@@ -79,6 +79,7 @@ export async function ingestMetaLead(opts: {
 
   // Round-robin to the listing's agent pool and ping them with the Meta context.
   const dist = await distributeMetaLead({
+    conversationId: conv.id,
     contactPhone: e164, contactName: leadName, ref, detail,
     listing: (opts.listing || "").trim(), email, previewUrl,
   });

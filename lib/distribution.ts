@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp, sendTemplate, getContentMedia } from "@/lib/twilio";
+import { ensureLeadRef } from "@/lib/leadRef";
 
 // Approved agent lead-alert template (category UTILITY, so it is exempt from Meta's
 // per-recipient MARKETING throttle that silently drops bursts with error 63049).
@@ -14,27 +15,48 @@ const META_LEAD_ALERT_SID = "HX031a430ae0b08ec0cd081c92c3dcbe98";
 // {{1}} agent name, {{2}} lead name, {{3}} number, {{4}} what they responded to + "see what we sent" link.
 const WA_LEAD_ALERT_SID = "HX15dc0ab3d6557582da6cab535d77ded6";
 
+// AGENT_LEAD_ALERT_SID (pending approval, not wired yet)
+// New unified agent lead-alert template; once Meta approves it this can replace
+// both SIDs above. Until then we keep using META_LEAD_ALERT_SID / WA_LEAD_ALERT_SID.
+// const AGENT_LEAD_ALERT_SID = "HX9866d614203dd8a9c3f503402ee76032";
+
+// Record that we sent a lead alert to an agent, so a later quick-reply button tap
+// (which carries no lead reference) can be correlated back to this exact lead.
+// Best-effort: a logging failure must never break distribution.
+async function logAgentAlert(db: ReturnType<typeof supabaseAdmin>, opts: {
+  agentId: string | null; agentWa: string; conversationId: string; alertSid: string | null;
+}): Promise<void> {
+  try {
+    await db.from("agent_alert_log").insert({
+      agent_id: opts.agentId,
+      agent_wa: opts.agentWa,
+      conversation_id: opts.conversationId,
+      alert_message_sid: opts.alertSid,
+    });
+  } catch { /* logging is best-effort */ }
+}
+
 type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: string | null; active?: boolean };
 
 // Send the lead-alert to one WhatsApp number. Routes through the SAME approved
 // UTILITY template as the Meta path (sendMetaAlert) so it is exempt from Meta's
 // per-recipient MARKETING throttle (63049) that was silently dropping campaign +
 // stale-nudge alerts on the old MARKETING template. Returns true if accepted.
-async function sendAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
+async function sendAlert(agentName: string, toWa: string, leadName: string, contactPhone: string, about: string): Promise<AlertOutcome> {
   try {
     // Approved UTILITY WhatsApp-campaign template (accurate "new ERE lead from WhatsApp" wording).
-    await sendTemplate(toWa, WA_LEAD_ALERT_SID, { "1": agentName, "2": leadName, "3": contactPhone, "4": about });
-    return true;
+    const r: any = await sendTemplate(toWa, WA_LEAD_ALERT_SID, { "1": agentName, "2": leadName, "3": contactPhone, "4": about });
+    return { ok: true, sid: r?.sid || null, error: null };
   } catch {
     // Fall back to the approved Meta UTILITY template if the WA one ever fails.
-    return (await sendMetaAlert(agentName, toWa, leadName, contactPhone, about)).ok;
+    return sendMetaAlert(agentName, toWa, leadName, contactPhone, about);
   }
 }
 
 // Ping a single agent's WhatsApp with a lead reminder/alert (used by the
 // stale-lead watcher). Reuses the approved UTILITY alert template.
 export async function pingAgent(agentName: string, wa_number: string, leadName: string, contactPhone: string, about: string): Promise<boolean> {
-  return sendAlert(agentName, wa_number, leadName, contactPhone, about);
+  return (await sendAlert(agentName, wa_number, leadName, contactPhone, about)).ok;
 }
 
 // Meta-ad lead alert — its OWN variant so the agent can tell a Meta form lead
@@ -58,11 +80,11 @@ async function sendMetaAlert(agentName: string, toWa: string, leadName: string, 
 }
 
 // Ping each Meta-lead target agent, personalised by name. Mirrors alertAgents.
-async function alertMetaAgents(targets: Agent[], leadName: string, contactPhone: string, enquiry: string): Promise<{ name: string; ok: boolean; sid: string | null; error: string | null }[]> {
-  const results: { name: string; ok: boolean; sid: string | null; error: string | null }[] = [];
+async function alertMetaAgents(targets: Agent[], leadName: string, contactPhone: string, enquiry: string): Promise<{ id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[]> {
+  const results: { id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[] = [];
   for (const a of targets) {
     const r = await sendMetaAlert(a.name, a.wa_number, leadName, contactPhone, enquiry);
-    results.push({ name: a.name, ...r });
+    results.push({ id: a.id, name: a.name, wa: a.wa_number, ...r });
   }
   return results;
 }
@@ -70,11 +92,11 @@ async function alertMetaAgents(targets: Agent[], leadName: string, contactPhone:
 // Ping each target agent with the lead. Best-effort: a per-agent failure never
 // blocks the rest. Returns { name, ok } per agent so the caller knows whether the
 // alert actually reached at least one of them.
-async function alertAgents(targets: Agent[], leadName: string, contactPhone: string, about: string): Promise<{ name: string; ok: boolean }[]> {
-  const results: { name: string; ok: boolean }[] = [];
+async function alertAgents(targets: Agent[], leadName: string, contactPhone: string, about: string): Promise<{ id: string; name: string; wa: string; ok: boolean; sid: string | null }[]> {
+  const results: { id: string; name: string; wa: string; ok: boolean; sid: string | null }[] = [];
   for (const a of targets) {
-    const ok = await sendAlert(a.name, a.wa_number, leadName, contactPhone, about);
-    results.push({ name: a.name, ok });
+    const r = await sendAlert(a.name, a.wa_number, leadName, contactPhone, about);
+    results.push({ id: a.id, name: a.name, wa: a.wa_number, ok: r.ok, sid: r.sid });
   }
   return results;
 }
@@ -164,6 +186,8 @@ export async function distributeLead(opts: {
     const convPatch: Record<string, any> = { source_campaign_id: camp.id };
     if (owner) { convPatch.assigned_agent_id = owner.id; convPatch.assigned_at = new Date().toISOString(); }
     await db.from("conversations").update(convPatch).eq("id", opts.conversationId);
+    // Give the lead a short human ref (best-effort) so alerts/replies can name it.
+    await ensureLeadRef(opts.conversationId);
 
     const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
     // What the campaign is about — the per-campaign blurb if set, else the name.
@@ -174,6 +198,10 @@ export async function distributeLead(opts: {
     const sentImg = camp.template_sid ? await getContentMedia(camp.template_sid) : null;
     const about = sentImg ? `${baseAbout} · See what we sent: ${sentImg}` : baseAbout;
     const results = await alertAgents(targets, leadName, opts.contactPhone, about);
+    // Log each successful alert so a later button tap maps back to THIS lead.
+    for (const r of results) {
+      if (r.ok) await logAgentAlert(db, { agentId: r.id, agentWa: r.wa, conversationId: opts.conversationId, alertSid: r.sid });
+    }
     return { assigned: results.map((r) => r.name) };
   } catch {
     return null;
@@ -204,6 +232,7 @@ export type MetaLeadResult = {
 // (LEAD_FALLBACK_WA) so a lead is never lost silently; the lead also stays hot +
 // visible in the inbox Hot tab regardless.
 export async function distributeMetaLead(opts: {
+  conversationId?: string; // the lead's conversation, for alert-log correlation + lead_ref
   contactPhone: string; // +E.164
   contactName?: string;
   ref?: string;          // listing/ad code, e.g. "CAYAN-BH"
@@ -267,6 +296,15 @@ export async function distributeMetaLead(opts: {
     const alertOk = results.some((r) => r.ok);
     const alertSid = results.find((r) => r.ok)?.sid ?? null;
     const alertError = results.find((r) => r.error)?.error ?? null;
+
+    // Log each successful alert + ensure a lead_ref, so a later button tap maps
+    // back to THIS lead. Only when we know the conversation (caller passes it).
+    if (opts.conversationId) {
+      for (const r of results) {
+        if (r.ok) await logAgentAlert(db, { agentId: r.id, agentWa: r.wa, conversationId: opts.conversationId, alertSid: r.sid });
+      }
+      await ensureLeadRef(opts.conversationId);
+    }
 
     // Agent(s) chosen but no alert got through -> safety net so it is not silent.
     if (!alertOk) {

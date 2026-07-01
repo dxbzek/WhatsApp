@@ -413,10 +413,21 @@ function Drawer({ t, onClose, onDuplicate, onDelete, busy }: { t: Tpl; onClose: 
   );
 }
 
+function LanePill({ lane }: { lane: string }) {
+  const marketing = lane === "marketing";
+  const c = marketing ? { bg: "#fdf0d5", fg: "#8a5a00" } : { bg: "#e6f0fb", fg: "#1d4ed8" };
+  return (
+    <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 0.2, padding: "1px 7px", borderRadius: 999, background: c.bg, color: c.fg, whiteSpace: "nowrap", flex: "none" }}>
+      {marketing ? "Marketing" : "Utility"}
+    </span>
+  );
+}
+
 function Row({ t, selected, onOpen }: { t: Tpl; selected: boolean; onOpen: (t: Tpl) => void }) {
   const k = kindOf(t.type);
   const preview = (t.body || "").replace(/\s+/g, " ").trim();
   const varCount = Object.keys(t.variables || {}).length;
+  const lane = (t as any).lane || "utility";
   return (
     <tr className={selected ? "sel" : ""} onClick={() => onOpen(t)}>
       <td>
@@ -424,7 +435,10 @@ function Row({ t, selected, onOpen }: { t: Tpl; selected: boolean; onOpen: (t: T
           <span className={`tkind ${k}`} style={t.media ? { overflow: "hidden", padding: 0 } : undefined}>
             {t.media ? <img src={t.media} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Icon d={k === "card" ? IC.tmpl : k === "qr" ? IC.reply : IC.hash} s={15} />}
           </span>
-          <div className="nm"><div className="t">{t.name}</div><div className="p">{preview}</div></div>
+          <div className="nm">
+            <div className="t" style={{ display: "flex", alignItems: "center", gap: 7 }}>{t.name}<LanePill lane={lane} /></div>
+            <div className="p">{preview}</div>
+          </div>
         </div>
       </td>
       <td className="tcol-type">{TYPE_LABEL(t.type)}</td>
@@ -503,7 +517,9 @@ export default function Templates() {
 
   const filtered = useMemo(() => tpls.filter((t) => {
     if (!matchStatus(t.status, filter)) return false;
-    if (cat !== "all" && (t.category || "") !== cat) return false;
+    // `cat` now holds the LANE filter (which sending account owns the template):
+    // "marketing" = marketing number, "utility" = utility number.
+    if (cat !== "all" && ((t as any).lane || "utility") !== cat) return false;
     if (q.trim()) { const s = q.toLowerCase(); if (!t.name.toLowerCase().includes(s) && !(t.body || "").toLowerCase().includes(s)) return false; }
     return true;
   }), [tpls, filter, cat, q]);
@@ -571,8 +587,8 @@ export default function Templates() {
             })}
           </div>
           <div className="bar-right">
-            {["MARKETING", "UTILITY"].map((c) => (
-              <button key={c} className={`seltrig ${cat === c ? "on" : ""}`} onClick={() => setCat(cat === c ? "all" : c)} style={{ textTransform: "capitalize" }}>{c.toLowerCase()}</button>
+            {([["marketing", "Marketing"], ["utility", "Utility"]] as const).map(([id, label]) => (
+              <button key={id} className={`seltrig ${cat === id ? "on" : ""}`} onClick={() => setCat(cat === id ? "all" : id)}>{label}</button>
             ))}
             <div className="list-search"><Icon d={IC.search} s={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search templates…" /></div>
           </div>

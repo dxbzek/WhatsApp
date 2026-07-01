@@ -28,7 +28,7 @@ async function run(req: NextRequest) {
 
   const { data: stale, error } = await db
     .from("conversations")
-    .select("id, name, wa_phone, assigned_agent_id, assigned_at")
+    .select("id, name, wa_phone, assigned_agent_id, assigned_at, lead_ref")
     .not("assigned_agent_id", "is", null)
     .is("lead_stage", null)
     .eq("is_internal", false)
@@ -52,8 +52,8 @@ async function run(req: NextRequest) {
     if (!agent?.wa_number) continue;
     const hrs = c.assigned_at ? Math.max(1, Math.round((Date.now() - new Date(c.assigned_at).getTime()) / 3600_000)) : STALE_HOURS;
     const leadName = c.name && c.name !== ("+" + c.wa_phone) ? c.name : "New contact";
-    const about = `REMINDER: assigned to you ~${hrs}h ago, still no update. Reach out now, then reply here with a status: contacted, viewing, won or lost.`;
-    const ok = await pingAgent(agent.name, agent.wa_number, leadName, "+" + c.wa_phone, about);
+    const about = `Reminder — assigned to you ~${hrs}h ago, still no update. Reach out now, then tap a status button below.`;
+    const ok = await pingAgent(agent.name, agent.wa_number, (c as any).lead_ref || "", leadName, "+" + c.wa_phone, about);
     // Stamp regardless so we don't re-nudge in a tight loop; if the send truly
     // failed the lead still surfaces as stale on the board.
     await db.from("conversations").update({ stale_alerted_at: new Date().toISOString() }).eq("id", c.id);

@@ -108,3 +108,12 @@ $$;
 
 grant execute on function try_dispatch_lock() to service_role;
 grant execute on function release_dispatch_lock() to service_role;
+
+-- ── 4. RLS lockdown for the new tables ──────────────────────────────────────────
+-- Console convention (see project_whatsapp_rls_lockdown): every public table has
+-- RLS ENABLED with NO policies, so anon/authenticated (PostgREST) get nothing and
+-- all access goes through service_role in the /api routes + RPCs (which bypass RLS).
+-- Without this the Supabase linter flags rls_disabled_in_public (ERROR) and the
+-- anon key could read/write these tables directly.
+alter table public.agent_alert_log enable row level security;
+alter table public.dispatch_lock  enable row level security;

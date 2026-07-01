@@ -11,7 +11,10 @@ export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get("url") || "";
   let host = "";
   try { host = new URL(url).hostname; } catch { return NextResponse.json({ error: "Bad url" }, { status: 400 }); }
-  if (!host.endsWith("api.twilio.com")) return NextResponse.json({ error: "Forbidden host" }, { status: 403 });
+  // #15: exact host or a real Twilio subdomain only. `endsWith("api.twilio.com")`
+  // alone would also match an attacker-controlled "evilapi.twilio.com" (or worse,
+  // "notapi.twilio.com") — require the dot boundary.
+  if (!(host === "api.twilio.com" || host.endsWith(".api.twilio.com"))) return NextResponse.json({ error: "Forbidden host" }, { status: 403 });
 
   const { authHeader } = twilioCreds();
   // redirect:manual so the Twilio Basic-auth header is never re-sent to a

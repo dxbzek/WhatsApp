@@ -37,6 +37,30 @@ async function run(req: NextRequest) {
   if (provided !== secret) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const db = supabaseAdmin();
+
+  // #8: Global single-flight. The per-run CAP + 250ms throttle only pace ONE run;
+  // if a slow run overlaps the next cron tick, the global send rate doubles. A
+  // session-level pg advisory lock lets only one dispatch run proceed at a time;
+  // a second concurrent run bails out immediately. The lock is auto-released when
+  // this connection closes, and we also release it explicitly in `finally`.
+  const { data: gotLock, error: lockErr } = await db.rpc("try_dispatch_lock");
+  if (lockErr) {
+    // Lock helper missing/failed — log and continue rather than freeze the drip.
+    // eslint-disable-next-line no-console
+    console.warn("[dispatch] try_dispatch_lock failed, running without global lock:", lockErr.message);
+  } else if (gotLock === false) {
+    return NextResponse.json({ skippedRun: "locked" });
+  }
+
+  try {
+    return await runLocked(db);
+  } finally {
+    if (gotLock === true) { try { await db.rpc("release_dispatch_lock"); } catch { /* connection close releases it anyway */ } }
+  }
+}
+
+// The actual dispatch pass, run while holding the global lock (see run()).
+async function runLocked(db: ReturnType<typeof supabaseAdmin>) {
   const now = Date.now();
 
   // Recover rows orphaned in 'sending' by a crashed/timed-out earlier run.
@@ -147,7 +171,12 @@ async function run(req: NextRequest) {
 
   // Release any claimed rows we didn't process (hit the deadline) back to
   // 'scheduled' so the next run picks them up — never leave them stuck 'sending'.
-  await db.from("messages").update({ status: "scheduled" }).in("id", ids).eq("status", "sending");
+  // #7: only release rows that NEVER got a twilio_sid. A row whose Twilio send
+  // succeeded but whose DB status-write failed still has status='sending' AND a
+  // sid; resetting it to 'scheduled' would double-send. The `.is(twilio_sid,null)`
+  // guard leaves those for the orphan-recovery pass (which re-queues them, not
+  // re-schedules) so the status callback can finish them.
+  await db.from("messages").update({ status: "scheduled" }).in("id", ids).eq("status", "sending").is("twilio_sid", null);
 
   // Mark a campaign completed once nothing is left scheduled for it.
   for (const cid of campIds) {

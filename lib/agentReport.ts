@@ -36,11 +36,13 @@ const HELP =
 
 // Normalise a UAE-style phone found in free text to the stored wa_phone form
 // (971XXXXXXXXX, no +). Returns null if nothing phone-like is present.
+// #13: extract the LONGEST single run of 9-15 digits rather than concatenating
+// every digit in the message. Concatenating turned "contacted 050... about 2 beds"
+// into "...2" and produced a wrong/garbage number; a single run is the real phone.
 function leadPhoneFrom(body: string): string | null {
-  const digits = body.replace(/[^\d]/g, "");
-  if (digits.length < 7) return null;
-  // Pull the longest plausible run; agents usually paste the whole number.
-  let n = digits;
+  const runs = (body.match(/\d{9,15}/g) || []).sort((a, b) => b.length - a.length);
+  let n = runs[0] || "";
+  if (n.length < 7) return null;
   if (n.startsWith("00")) n = n.slice(2);
   if (n.startsWith("0") && n.length === 10) n = "971" + n.slice(1); // 05XXXXXXXX
   else if (n.length === 9 && n.startsWith("5")) n = "971" + n;       // 5XXXXXXXX
@@ -64,7 +66,10 @@ const labelOf = (s: Stage) => ({ contacted: "Contacted", viewing: "Viewing", won
 
 // Returns true if `from` is a known agent and we handled the message as a
 // status report (so the webhook should stop and NOT treat it as a lead).
-export async function handleAgentReport(from: string, body: string): Promise<boolean> {
+// `originalSid` (Twilio's OriginalRepliedMessageSid, present when the agent taps a
+// quick-reply BUTTON on a specific alert) lets us correlate a bare status back to
+// the EXACT lead that alert was for, instead of guessing the newest.
+export async function handleAgentReport(from: string, body: string, originalSid?: string | null): Promise<boolean> {
   const db = supabaseAdmin();
   const { data: agent } = await db
     .from("agents")
@@ -103,21 +108,58 @@ export async function handleAgentReport(from: string, body: string): Promise<boo
     if (!lead) { await reply(`We could not find a lead with the number ${phone}. Double-check it and try again.`); return true; }
   }
 
-  // 3. Button-tap case: no reference in the body, so correlate via the most recent
-  //    alert we sent to THIS agent number within the last 48h.
+  // 3a. Button-tap with a replied-to alert SID: match the EXACT alert the agent
+  //     tapped (Twilio's OriginalRepliedMessageSid == agent_alert_log.alert_message_sid).
+  //     This is the reliable disambiguator when an agent has several open leads.
+  if (!lead && originalSid) {
+    const { data: alert } = await db
+      .from("agent_alert_log")
+      .select("conversation_id")
+      .eq("alert_message_sid", originalSid)
+      .order("sent_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (alert?.conversation_id) {
+      const { data } = await db.from("conversations").select(LEAD_FIELDS).eq("id", alert.conversation_id).maybeSingle();
+      lead = (data as Lead) || null;
+    }
+  }
+
+  // 3b. Button-tap WITHOUT a usable replied-to SID: correlate via alerts sent to
+  //     THIS agent in the last 48h. If there are 2+ DISTINCT open leads alerted in
+  //     that window we must NOT silently pick the newest (that mis-attributes the
+  //     status to the wrong lead). Instead ask the agent to name the Lead ID, list
+  //     the open ones, and return without mutating anything.
   if (!lead) {
     const cutoff = new Date(Date.now() - 48 * 3600000).toISOString();
-    const { data: lastAlert } = await db
+    const { data: alerts } = await db
       .from("agent_alert_log")
       .select("conversation_id, sent_at")
       .eq("agent_wa", from)
       .gte("sent_at", cutoff)
-      .order("sent_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (lastAlert?.conversation_id) {
-      const { data } = await db.from("conversations").select(LEAD_FIELDS).eq("id", lastAlert.conversation_id).maybeSingle();
-      lead = (data as Lead) || null;
+      .order("sent_at", { ascending: false });
+    // Distinct conversations, newest first.
+    const convIds: string[] = [];
+    for (const a of (alerts || []) as any[]) {
+      if (a.conversation_id && !convIds.includes(a.conversation_id)) convIds.push(a.conversation_id);
+    }
+    if (convIds.length > 0) {
+      const { data: convs } = await db.from("conversations").select(LEAD_FIELDS).in("id", convIds);
+      // Distinct leads alerted to this agent in the window, in alert order (newest
+      // first). 2+ here is the ambiguous case we must not guess on.
+      const byId = new Map((convs as Lead[] | null || []).map((c) => [c.id, c] as const));
+      const openConvs: Lead[] = convIds
+        .map((id) => byId.get(id))
+        .filter((c): c is Lead => !!c);
+      if (openConvs.length >= 2) {
+        const listed = openConvs.slice(0, 5).map((c) => {
+          const nm = c.name && c.name !== ("+" + c.wa_phone) ? c.name : ("+" + c.wa_phone);
+          return `${(c.lead_ref || "").toUpperCase() || "?"} (${nm})`;
+        }).join(", ");
+        await reply(`You have ${openConvs.length} open leads: ${listed}. Reply with the Lead ID, e.g. 'contacted ${(openConvs[0].lead_ref || "L123").toUpperCase()}'.`);
+        return true;
+      }
+      lead = openConvs[0] || null;
     }
   }
 

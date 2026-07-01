@@ -42,6 +42,12 @@ create table if not exists messages (
 
 create index if not exists idx_messages_conversation on messages(conversation, created_at);
 create index if not exists idx_conversations_last_at on conversations(last_at desc);
+-- Inbound idempotency: UNIQUE partial index on twilio_sid (lib/migration_bugfixes.sql).
+-- A Twilio webhook retry that re-inserts the same MessageSid now errors with a
+-- unique violation, which the inbound route catches and treats as a duplicate.
+-- Null SIDs (scheduled/queued drip rows) are exempt, so many nulls remain allowed.
+create unique index if not exists idx_messages_twilio_sid
+  on messages (twilio_sid) where twilio_sid is not null;
 
 -- Button / keyword auto-reply rules (managed in /automation)
 create table if not exists auto_replies (
@@ -97,6 +103,12 @@ create table if not exists agent_alert_log (
   sent_at            timestamptz not null default now()
 );
 create index if not exists idx_agent_alert_log_wa_sent on agent_alert_log(agent_wa, sent_at desc);
+
+-- Atomic round-robin pointers + dispatch single-flight lock (lib/migration_bugfixes.sql).
+-- next_campaign_rr_pointer(uuid) / next_route_rr_pointer(text): atomic UPDATE ...
+-- RETURNING so concurrent leads never collide on the same agent.
+-- try_dispatch_lock()/release_dispatch_lock(): pg advisory lock so only one
+-- /api/cron/dispatch run executes at a time (global pacing across overlapping runs).
 
 -- Realtime for the inbox UI
 alter publication supabase_realtime add table messages;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { crmContactByPhone } from "@/lib/crm";
 import { appendRows, sheetsConfigured } from "@/lib/sheets";
+import { isAdminRequest } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,9 @@ export const maxDuration = 60;
 // POST { campaignId?, campaignName?, mode?: "manual"|"crm", phones: string[], sentAt?: string }
 export async function POST(req: NextRequest) {
   try {
+    // #14: exporting contact data is admin-only. Defaults to allow under the
+    // single shared login; restrict via ADMIN_EMAILS when multi-user is added.
+    if (!(await isAdminRequest(req))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     const { campaignName, mode, phones, sentAt } = await req.json();
     if (!Array.isArray(phones) || phones.length === 0)
       return NextResponse.json({ error: "phones required" }, { status: 400 });

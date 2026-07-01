@@ -63,24 +63,47 @@ drop index if exists idx_messages_twilio_sid;
 create unique index if not exists idx_messages_twilio_sid
   on messages (twilio_sid) where twilio_sid is not null;
 
--- ── 3. Dispatch single-flight advisory lock ────────────────────────────────────
+-- ── 3. Dispatch single-flight lease ─────────────────────────────────────────────
 -- Before: the dispatcher's per-run CAP (25) + 250ms throttle only paced a single
 -- invocation. If two cron runs overlapped (a slow run still going when the next
--- fires), the global send rate doubled. A session-level advisory lock lets only
--- one run hold it at a time; a second run fails fast and returns early. The key is
--- an arbitrary constant unique to this lock.
+-- fires), the global send rate doubled.
+-- NOTE: we deliberately do NOT use pg_advisory_lock here. Advisory locks are
+-- session-scoped, but Supabase/PostgREST runs each RPC on a pooled connection, so
+-- the lock taken in try_dispatch_lock() would be released (or stranded) before the
+-- dispatch work and the later release_dispatch_lock() runs on a different session —
+-- giving false pacing OR a permanently stuck lock. Instead we use a single-row TTL
+-- lease: a run "wins" only if the lease is free or expired, and it auto-heals after
+-- the TTL if a run crashes without releasing.
+create table if not exists dispatch_lock (
+  id           int primary key default 1,
+  locked_until timestamptz,
+  constraint dispatch_lock_singleton check (id = 1)
+);
+insert into dispatch_lock (id, locked_until) values (1, null)
+  on conflict (id) do nothing;
+
+-- Returns true if this caller acquired the lease (lease was free or expired), else
+-- false. TTL of 2 minutes bounds how long a crashed run can block the next one.
 create or replace function try_dispatch_lock()
 returns boolean
-language sql
+language plpgsql
 as $$
-  select pg_try_advisory_lock(hashtext('ere_whatsapp_dispatch'));
+declare got boolean;
+begin
+  update dispatch_lock
+     set locked_until = now() + interval '2 minutes'
+   where id = 1
+     and (locked_until is null or locked_until < now())
+  returning true into got;
+  return coalesce(got, false);
+end;
 $$;
 
 create or replace function release_dispatch_lock()
 returns boolean
 language sql
 as $$
-  select pg_advisory_unlock(hashtext('ere_whatsapp_dispatch'));
+  update dispatch_lock set locked_until = null where id = 1 returning true;
 $$;
 
 grant execute on function try_dispatch_lock() to service_role;

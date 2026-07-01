@@ -112,12 +112,35 @@ async function notifyFallback(reason: string, leadName: string, contactPhone: st
 }
 
 // Pick the target agent(s) from an ordered pool: "all" notifies everyone (owner =
-// first); otherwise round-robin by `pointer`. Returns the chosen agents plus the
-// next pointer value to persist (so assignment stays even across calls).
-function pickTargets(ordered: Agent[], distribution: string | null | undefined, pointer: number): { targets: Agent[]; nextPointer: number } {
-  if (distribution === "all") return { targets: ordered, nextPointer: pointer };
-  const idx = (pointer ?? 0) % ordered.length;
-  return { targets: [ordered[idx]], nextPointer: (pointer ?? 0) + 1 };
+// first); otherwise round-robin using an ALREADY-INCREMENTED pointer (obtained
+// atomically from the DB by the caller, so concurrent leads never collide). The
+// pointer is 1-based (the value AFTER incrementing), so index = (pointer-1) mod n.
+// Zero-guard (#10): an empty pool returns [] instead of indexing undefined.
+function pickTargets(ordered: Agent[], distribution: string | null | undefined, incrementedPointer: number): Agent[] {
+  if (ordered.length === 0) return [];
+  if (distribution === "all") return ordered;
+  // Normalise into range even if the pointer is negative or huge.
+  const idx = (((incrementedPointer - 1) % ordered.length) + ordered.length) % ordered.length;
+  return [ordered[idx]];
+}
+
+// Atomically advance a round-robin pointer via a DB RPC (UPDATE ... RETURNING),
+// so two concurrent leads never read the same pointer and pick the same agent
+// (the old JS read/increment/write was racy). Returns the incremented pointer.
+// On RPC failure we do NOT silently swallow: log it and fall back to pointer 0
+// (which pickTargets normalises to the first agent) so a lead still routes.
+async function atomicRrPointer(
+  db: ReturnType<typeof supabaseAdmin>,
+  fn: "next_campaign_rr_pointer" | "next_route_rr_pointer",
+  arg: { p_id: string } | { p_ref: string },
+): Promise<number> {
+  const { data, error } = await db.rpc(fn, arg as any);
+  if (error || data == null) {
+    // eslint-disable-next-line no-console
+    console.warn(`[distribution] ${fn} rpc failed, falling back to pointer 0:`, error?.message || "null result");
+    return 0;
+  }
+  return typeof data === "number" ? data : Number(data);
 }
 
 // Load active agents for the given ids, preserving the configured order.
@@ -174,11 +197,15 @@ export async function distributeLead(opts: {
     if (ordered.length === 0) return null;
 
     // "all" pings every assigned agent (owner = first). Otherwise round-robin:
-    // pick by the campaign pointer and advance it so assignment stays even.
-    const { targets, nextPointer } = pickTargets(ordered, camp.distribution, camp.rr_pointer ?? 0);
+    // advance the pointer ATOMICALLY in the DB first (no JS read/increment/write
+    // race), then map that incremented value to an agent. Only advance for the
+    // round-robin path; "all" needs no pointer.
+    let pointer = 0;
     if (camp.distribution !== "all") {
-      await db.from("campaigns").update({ rr_pointer: nextPointer }).eq("id", camp.id);
+      pointer = await atomicRrPointer(db, "next_campaign_rr_pointer", { p_id: camp.id });
     }
+    const targets = pickTargets(ordered, camp.distribution, pointer);
+    if (targets.length === 0) return null;
 
     // Persist the owner + source campaign on the conversation so the lead is
     // trackable (after transfer) and attributable (which campaign produced it).
@@ -276,9 +303,16 @@ export async function distributeMetaLead(opts: {
       return { status: "no_active_agents", ref: String(route.ref), assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
     }
 
-    const { targets, nextPointer } = pickTargets(ordered, route.distribution, route.rr_pointer ?? 0);
+    // Advance the route pointer ATOMICALLY (keyed by ref) before mapping to an
+    // agent, so concurrent Meta leads never collide on the same agent.
+    let pointer = 0;
     if (route.distribution !== "all") {
-      await db.from("lead_routes").update({ rr_pointer: nextPointer }).eq("ref", route.ref);
+      pointer = await atomicRrPointer(db, "next_route_rr_pointer", { p_ref: String(route.ref) });
+    }
+    const targets = pickTargets(ordered, route.distribution, pointer);
+    if (targets.length === 0) {
+      const fallbackOk = await notifyFallback("no_active_agents", leadName, opts.contactPhone, context);
+      return { status: "no_active_agents", ref: String(route.ref), assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
     }
 
     // Give the agent the full context of what the lead is about: the specific

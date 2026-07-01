@@ -155,15 +155,25 @@ async function postMessage(form: URLSearchParams, opts?: { sendAt?: string; from
   const sid = cleanEnv(process.env.TWILIO_ACCOUNT_SID);
   const token = cleanEnv(process.env.TWILIO_AUTH_TOKEN);
 
-  // Scheduled sends require a Messaging Service + ScheduleType=fixed; immediate
-  // sends use the chosen From number (or the default).
+  // Resolve the sender we actually want this message to go out from: the caller's
+  // chosen number, else the default TWILIO_WHATSAPP_FROM.
+  const resolvedFrom = opts?.from
+    ? (opts.from.startsWith("whatsapp:") ? opts.from : `whatsapp:${opts.from}`)
+    : cleanEnv(process.env.TWILIO_WHATSAPP_FROM);
+
+  // Scheduled sends require a Messaging Service + ScheduleType=fixed. BUT we must
+  // ALSO set From: without it Twilio picks any number from the MS sender pool, so
+  // a scheduled marketing broadcast could go out from an UNINTENDED number (wrong
+  // brand identity, and it breaks per-number quality tracking). Twilio accepts From
+  // together with MessagingServiceSid and honours the explicit From, so we always
+  // pin the resolved sender. Immediate sends just use From.
   if (opts?.sendAt && MESSAGING_SERVICE_SID()) {
     form.set("MessagingServiceSid", MESSAGING_SERVICE_SID());
     form.set("ScheduleType", "fixed");
     form.set("SendAt", opts.sendAt);
+    if (resolvedFrom) form.set("From", resolvedFrom); // pin the chosen number
   } else {
-    const from = opts?.from ? (opts.from.startsWith("whatsapp:") ? opts.from : `whatsapp:${opts.from}`) : cleanEnv(process.env.TWILIO_WHATSAPP_FROM);
-    form.set("From", from);
+    form.set("From", resolvedFrom);
   }
   const cb = statusCallbackUrl();
   if (cb) form.set("StatusCallback", cb);

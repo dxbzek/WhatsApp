@@ -7,6 +7,12 @@ import { handleAgentReport } from "@/lib/agentReport";
 
 const ok200 = () => new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
+// Postgres unique-violation error code (via PostgREST). We rely on the UNIQUE
+// partial index on messages.twilio_sid (lib/migration_bugfixes.sql) so a Twilio
+// webhook RETRY that re-inserts the same MessageSid fails here instead of
+// double-processing (double auto-reply / double lead distribution).
+const isDupeInsert = (error: any) => error?.code === "23505";
+
 // Twilio posts incoming WhatsApp here (form-encoded).
 // NOTE: only switch Twilio's inbound webhook to this once you retire Ulgebra inbound.
 export async function POST(req: NextRequest) {
@@ -20,6 +26,9 @@ export async function POST(req: NextRequest) {
   const from = String(form.get("From") || "").replace("whatsapp:", "");
   const body = String(form.get("Body") || "");
   const sid = String(form.get("MessageSid") || "");
+  // Present when the inbound is a quick-reply BUTTON tap on one of our messages —
+  // lets us correlate an agent's bare status ("Contacted") to the exact lead alert.
+  const originalSid = String(form.get("OriginalRepliedMessageSid") || "").trim() || null;
   const profileName = String(form.get("ProfileName") || "").trim(); // WhatsApp display name
   const numMedia = parseInt(String(form.get("NumMedia") || "0"), 10) || 0;
   const mediaUrl = numMedia > 0 ? String(form.get("MediaUrl0") || "") : "";
@@ -29,10 +38,16 @@ export async function POST(req: NextRequest) {
 
   // Idempotency: Twilio retries on any slow/non-2xx response. If we've already
   // logged this MessageSid, ack and stop so we don't duplicate the message or
-  // re-fire the auto-reply / Pipedrive lead push.
+  // re-fire the auto-reply / lead distribution. This is a fast-path check; the
+  // UNIQUE index + insert-error check below is the real guarantee under a race.
   if (sid) {
     const { data: dupe } = await db.from("messages").select("id").eq("twilio_sid", sid).maybeSingle();
     if (dupe) return ok200();
+  } else {
+    // No MessageSid means we cannot dedupe this inbound — process it, but warn so
+    // a flood of duplicates is visible in the logs.
+    // eslint-disable-next-line no-console
+    console.warn("[twilio-inbound] missing MessageSid; cannot dedupe this inbound");
   }
 
   // Agent self-report branch: when one of OUR agents texts this number, it's a
@@ -47,8 +62,14 @@ export async function POST(req: NextRequest) {
         { wa_phone: phone, is_internal: true, last_body: displayBody, last_at: new Date().toISOString(), last_direction: "in", last_status: "received", ...(profileName ? { name: profileName } : {}) },
         { onConflict: "wa_phone" }
       ).select().single();
-      if (aconv) await db.from("messages").insert({ conversation: aconv.id, direction: "in", body: displayBody, status: "received", twilio_sid: sid, media_url: mediaUrl || null });
-      try { await handleAgentReport(from, body); } catch { /* never fail the webhook */ }
+      if (aconv) {
+        const { error: insErr } = await db.from("messages").insert({ conversation: aconv.id, direction: "in", body: displayBody, status: "received", twilio_sid: sid || null, media_url: mediaUrl || null });
+        // A unique violation means this exact webhook already ran (Twilio retry) —
+        // stop before re-processing the agent status report.
+        if (isDupeInsert(insErr)) return ok200();
+      }
+      // Pass the replied-to alert SID so a button tap maps to the exact lead.
+      try { await handleAgentReport(from, body, originalSid); } catch { /* never fail the webhook */ }
       return ok200();
     }
   }
@@ -62,9 +83,13 @@ export async function POST(req: NextRequest) {
     )
     .select()
     .single();
-  await db.from("messages").insert({
-    conversation: conv!.id, direction: "in", body: displayBody, status: "received", twilio_sid: sid, media_url: mediaUrl || null,
+  const { error: mainInsErr } = await db.from("messages").insert({
+    conversation: conv!.id, direction: "in", body: displayBody, status: "received", twilio_sid: sid || null, media_url: mediaUrl || null,
   });
+  // Duplicate webhook (Twilio retry raced past the fast-path check above): the
+  // UNIQUE twilio_sid index rejects the second insert. Ack and STOP before the
+  // auto-reply / lead distribution so we never fire those twice.
+  if (isDupeInsert(mainInsErr)) return ok200();
   // mark the conversation unread + last message inbound. `replied` is a sticky
   // flag (never unset) so the inbox Replied tab shows everyone who has ever
   // written back, even after we answer them and the last message flips outbound.
@@ -93,6 +118,13 @@ export async function POST(req: NextRequest) {
   // EXACT match only, so "not interested in selling, but buying" is never caught.
   const OPT_OUT = ["stop", "unsubscribe", "unsub", "cancel", "stop promotions", "opt out", "optout", "remove me", "remove", "blocked", "block", "block me", "do not contact", "dont contact", "leave me alone"];
   const isOptOut = OPT_OUT.includes(text);
+  // #9: a CLEAR opt-out — an exact opt-out phrase, or one used as the FIRST token
+  // (e.g. "stop messaging me") — must always suppress and can NEVER be rescued by
+  // the buying-intent heuristic below. WhatsApp/Meta treat ignoring a clear "stop"
+  // as a serious violation, so an unambiguous opt-out wins outright.
+  const firstToken = text.split(/\s+/)[0] || "";
+  const STANDALONE_OPT_OUT = ["stop", "unsubscribe", "unsub", "optout", "remove", "blocked", "block"];
+  const isHardOptOut = isOptOut || STANDALONE_OPT_OUT.includes(firstToken);
 
   // Buying-intent detection. Twilio delivers each quick-reply tap as its OWN
   // inbound webhook, so a contact who taps "Send me photos" AND "Stop
@@ -136,7 +168,8 @@ export async function POST(req: NextRequest) {
   // suppress — surface them as a hot lead for a human and skip the goodbye.
   const wantsBlock = isOptOut || !!(rule && rule.block);
   if (wantsBlock) {
-    if (await recentIntent()) {
+    // A hard/standalone opt-out is never rescued by buying intent (#9): suppress.
+    if (!isHardOptOut && await recentIntent()) {
       flaggedConflict = true;
       leadHot = true;
       // Keep them open + unread so they sit in the Hot tab for a human to read.
@@ -166,7 +199,7 @@ export async function POST(req: NextRequest) {
 
   // Reverse order: a buying-intent message arriving right after an opt-out
   // already suppressed the conversation. Un-suppress and flag for a human.
-  if (!wantsBlock && looksLikeIntent(body)) {
+  if (!wantsBlock && !isHardOptOut && looksLikeIntent(body)) {
     const { data: c } = await db.from("conversations").select("status, suppressed_at").eq("id", conv!.id).maybeSingle();
     const recentlySuppressed = c?.suppressed_at && (Date.now() - new Date(c.suppressed_at).getTime() < INTENT_WINDOW_MS);
     if (c?.status === "blocked" && recentlySuppressed) {

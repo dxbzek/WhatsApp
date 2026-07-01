@@ -26,14 +26,18 @@ function publicUrl(req: NextRequest): string {
 }
 
 // Verify an incoming Twilio webhook. Returns whether the request should be
-// allowed. SAFE ROLLOUT: by default this only LOGS a mismatch and still allows
-// the request (so a signature/URL quirk can't silently kill live webhooks). It
-// only rejects once TWILIO_ENFORCE_SIGNATURE=1 is set — flip that after you see
-// "[twilio-sig] ok" in the logs. Returns { ok, allow }.
+// allowed. SECURE BY DEFAULT: whenever a Twilio auth token is configured we
+// ENFORCE the signature and reject (403) a mismatch — a forged webhook could
+// otherwise inject fake inbound messages, mark leads, or trigger auto-replies.
+// Enforcement can be turned OFF only for debugging by setting
+// TWILIO_ENFORCE_SIGNATURE=0 (then a mismatch is logged but allowed). If no auth
+// token is configured we cannot verify at all, so we allow-and-log rather than
+// hard-fail every webhook. Returns { ok, allow }.
 export function verifyTwilioWebhook(req: NextRequest, params: Record<string, string>): { ok: boolean; allow: boolean } {
   const token = (process.env.TWILIO_AUTH_TOKEN || "").replace(/^﻿/, "").trim();
   const signature = req.headers.get("x-twilio-signature") || "";
-  const enforce = process.env.TWILIO_ENFORCE_SIGNATURE === "1";
+  // Enforce by default; only "0" explicitly disables it (for debugging).
+  const enforce = !!token && process.env.TWILIO_ENFORCE_SIGNATURE !== "0";
   const ok = isValidTwilioSignature(token, signature, publicUrl(req), params);
   if (!ok) {
     // eslint-disable-next-line no-console

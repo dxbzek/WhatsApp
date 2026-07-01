@@ -10,10 +10,15 @@ export const maxDuration = 60;
 // flow uses this to drop already-messaged contacts so a re-send never
 // double-messages someone who already got it. Failed/never-sent numbers are NOT
 // counted as reached, so they correctly stay in for a retry.
-// POST { phones: string[] } -> { reached: string[] }  (reached = digit-only keys)
+// POST { phones: string[], content_sid?, template_sid_b? } -> { reached: string[] }
+// (reached = digit-only keys). When a template SID is provided, a contact only
+// counts as "reached" if they got an outbound on THAT template (or template B) —
+// matching the enqueue never-resend guard, which is per-content_sid. Without a SID
+// we fall back to "any outbound" (legacy behaviour).
 export async function POST(req: NextRequest) {
   try {
-    const { phones } = await req.json();
+    const { phones, content_sid, template_sid_b } = await req.json();
+    const templateSids = [content_sid, template_sid_b].filter(Boolean).map(String);
     const keys = Array.from(
       new Set((Array.isArray(phones) ? phones : []).map((p: string) => String(p).replace(/[^0-9]/g, "")))
     ).filter(Boolean);
@@ -40,12 +45,16 @@ export async function POST(req: NextRequest) {
       // just-sent contact look "not reached" and get double-messaged on a re-send.
       for (let j = 0; j < ids.length; j += 500) {
         const idSlice = ids.slice(j, j + 500);
-        const { data: msgs } = await db
+        let q = db
           .from("messages")
           .select("conversation")
           .eq("direction", "out")
           .in("status", ["queued", "accepted", "sent", "delivered", "read"])
           .in("conversation", idSlice);
+        // #6: scope "reached" to THIS campaign's template(s), so a contact who got
+        // a DIFFERENT template is not wrongly excluded from this campaign.
+        if (templateSids.length) q = q.in("content_sid", templateSids);
+        const { data: msgs } = await q;
         for (const m of msgs || []) {
           const p = idToPhone.get((m as any).conversation);
           if (p) reached.add(p);

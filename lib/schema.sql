@@ -14,8 +14,12 @@ create table if not exists conversations (
   pipedrive_person_id text,                       -- linked Pipedrive person
   pipedrive_lead_id   text,                       -- linked Pipedrive lead (for status sync)
   pipedrive_note_id   text,                       -- running transcript note
+  lead_ref       text unique,                     -- short human handle 'L' + 6 base36 (migration_lead_ref_alert_log.sql)
   created_at     timestamptz not null default now()
 );
+-- Lead-stage / ownership columns + the agents table live in their own migrations
+-- (run in the live DB), not duplicated here. The lead_ref column above is added by
+-- lib/migration_lead_ref_alert_log.sql; it is reflected here as source of truth.
 
 -- If the table already exists, add the inbox-status columns:
 -- alter table conversations
@@ -80,6 +84,19 @@ create index if not exists idx_campaigns_created_at on campaigns(created_at desc
 --   conversations.assigned_agent / routing_status      -- at-a-glance outcome
 --   lead_events(...)                                   -- permanent per-lead audit log
 --   env LEAD_FALLBACK_WA = safety-net WhatsApp pinged when a lead cannot reach its agent
+
+-- Agent lead-alert log (lib/migration_lead_ref_alert_log.sql). One row per alert
+-- sent to an agent, so a quick-reply button tap (which carries no lead reference)
+-- can be correlated to the exact lead the agent was most recently alerted about.
+create table if not exists agent_alert_log (
+  id                 uuid primary key default gen_random_uuid(),
+  agent_id           uuid,
+  agent_wa           text,                          -- WhatsApp number the alert was sent to
+  conversation_id    uuid references conversations(id) on delete cascade,
+  alert_message_sid  text,                          -- Twilio message SID of the alert (if returned)
+  sent_at            timestamptz not null default now()
+);
+create index if not exists idx_agent_alert_log_wa_sent on agent_alert_log(agent_wa, sent_at desc);
 
 -- Realtime for the inbox UI
 alter publication supabase_realtime add table messages;

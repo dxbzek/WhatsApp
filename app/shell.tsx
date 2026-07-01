@@ -9,6 +9,7 @@ import { formatPhone } from "@/lib/format";
 const NAV = [
   { id: "Dashboard", href: "/", icon: IC.dash },
   { id: "Inbox", href: "/inbox", icon: IC.inbox },
+  { id: "Leads", href: "/leads", icon: IC.users },
   { id: "Templates", href: "/templates", icon: IC.tmpl },
   { id: "Campaigns", href: "/campaigns", icon: IC.camp },
   { id: "Automation", href: "/automation", icon: IC.bolt },
@@ -21,6 +22,7 @@ const NAV = [
 const CRUMB: Record<string, string[]> = {
   "/": ["Overview"],
   "/inbox": ["Conversations"],
+  "/leads": ["Lead Status"],
   "/templates": ["Content Template Builder", "Templates"],
   "/campaigns": ["Broadcasts"],
   "/automation": ["Automation"],
@@ -30,7 +32,7 @@ const CRUMB: Record<string, string[]> = {
   "/billing": ["Account", "Billing"],
 };
 const PAGE_TITLE: Record<string, string> = {
-  "/": "Dashboard", "/inbox": "Inbox", "/templates": "Templates",
+  "/": "Dashboard", "/inbox": "Inbox", "/leads": "Lead Status", "/templates": "Templates",
   "/campaigns": "Campaigns", "/automation": "Automation", "/insights": "Insights",
   "/suppressed": "Suppressed", "/logs": "Logs", "/billing": "Billing",
 };
@@ -62,6 +64,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   // Reflect the current section in the tab title.
   useEffect(() => {
     const base = path.startsWith("/inbox") ? "Inbox"
+      : path.startsWith("/leads") ? "Lead Status"
       : path.startsWith("/templates") ? "Templates"
       : path.startsWith("/campaigns") ? "Campaigns"
       : path.startsWith("/insights") ? "Insights"

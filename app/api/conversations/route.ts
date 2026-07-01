@@ -64,6 +64,54 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ conversations: data || [] });
     }
 
+    if (view === "by-status") {
+      // Leads grouped by stage for the Lead Status page. Real leads only: not
+      // internal, not suppressed (blocked/invalid). Joined with the agent name in
+      // a second query (no FK-embed reliance) so it stays robust.
+      const { data, error } = await db.from("conversations")
+        .select("id, wa_phone, name, lead_ref, lead_status, lead_stage, stage_updated_at, assigned_agent_id, assigned_at, source, source_campaign_id, created_at")
+        .eq("is_internal", false)
+        .not("status", "in", "(blocked,invalid)")
+        .order("stage_updated_at", { ascending: false, nullsFirst: false })
+        .limit(2000);
+      if (error) throw new Error(error.message);
+      const rows = data || [];
+
+      // Resolve agent names for the assigned_agent_id set.
+      const agentIds = Array.from(new Set(rows.map((r: any) => r.assigned_agent_id).filter(Boolean)));
+      const agentName = new Map<string, string>();
+      if (agentIds.length) {
+        const { data: ags } = await db.from("agents").select("id, name").in("id", agentIds);
+        for (const a of ags || []) agentName.set(a.id, a.name);
+      }
+
+      // Resolve campaign names for the source_campaign_id set (for the "source" label).
+      const campIds = Array.from(new Set(rows.map((r: any) => r.source_campaign_id).filter(Boolean)));
+      const campName = new Map<string, string>();
+      if (campIds.length) {
+        const { data: cs } = await db.from("campaigns").select("id, name").in("id", campIds);
+        for (const c of cs || []) campName.set(c.id, c.name);
+      }
+
+      const leads = rows.map((r: any) => ({
+        id: r.id,
+        wa_phone: r.wa_phone,
+        name: r.name,
+        lead_ref: r.lead_ref,
+        lead_status: r.lead_status,
+        lead_stage: r.lead_stage,
+        stage_updated_at: r.stage_updated_at,
+        assigned_at: r.assigned_at,
+        agent_name: r.assigned_agent_id ? agentName.get(r.assigned_agent_id) || null : null,
+        // Source label: the campaign name if attributed, else Meta/WhatsApp derived
+        // from the source column, else null.
+        source: r.source_campaign_id
+          ? (campName.get(r.source_campaign_id) || "Campaign")
+          : (r.source === "meta_lead_form" ? "Meta" : (r.source ? "WhatsApp" : null)),
+      }));
+      return NextResponse.json({ leads });
+    }
+
     if (view === "pipeline") {
       const from = sp.get("from");
       const to = sp.get("to");

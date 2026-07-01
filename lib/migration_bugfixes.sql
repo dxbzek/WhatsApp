@@ -17,11 +17,13 @@
 -- the same agent (and clobbered each other's write). Doing the increment inside a
 -- single UPDATE ... RETURNING makes it atomic under Postgres row locking, so every
 -- caller gets a distinct, monotonically increasing pointer.
+-- search_path pinned to '' + fully-qualified refs (secure: no schema shadowing).
 create or replace function next_campaign_rr_pointer(p_id uuid)
 returns int
 language sql
+set search_path = ''
 as $$
-  update campaigns
+  update public.campaigns
      set rr_pointer = coalesce(rr_pointer, 0) + 1
    where id = p_id
   returning rr_pointer;
@@ -32,8 +34,9 @@ $$;
 create or replace function next_route_rr_pointer(p_ref text)
 returns int
 language sql
+set search_path = ''
 as $$
-  update lead_routes
+  update public.lead_routes
      set rr_pointer = coalesce(rr_pointer, 0) + 1
    where ref = p_ref
   returning rr_pointer;
@@ -87,10 +90,11 @@ insert into dispatch_lock (id, locked_until) values (1, null)
 create or replace function try_dispatch_lock()
 returns boolean
 language plpgsql
+set search_path = ''
 as $$
 declare got boolean;
 begin
-  update dispatch_lock
+  update public.dispatch_lock
      set locked_until = now() + interval '2 minutes'
    where id = 1
      and (locked_until is null or locked_until < now())
@@ -102,8 +106,9 @@ $$;
 create or replace function release_dispatch_lock()
 returns boolean
 language sql
+set search_path = ''
 as $$
-  update dispatch_lock set locked_until = null where id = 1 returning true;
+  update public.dispatch_lock set locked_until = null where id = 1 returning true;
 $$;
 
 grant execute on function try_dispatch_lock() to service_role;

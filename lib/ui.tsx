@@ -103,7 +103,7 @@ export function renderVars(text?: string | null): React.ReactNode[] {
 
 export function fmtUpdated(iso?: string | null): string {
   try {
-    return new Date(iso || "").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    return new Date(iso || "").toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
   } catch {
     return iso || "";
   }

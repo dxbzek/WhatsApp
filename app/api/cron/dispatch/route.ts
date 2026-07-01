@@ -145,7 +145,15 @@ async function runLocked(db: ReturnType<typeof supabaseAdmin>) {
     for (const c of data || []) senderMap.set((c as any).id, (c as any).sender);
   }
 
-  let sent = 0, skipped = 0, failed = 0;
+  // Circuit-breaker: senders currently paused by a penalty code (63051 locked / 90010
+  // rate limit — see send_guard + /api/twilio/status). Messages on a paused sender are
+  // HELD this run (left 'sending' -> released to 'scheduled' at the end) instead of
+  // sent, so we STOP feeding a locked number. This is the brake the old number lacked.
+  const { data: guards } = await db.from("send_guard").select("sender").gt("paused_until", new Date(now).toISOString());
+  const pausedSenders = new Set((guards || []).map((g: any) => String(g.sender).replace(/[^0-9]/g, "")));
+  const defaultFrom = String(process.env.TWILIO_WHATSAPP_FROM || "").replace(/^whatsapp:/, "").replace(/[^0-9]/g, "");
+
+  let sent = 0, skipped = 0, failed = 0, held = 0;
   const deadline = now + DEADLINE_MS;
   for (const m of rows as any[]) {
     // Out of time budget — stop and release the rest below for the next run.
@@ -156,6 +164,10 @@ async function runLocked(db: ReturnType<typeof supabaseAdmin>) {
 
     const e164 = "+" + String(conv.wa_phone).replace(/[^0-9]/g, "");
     const from = senderMap.get(m.campaign) || undefined;
+    // Held: this message's sender is paused (hit a penalty). Skip — the end-of-run
+    // release resets it to 'scheduled', so it waits until the pause clears.
+    const senderBare = String(from || defaultFrom).replace(/^whatsapp:/, "").replace(/[^0-9]/g, "");
+    if (pausedSenders.has(senderBare)) { held++; continue; }
     try {
       const tw = await sendTemplate(e164, m.content_sid, m.content_vars || undefined, undefined, from);
       const status = tw.status || "queued";
@@ -185,7 +197,7 @@ async function runLocked(db: ReturnType<typeof supabaseAdmin>) {
     if (count === 0) await db.from("campaigns").update({ status: "completed" }).eq("id", cid);
   }
 
-  return NextResponse.json({ reconciled, claimed: rows.length, sent, skipped, failed });
+  return NextResponse.json({ reconciled, claimed: rows.length, sent, skipped, failed, held });
 }
 
 export async function POST(req: NextRequest) {

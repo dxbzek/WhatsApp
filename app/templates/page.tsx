@@ -6,6 +6,10 @@ import { type Tpl } from "@/lib/fixtures";
 
 type Btn = { type: "url" | "phone" | "quick-reply"; title: string; url?: string; phone?: string };
 
+// A header media URL can be an image OR a video (e.g. a reel used as the header).
+// The preview must render <video> for video URLs, else an mp4 shows as a broken image.
+const isVideoUrl = (u?: string | null) => !!u && /\.(mp4|mov|webm|m4v)(\?|#|$)/i.test(u);
+
 /* ── Live phone preview ── */
 function PhonePreview({ kind, headerType, headerText, mediaUrl, mediaIsVideo, body, footer, buttons, vars }: {
   kind: string; headerType: string; headerText: string; mediaUrl: string; mediaIsVideo: boolean; body: string; footer: string; buttons: Btn[]; vars: Record<string, string>;
@@ -360,7 +364,9 @@ function Drawer({ t, onClose, onDuplicate, onDelete, busy }: { t: Tpl; onClose: 
               <div className="dlabel">Message preview</div>
               <div className="bubble">
                 <div className={`inner ${isRTL(t.language) ? "rtl" : ""}`}>
-                  {t.media && <img src={t.media} alt="" style={{ width: "100%", borderRadius: 6, marginBottom: 7, display: "block" }} />}
+                  {t.media && (isVideoUrl(t.media)
+                    ? <video src={t.media} controls playsInline style={{ width: "100%", borderRadius: 6, marginBottom: 7, display: "block" }} />
+                    : <img src={t.media} alt="" style={{ width: "100%", borderRadius: 6, marginBottom: 7, display: "block" }} />)}
                   {t.headerText && <div style={{ fontWeight: 700, marginBottom: 4 }}>{renderVars(t.headerText)}</div>}
                   {renderVars(t.body)}
                   {t.footer && <div style={{ fontSize: 11.5, color: "#8a9398", marginTop: 6 }}>{renderVars(t.footer)}</div>}
@@ -433,7 +439,9 @@ function Row({ t, selected, onOpen }: { t: Tpl; selected: boolean; onOpen: (t: T
       <td>
         <div className="cell-name">
           <span className={`tkind ${k}`} style={t.media ? { overflow: "hidden", padding: 0 } : undefined}>
-            {t.media ? <img src={t.media} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Icon d={k === "card" ? IC.tmpl : k === "qr" ? IC.reply : IC.hash} s={15} />}
+            {t.media ? (isVideoUrl(t.media)
+              ? <video src={t.media} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              : <img src={t.media} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />) : <Icon d={k === "card" ? IC.tmpl : k === "qr" ? IC.reply : IC.hash} s={15} />}
           </span>
           <div className="nm">
             <div className="t" style={{ display: "flex", alignItems: "center", gap: 7 }}>{t.name}<LanePill lane={lane} /></div>

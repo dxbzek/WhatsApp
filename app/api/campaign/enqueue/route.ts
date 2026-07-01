@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getContentMedia, getContentBody, renderTemplateBody } from "@/lib/twilio";
 import { dripBatchTimes, sendAtForIndex } from "@/lib/drip";
+import { cleanDedupe } from "@/lib/phone";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,15 +41,14 @@ export async function POST(req: NextRequest) {
     // message (per-recipient variables substituted below), not a "[template]" stub.
     const templateBody = await getContentBody(contentSid).catch(() => null);
 
-    // Normalise to digit-only wa keys, keep input order, drop dupes/too-short.
-    const seen = new Set<string>();
-    const ordered: { wa: string; vars?: Record<string, string>; body?: string }[] = [];
-    for (const r of recipients) {
-      const wa = String(r.phone || "").replace(/[^0-9]/g, "");
-      if (wa.length < 8 || seen.has(wa)) continue;
-      seen.add(wa);
-      ordered.push({ wa, vars: r.vars, body: r.body });
-    }
+    // Clean pass (#1): validate every number as a real, complete international
+    // number (libphonenumber) and dedupe, keeping input order. Invalid/malformed
+    // numbers are dropped here so they never become 63024 dead-number errors that
+    // hurt the sender's quality rating. `dropped_invalid`/`dropped_duplicate` are
+    // reported so the shrink is honest, not silent.
+    const { clean, invalid: droppedInvalid, duplicate: droppedDuplicate } = cleanDedupe(recipients);
+    const ordered: { wa: string; vars?: Record<string, string>; body?: string }[] =
+      clean.map((r) => ({ wa: r.wa, vars: r.vars, body: r.body }));
     const phones = ordered.map((r) => r.wa);
 
     // Upsert conversations so every recipient has a row to hang the message on,
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
     const skipped = ordered.length - toQueue.length;
 
     if (toQueue.length === 0) {
-      return NextResponse.json({ enqueued: 0, skipped, finishAt: null });
+      return NextResponse.json({ enqueued: 0, skipped, dropped_invalid: droppedInvalid, dropped_duplicate: droppedDuplicate, finishAt: null });
     }
 
     // Compute the daytime-aware schedule and stamp each recipient's send time.
@@ -127,7 +127,7 @@ export async function POST(req: NextRequest) {
       ...(sender ? { sender } : {}),
     }).eq("id", campaignId);
 
-    return NextResponse.json({ enqueued: toQueue.length, skipped, finishAt });
+    return NextResponse.json({ enqueued: toQueue.length, skipped, dropped_invalid: droppedInvalid, dropped_duplicate: droppedDuplicate, finishAt });
   } catch (e: any) {
     return NextResponse.json({ error: e.message || "Enqueue failed" }, { status: 500 });
   }

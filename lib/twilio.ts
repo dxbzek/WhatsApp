@@ -164,15 +164,33 @@ export function whatsappSenders(): string[] {
   return Array.from(new Set(items));
 }
 
-async function postMessage(form: URLSearchParams, opts?: { sendAt?: string; from?: string }) {
-  const sid = cleanEnv(process.env.TWILIO_ACCOUNT_SID);
-  const token = cleanEnv(process.env.TWILIO_AUTH_TOKEN);
+// Normalise a WhatsApp sender to bare digits (+ allowed) for comparison.
+const bareNumber = (s?: string) => cleanEnv(s).replace(/^whatsapp:/, "").replace(/[^\d+]/g, "");
 
+// Resolve the Twilio account creds for a given WhatsApp sender number. Each number
+// belongs to exactly ONE (sub)account: the marketing number -> the marketing account,
+// anything else -> the utility/default account. A send FROM the marketing number MUST
+// use the marketing creds, else Twilio rejects it (the utility account does not own
+// that number). Falls back to utility when the marketing lane is not configured, so a
+// mismatched marketing template simply fails to send rather than going out wrong-lane.
+export function credsForSender(from?: string): { sid: string; token: string } {
+  const f = bareNumber(from);
+  const mktFrom = bareNumber(process.env.TWILIO_MKT_WHATSAPP_FROM);
+  const mktSid = cleanEnv(process.env.TWILIO_MKT_ACCOUNT_SID);
+  const mktToken = cleanEnv(process.env.TWILIO_MKT_AUTH_TOKEN);
+  if (f && mktFrom && f === mktFrom && mktSid && mktToken) return { sid: mktSid, token: mktToken };
+  return { sid: cleanEnv(process.env.TWILIO_ACCOUNT_SID), token: cleanEnv(process.env.TWILIO_AUTH_TOKEN) };
+}
+
+async function postMessage(form: URLSearchParams, opts?: { sendAt?: string; from?: string }) {
   // Resolve the sender we actually want this message to go out from: the caller's
   // chosen number, else the default TWILIO_WHATSAPP_FROM.
   const resolvedFrom = opts?.from
     ? (opts.from.startsWith("whatsapp:") ? opts.from : `whatsapp:${opts.from}`)
     : cleanEnv(process.env.TWILIO_WHATSAPP_FROM);
+
+  // Auth with the account that OWNS the resolved sender (utility vs marketing lane).
+  const { sid, token } = credsForSender(resolvedFrom);
 
   // Scheduled sends require a Messaging Service + ScheduleType=fixed. BUT we must
   // ALSO set From: without it Twilio picks any number from the MS sender pool, so

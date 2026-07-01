@@ -24,6 +24,10 @@ export async function POST(req: NextRequest) {
   if (!verifyTwilioWebhook(req, params).allow) return new NextResponse("Forbidden", { status: 403 });
 
   const from = String(form.get("From") || "").replace("whatsapp:", "");
+  // The ERE number that RECEIVED this message (utility vs marketing lane). Auto-replies
+  // must go back out FROM this same number/lane, else a marketing contact would get a
+  // reply from the utility number (wrong identity, and it fails outside its 24h window).
+  const toNumber = String(form.get("To") || "").replace("whatsapp:", "");
   const body = String(form.get("Body") || "");
   const sid = String(form.get("MessageSid") || "");
   // Present when the inbound is a quick-reply BUTTON tap on one of our messages —
@@ -190,7 +194,7 @@ export async function POST(req: NextRequest) {
     // conflict — we must not tell an interested lead we have removed them.
     if (rule.reply && !(rule.block && flaggedConflict)) {
       try {
-        const tw = await sendWhatsApp(from, rule.reply);
+        const tw = await sendWhatsApp(from, rule.reply, toNumber || undefined);
         await db.from("messages").insert({ conversation: conv!.id, direction: "out", body: rule.reply, status: tw.status, twilio_sid: tw.sid });
         await db.from("conversations").update({ last_direction: "out", last_status: tw.status, last_body: rule.reply }).eq("id", conv!.id);
       } catch { /* 24h window may be closed; ignore */ }

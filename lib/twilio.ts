@@ -30,12 +30,24 @@ export function twilioError(status: number, data: any, fallback: string): Error 
   return new Error(data?.message || fallback);
 }
 
+// Marketing-lane subaccount creds (its own WABA + number, separate from the utility
+// lane the console is primarily wired to). Returns a Basic auth header, or null when
+// not configured — so the console degrades to the single utility lane instead of
+// erroring. Two-lane: utility = default TWILIO_* creds, marketing = TWILIO_MKT_* creds.
+export function marketingAuthHeader(): string | null {
+  const sid = cleanEnv(process.env.TWILIO_MKT_ACCOUNT_SID);
+  const token = cleanEnv(process.env.TWILIO_MKT_AUTH_TOKEN);
+  if (!sid || !token) return null;
+  return "Basic " + Buffer.from(`${sid}:${token}`).toString("base64");
+}
+
 // GET against any Twilio host (api.twilio.com or content.twilio.com).
-// `url` may be a full URL or a path beginning with "/".
-export async function twilioGet(url: string) {
-  const { authHeader } = twilioCreds();
+// `url` may be a full URL or a path beginning with "/". Pass authHeader to target a
+// specific (sub)account (e.g. the marketing lane); defaults to the utility creds.
+export async function twilioGet(url: string, authHeader?: string) {
+  const auth = authHeader || twilioCreds().authHeader;
   const full = url.startsWith("http") ? url : `https://api.twilio.com${url}`;
-  const res = await fetch(full, { headers: { Authorization: authHeader } });
+  const res = await fetch(full, { headers: { Authorization: auth } });
   const data = await res.json();
   if (!res.ok) throw twilioError(res.status, data, `Twilio GET ${res.status}`);
   return data;
@@ -98,12 +110,13 @@ export async function getMessageStatus(messageSid: string): Promise<{ status: st
   }
 }
 
-// JSON POST against content.twilio.com (Content API).
-export async function twilioContentPost(path: string, body: any) {
-  const { authHeader } = twilioCreds();
+// JSON POST against content.twilio.com (Content API). Pass authHeader to create on a
+// specific lane (e.g. marketing); defaults to the utility creds.
+export async function twilioContentPost(path: string, body: any, authHeader?: string) {
+  const auth = authHeader || twilioCreds().authHeader;
   const res = await fetch(`https://content.twilio.com${path}`, {
     method: "POST",
-    headers: { Authorization: authHeader, "Content-Type": "application/json" },
+    headers: { Authorization: auth, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
@@ -112,11 +125,11 @@ export async function twilioContentPost(path: string, body: any) {
 }
 
 // DELETE against content.twilio.com (Content API). 204 = success, no body.
-export async function twilioContentDelete(path: string) {
-  const { authHeader } = twilioCreds();
+export async function twilioContentDelete(path: string, authHeader?: string) {
+  const auth = authHeader || twilioCreds().authHeader;
   const res = await fetch(`https://content.twilio.com${path}`, {
     method: "DELETE",
-    headers: { Authorization: authHeader },
+    headers: { Authorization: auth },
   });
   if (!res.ok && res.status !== 204) {
     const data = await res.json().catch(() => ({}));

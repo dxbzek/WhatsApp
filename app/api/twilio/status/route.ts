@@ -9,6 +9,15 @@ export const dynamic = "force-dynamic";
 // (not a marketing throttle). We suppress these so campaigns skip them.
 const INVALID_NUMBER_CODES = ["63024", "63003", "21211", "21614"];
 
+// Circuit-breaker: penalty codes that mean the SENDER is in trouble and must stop
+// (not the recipient). Value = how long to pause that sender, in minutes.
+//   63051 = number LOCKED by Meta (the true pre-ban signal — 2,400 of these preceded
+//           the June ban). Pause 7 days = effectively "stopped until a human clears it".
+//   90010 = account/number rate limit exceeded. Shorter back-off.
+// Deliberately NOT 63049 (marketing throttle): common + expected at volume, so tripping
+// on it would kill legitimate sending.
+const HALT_CODES: Record<string, number> = { "63051": 7 * 24 * 60, "90010": 60 };
+
 // Forward-only delivery ladder. Twilio callbacks aren't guaranteed in order, so
 // a late/duplicate "sent" must never overwrite a later "delivered"/"read".
 const RANK: Record<string, number> = { queued: 1, accepted: 1, sending: 1, sent: 2, delivered: 3, read: 4 };
@@ -28,6 +37,25 @@ export async function POST(req: NextRequest) {
     const errorCode = String(form.get("ErrorCode") || "");
     if (sid && status) {
       const db = supabaseAdmin();
+
+      // Circuit-breaker: a penalty code pauses the SENDER so the dispatcher stops
+      // sending on it (the missing brake that let the old number get locked 2,400
+      // times before the ban). Runs independent of the delivery-ladder update below.
+      if (errorCode && HALT_CODES[errorCode] !== undefined) {
+        const sender = String(form.get("From") || "").replace("whatsapp:", "").replace(/[^0-9]/g, "");
+        if (sender) {
+          const mins = HALT_CODES[errorCode];
+          await db.from("send_guard").upsert(
+            {
+              sender,
+              paused_until: new Date(Date.now() + mins * 60000).toISOString(),
+              reason: `auto-paused on error ${errorCode} (${errorCode === "63051" ? "number LOCKED by Meta" : "rate limit"})`,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "sender" }
+          );
+        }
+      }
 
       // Agent lead-alerts are sent straight via Twilio (not logged in `messages`),
       // so reconcile their TRUE delivery onto lead_events here. This is what makes

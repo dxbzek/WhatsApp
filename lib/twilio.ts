@@ -192,15 +192,35 @@ export function credsForSender(from?: string): { sid: string; token: string } {
   return { sid: cleanEnv(process.env.TWILIO_ACCOUNT_SID), token: cleanEnv(process.env.TWILIO_AUTH_TOKEN) };
 }
 
-async function postMessage(form: URLSearchParams, opts?: { sendAt?: string; from?: string }) {
+// Resolve the Twilio creds of the (sub)account that OWNS a Content template. Each
+// approved template lives on exactly ONE account; only that account can send it, else
+// Twilio rejects with the misleading 21656 "Content Variables parameter is invalid".
+// Probe the marketing lane first (a cheap GET), fall back to utility. This makes a
+// marketing send work off the marketing creds alone - no dependence on the
+// TWILIO_*_WHATSAPP_FROM env vars, which is what kept breaking the send test.
+export async function credsForContent(contentSid: string): Promise<{ sid: string; token: string }> {
+  const mktSid = cleanEnv(process.env.TWILIO_MKT_ACCOUNT_SID);
+  const mktToken = cleanEnv(process.env.TWILIO_MKT_AUTH_TOKEN);
+  const mktAuth = marketingAuthHeader();
+  if (mktAuth && mktSid && mktToken) {
+    try {
+      const res = await fetch(`https://content.twilio.com/v1/Content/${contentSid}`, { headers: { Authorization: mktAuth } });
+      if (res.ok) return { sid: mktSid, token: mktToken };
+    } catch { /* fall through to utility */ }
+  }
+  return { sid: cleanEnv(process.env.TWILIO_ACCOUNT_SID), token: cleanEnv(process.env.TWILIO_AUTH_TOKEN) };
+}
+
+async function postMessage(form: URLSearchParams, opts?: { sendAt?: string; from?: string; creds?: { sid: string; token: string } }) {
   // Resolve the sender we actually want this message to go out from: the caller's
   // chosen number, else the default TWILIO_WHATSAPP_FROM.
   const resolvedFrom = opts?.from
     ? (opts.from.startsWith("whatsapp:") ? opts.from : `whatsapp:${opts.from}`)
     : cleanEnv(process.env.TWILIO_WHATSAPP_FROM);
 
-  // Auth with the account that OWNS the resolved sender (utility vs marketing lane).
-  const { sid, token } = credsForSender(resolvedFrom);
+  // Auth with the account that OWNS this message: an explicit override (e.g. the
+  // account that owns the Content template) wins, else infer from the sender number.
+  const { sid, token } = opts?.creds || credsForSender(resolvedFrom);
 
   // Scheduled sends require a Messaging Service + ScheduleType=fixed. BUT we must
   // ALSO set From: without it Twilio picks any number from the MS sender pool, so
@@ -269,5 +289,7 @@ export async function sendMediaWhatsApp(toE164: string, mediaUrl: string, body?:
 export async function sendTemplate(toE164: string, contentSid: string, variables?: Record<string, string>, sendAt?: string, from?: string) {
   const form = new URLSearchParams({ To: waTo(toE164), ContentSid: contentSid });
   if (variables && Object.keys(variables).length) form.set("ContentVariables", JSON.stringify(variables));
-  return postMessage(form, { sendAt, from });
+  // Auth with the account that owns the template, not just the sender's inferred lane.
+  const creds = await credsForContent(contentSid);
+  return postMessage(form, { sendAt, from, creds });
 }

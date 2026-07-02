@@ -12,6 +12,12 @@ import { ensureLeadRef } from "@/lib/leadRef";
 // the WA-campaign alert) are DEAD after the utility repoint — never reintroduce them.
 const AGENT_LEAD_ALERT_SID = "HX9866d614203dd8a9c3f503402ee76032";
 
+// Dedicated recruitment alert (utility subaccount, text-only, NO status buttons).
+// Recruitment leads are candidates applying to JOIN ERE, not property enquiries, so
+// they get their own recruiter-facing template instead of the sales-pipeline alert.
+// Vars: {{1}} recruiter name, {{2}} candidate name, {{3}} number, {{4}} source.
+const RECRUIT_LEAD_ALERT_SID = "HXd53adb11d39bab9a6a9f72df5f7a9c02";
+
 type AlertOutcome = { ok: boolean; sid: string | null; error: string | null };
 
 // Record that we sent a lead alert to an agent, so a later quick-reply button tap
@@ -50,6 +56,30 @@ async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, 
 // watcher). Reuses the approved UTILITY alert template.
 export async function pingAgent(agentName: string, wa_number: string, leadRef: string, leadName: string, contactPhone: string, source: string): Promise<boolean> {
   return (await sendAgentAlert(agentName, wa_number, leadRef, leadName, contactPhone, source)).ok;
+}
+
+// Send one recruitment alert to a recruiter's WhatsApp via the approved recruit
+// template (text-only, no status buttons — recruitment has no sales pipeline stage).
+async function sendRecruitAlert(recruiterName: string, toWa: string, candidateName: string, contactPhone: string, source: string): Promise<AlertOutcome> {
+  try {
+    const r: any = await sendTemplate(toWa, RECRUIT_LEAD_ALERT_SID, {
+      "1": recruiterName, "2": candidateName, "3": contactPhone, "4": source || "Recruitment",
+    });
+    return { ok: true, sid: r?.sid || null, error: null };
+  } catch (e: any) {
+    return { ok: false, sid: null, error: String(e?.message || e).slice(0, 200) };
+  }
+}
+
+// Ping each recruiter with a candidate, personalised by name. Mirrors alertAgents
+// but uses the recruit template (4 vars). Best-effort per target.
+async function alertRecruiters(targets: Agent[], candidateName: string, contactPhone: string, source: string): Promise<{ id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[]> {
+  const results: { id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[] = [];
+  for (const a of targets) {
+    const r = await sendRecruitAlert(a.name, a.wa_number, candidateName, contactPhone, source);
+    results.push({ id: a.id, name: a.name, wa: a.wa_number, ...r });
+  }
+  return results;
 }
 
 // Ping each target agent with the lead, personalised by name. Best-effort: a
@@ -292,7 +322,14 @@ export async function distributeMetaLead(opts: {
     // lead responded to. Single line: WhatsApp template params can't carry newlines.
     const previewPart = (opts.previewUrl || "").trim() ? ` · See the ad: ${opts.previewUrl!.trim()}` : "";
     const enquiry = [place, campaign].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" — ") + emailPart + previewPart;
-    const results = await alertAgents(targets, leadRef, leadName, opts.contactPhone, enquiry);
+    // Recruitment leads are candidates joining ERE — route them to the recruiter via
+    // the recruit template (no property "enquiry", no sales status buttons). Detect on
+    // the matched route ref or the ad/campaign name, same test as leadIngest.
+    const isRecruit = /recruit/i.test(String(route.ref)) || /recruit/i.test(opts.detail || "");
+    const recruitSource = [campaign || (route.label && String(route.label).trim()) || String(route.ref), opts.email && opts.email.trim(), (opts.previewUrl || "").trim() ? `See the ad: ${opts.previewUrl!.trim()}` : ""].filter(Boolean).join(" · ");
+    const results = isRecruit
+      ? await alertRecruiters(targets, leadName, opts.contactPhone, recruitSource)
+      : await alertAgents(targets, leadRef, leadName, opts.contactPhone, enquiry);
     const assigned = results.map((r) => r.name);
     const alertOk = results.some((r) => r.ok);
     const alertSid = results.find((r) => r.ok)?.sid ?? null;
@@ -300,7 +337,8 @@ export async function distributeMetaLead(opts: {
 
     // Log each successful alert + ensure a lead_ref, so a later button tap maps
     // back to THIS lead. Only when we know the conversation (caller passes it).
-    if (opts.conversationId) {
+    // Recruitment alerts carry no status buttons, so nothing to correlate — skip.
+    if (opts.conversationId && !isRecruit) {
       for (const r of results) {
         if (r.ok) await logAgentAlert(db, { agentId: r.id, agentWa: r.wa, conversationId: opts.conversationId, alertSid: r.sid });
       }

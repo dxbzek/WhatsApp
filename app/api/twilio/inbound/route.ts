@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     const { data: agentRow } = await db.from("agents").select("id").eq("wa_number", from).maybeSingle();
     if (agentRow) {
       const { data: aconv } = await db.from("conversations").upsert(
-        { wa_phone: phone, is_internal: true, last_body: displayBody, last_at: new Date().toISOString(), last_direction: "in", last_status: "received", ...(profileName ? { name: profileName } : {}) },
+        { wa_phone: phone, is_internal: true, last_body: displayBody, last_at: new Date().toISOString(), last_direction: "in", last_status: "received", ...(profileName ? { name: profileName } : {}), ...(toNumber ? { our_number: toNumber } : {}) },
         { onConflict: "wa_phone" }
       ).select().single();
       if (aconv) {
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
   const { data: conv } = await db
     .from("conversations")
     .upsert(
-      { wa_phone: phone, last_body: displayBody, last_at: new Date().toISOString(), ...(profileName ? { name: profileName } : {}) },
+      { wa_phone: phone, last_body: displayBody, last_at: new Date().toISOString(), ...(profileName ? { name: profileName } : {}), ...(toNumber ? { our_number: toNumber } : {}) },
       { onConflict: "wa_phone" }
     )
     .select()

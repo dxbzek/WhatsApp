@@ -172,7 +172,7 @@ async function runLocked(db: ReturnType<typeof supabaseAdmin>) {
       const tw = await sendTemplate(e164, m.content_sid, m.content_vars || undefined, undefined, from);
       const status = tw.status || "queued";
       await db.from("messages").update({ status, twilio_sid: tw.sid }).eq("id", m.id);
-      await db.from("conversations").update({ last_direction: "out", last_status: status, last_body: m.body || "[template]", last_at: new Date().toISOString() }).eq("id", m.conversation);
+      await db.from("conversations").update({ last_direction: "out", last_status: status, last_body: m.body || "[template]", last_at: new Date().toISOString(), ...(senderBare ? { our_number: "+" + senderBare } : {}) }).eq("id", m.conversation);
       sent++;
     } catch (e: any) {
       await db.from("messages").update({ status: "failed", error_code: e?.code ? String(e.code) : null }).eq("id", m.id);

@@ -921,22 +921,20 @@ export default function Campaigns() {
           {agents.length === 0 ? (
             <div className="hint" style={{ margin: 0 }}>No agents configured yet.</div>
           ) : (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {agents.map((a) => {
                 const on = agentIds.includes(a.id);
                 return (
-                  <div
+                  <button
                     key={a.id}
+                    type="button"
                     onClick={() => setAgentIds((cur) => on ? cur.filter((x) => x !== a.id) : [...cur, a.id])}
-                    className={`pick${on ? " on" : ""}`}
-                    style={{ flex: "1 1 140px", marginBottom: 0 }}
+                    className={`agent-chip${on ? " on" : ""}`}
+                    title={formatPhone(a.wa_number)}
                   >
-                    <div className="pk-radio" />
-                    <div className="pk-main">
-                      <div className="pk-t">{a.name}</div>
-                      <div className="pk-s">{formatPhone(a.wa_number)}</div>
-                    </div>
-                  </div>
+                    <span className="ac-dot" aria-hidden>{on ? "✓" : ""}</span>
+                    {a.name}
+                  </button>
                 );
               })}
             </div>

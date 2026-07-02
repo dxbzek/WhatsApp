@@ -11,6 +11,7 @@ type UIConv = {
   live: boolean; loaded: boolean; messages: UIMsg[]; blocked?: boolean;
   lastBody?: string; lastDirection?: string; replied?: boolean; assignedAgentId?: string; leadStage?: string;
   sourceKind?: "meta" | "whatsapp" | "other"; // where the lead came from, for the inbox label
+  ourNumber?: string; // which of OUR numbers this thread lives on (utility vs marketing lane)
 };
 
 // Pipeline progress of a transferred lead, distinct from the Hot/Warm
@@ -34,6 +35,21 @@ const hhmm = (iso?: string | null) => {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 };
 function mediaSrc(url: string) { return url.includes("api.twilio.com") ? `/api/media?url=${encodeURIComponent(url)}` : url; }
+
+// Which lane a thread's our_number belongs to. "legacy" = a retired number
+// (pre-rebuild history) that is neither current sender.
+type Lane = "utility" | "marketing" | "legacy" | "";
+function laneOf(ourNumber: string | undefined, lanes: { utility: string; marketing: string }): Lane {
+  if (!ourNumber) return "";
+  if (lanes.utility && ourNumber === lanes.utility) return "utility";
+  if (lanes.marketing && ourNumber === lanes.marketing) return "marketing";
+  return "legacy";
+}
+const LANE_LABEL: Record<string, string> = { utility: "Main line", marketing: "Marketing", legacy: "Old number" };
+function LaneChip({ lane }: { lane: Lane }) {
+  if (!lane) return null;
+  return <span className={`lane-chip ${lane}`}>{LANE_LABEL[lane]}</span>;
+}
 
 function TagDot({ tag }: { tag: string }) {
   if (!tag) return null;
@@ -70,6 +86,8 @@ export default function Inbox() {
   const [approved, setApproved] = useState<Tpl[]>(SEED_TEMPLATES.filter((t) => t.status === "approved"));
   const [senders, setSenders] = useState<string[]>([]);
   const [sender, setSender] = useState("");
+  const [lanes, setLanes] = useState<{ utility: string; marketing: string }>({ utility: "", marketing: "" });
+  const [laneTab, setLaneTab] = useState<"" | "utility" | "marketing">(""); // "" = all numbers
   const [sending, setSending] = useState(false);
   const [loaded, setLoaded] = useState(false); // first conversation fetch settled
   const [toast, setToast] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
@@ -81,6 +99,10 @@ export default function Inbox() {
   const threadRef = useRef<HTMLDivElement>(null);
 
   const active = convos.find((c) => c.id === activeId) || null;
+  // The number replies to the ACTIVE thread go out from: the thread's own lane
+  // when it's a current sender, else the picked/default sender.
+  const activeLane = active ? laneOf(active.ourNumber, lanes) : "";
+  const replyFrom = (activeLane === "utility" || activeLane === "marketing") ? active!.ourNumber : (sender || undefined);
   const draft = (activeId && drafts[activeId]) || "";
   const setDraft = (v: string) => setDrafts((d) => {
     const next = { ...d, [activeId || ""]: v };
@@ -93,7 +115,7 @@ export default function Inbox() {
   useEffect(() => {
     try { setDrafts(JSON.parse(localStorage.getItem("om_drafts") || "{}")); } catch { /* ignore */ }
     try { const p = new URLSearchParams(window.location.search).get("q"); if (p) setQ(p); } catch { /* ignore */ }
-    fetch("/api/senders").then((r) => r.json()).then((d) => { setSenders(d.senders || []); if (d.senders?.length) setSender(d.senders[0]); }).catch(() => {});
+    fetch("/api/senders").then((r) => r.json()).then((d) => { setSenders(d.senders || []); if (d.senders?.length) setSender(d.senders[0]); setLanes({ utility: d.utility || "", marketing: d.marketing || "" }); }).catch(() => {});
     fetch("/api/templates").then((r) => r.json()).then((d) => { const a = (d.templates || []).filter((t: Tpl) => t.status === "approved"); if (a.length) setApproved(a); }).catch(() => {});
     fetch("/api/agents").then((r) => r.json()).then((d) => { const list = (d.agents || []).map((a: any) => ({ id: a.id, name: a.name })); setAgents(list); const m: Record<string, string> = {}; list.forEach((a: any) => { m[a.id] = a.name; }); setAgentNames(m); }).catch(() => {});
     loadConvs();
@@ -116,6 +138,7 @@ export default function Inbox() {
         lastBody: c.last_body || "", lastDirection: c.last_direction || "", replied: !!c.replied,
         assignedAgentId: c.assigned_agent_id || undefined, leadStage: c.lead_stage || "",
         sourceKind: c.source === "meta_lead_form" ? "meta" : (c.source_campaign_id ? "whatsapp" : "other"),
+        ourNumber: c.our_number || undefined,
       }));
       setLive(true);
       setConvos((prev) => {
@@ -204,7 +227,7 @@ export default function Inbox() {
     if (active.live && active.waPhone) {
       setSending(true);
       try {
-        const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "+" + active.waPhone, body: text, from: sender || undefined }) });
+        const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "+" + active.waPhone, body: text, from: replyFrom }) });
         if (!res.ok) throw new Error((await res.json()).error || "Send failed");
         setDraft(""); setTplOpen(false);
         await loadMsgs(active.id);
@@ -272,6 +295,9 @@ export default function Inbox() {
     .filter((c) => (agentFilter === "" ? true : agentFilter === "pool" ? c.leadStage === "lost" : agentFilter === "none" ? !c.assignedAgentId : c.assignedAgentId === agentFilter))
     // Stage filter: "" = any, else exact pipeline stage.
     .filter((c) => (stageFilter === "" ? true : (c.leadStage || "") === stageFilter))
+    // Lane filter: "" = every conversation from BOTH numbers (the default — the
+    // inbox is always the unified view), else only the picked lane.
+    .filter((c) => (laneTab === "" ? true : laneOf(c.ourNumber, lanes) === laneTab))
     .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.toLowerCase()) || (c.waPhone || "").includes(q.replace(/[^0-9]/g, "")));
 
   return (
@@ -286,6 +312,13 @@ export default function Inbox() {
                 <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>
               ))}
             </div>
+            {lanes.utility && lanes.marketing && (
+              <div className="seg-tabs" style={{ marginTop: 6 }}>
+                {([["", "All numbers"], ["utility", "Main line"], ["marketing", "Marketing"]] as const).map(([id, l]) => (
+                  <button key={id} className={laneTab === id ? "on" : ""} onClick={() => setLaneTab(id)}>{l}</button>
+                ))}
+              </div>
+            )}
             {agents.length > 0 && (
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <select className="seltrig" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} title="Filter by agent" aria-label="Filter by agent" style={{ height: 32, flex: 1, minWidth: 0 }}>
@@ -326,8 +359,9 @@ export default function Inbox() {
                     })()}</span>
                     {c.unread > 0 && <span className="unread">{c.unread}</span>}
                   </div>
-                  {(c.tag || c.community || c.blocked || c.leadStage || c.assignedAgentId || (c.sourceKind && c.sourceKind !== "other")) && (
+                  {(c.tag || c.community || c.blocked || c.leadStage || c.assignedAgentId || c.ourNumber || (c.sourceKind && c.sourceKind !== "other")) && (
                     <div className="ci-tags">
+                      <LaneChip lane={laneOf(c.ourNumber, lanes)} />
                       {c.sourceKind === "meta" && <span className="ci-comm" style={{ color: "#1877F2", fontWeight: 700 }}>Meta</span>}
                       {c.sourceKind === "whatsapp" && <span className="ci-comm" style={{ color: "var(--green-dot)", fontWeight: 700 }}>WhatsApp</span>}
                       {c.blocked
@@ -354,7 +388,7 @@ export default function Inbox() {
               <Avatar name={active.name} size={40} />
               <div className="th-main">
                 <div className="th-name">{active.name}{active.blocked && <span style={{ color: "var(--red-ink)", fontSize: 11, marginLeft: 8 }}>blocked</span>}{active.assignedAgentId && agentNames[active.assignedAgentId] && <span style={{ color: "var(--blue)", fontSize: 11, marginLeft: 8, fontWeight: 600 }}>→ {agentNames[active.assignedAgentId]}</span>}</div>
-                <div className="th-sub">{active.phone}{active.community ? ` · ${active.community}` : ""}</div>
+                <div className="th-sub">{active.phone}{active.community ? ` · ${active.community}` : ""} <LaneChip lane={laneOf(active.ourNumber, lanes)} /></div>
               </div>
               <select className="seltrig" value={active.lead || "new"} onChange={(e) => setLead(active.id, e.target.value)} title="Lead status" aria-label="Lead status" style={{ height: 32 }}>
                 {LEADS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
@@ -447,13 +481,23 @@ export default function Inbox() {
                   {approved.length === 0 && <div className="tpl-pop-item"><div className="tp-p">No approved templates.</div></div>}
                 </div>
               )}
-              {senders.length > 1 && (
-                <select className="seltrig" value={sender} onChange={(e) => setSender(e.target.value)} title="Send from" aria-label="Send from number" style={{ height: 40, maxWidth: 150 }}>
-                  {senders.map((s) => <option key={s} value={s}>{formatPhone(s)}</option>)}
-                </select>
-              )}
+              {(() => {
+                // Replies follow the thread: a conversation on a current lane always
+                // replies from ITS OWN number — no picker, just a "via" label so you
+                // can't send from the wrong identity. Legacy/unknown threads (or a
+                // single-sender setup) fall back to the picker/default.
+                const lane = laneOf(active.ourNumber, lanes);
+                if (lane === "utility" || lane === "marketing") {
+                  return <span className={`lane-chip ${lane}`} title={`Replies go out from ${formatPhone(active.ourNumber!)}`} style={{ alignSelf: "center" }}>via {LANE_LABEL[lane]}</span>;
+                }
+                return senders.length > 1 ? (
+                  <select className="seltrig" value={sender} onChange={(e) => setSender(e.target.value)} title="Send from" aria-label="Send from number" style={{ height: 40, maxWidth: 150 }}>
+                    {senders.map((s) => <option key={s} value={s}>{formatPhone(s)}</option>)}
+                  </select>
+                ) : null;
+              })()}
               <button className={`icon-btn ${tplOpen ? "on" : ""}`} title="Insert a template" aria-label="Insert a template" aria-haspopup="menu" aria-expanded={tplOpen} onClick={() => setTplOpen((o) => !o)}><Icon d={IC.tmpl} s={18} /></button>
-              {active.live && active.waPhone && <AttachMedia phone={active.waPhone} from={sender} onSent={() => loadMsgs(active.id)} notify={(text) => setToast({ kind: "bad", text })} />}
+              {active.live && active.waPhone && <AttachMedia phone={active.waPhone} from={replyFrom} onSent={() => loadMsgs(active.id)} notify={(text) => setToast({ kind: "bad", text })} />}
               <input className="msg-input" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Type a message, or insert a template…" />
               <button className="btn btn-primary send-btn" onClick={send} disabled={sending}><Icon d={IC.send} s={16} f="currentColor" w={0} />{sending ? "…" : "Send"}</button>
             </div>

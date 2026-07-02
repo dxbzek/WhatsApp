@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendWhatsApp, sendTemplate, sendMediaWhatsApp, getContentMedia, getContentBody, renderTemplateBody } from "@/lib/twilio";
+import { sendWhatsApp, sendTemplate, sendMediaWhatsApp, getContentMedia, getContentBody, renderTemplateBody, cleanEnv, whatsappSenders } from "@/lib/twilio";
 import { logConversationToPipedrive } from "@/lib/pipedriveSync";
 
 // POST free-form: { phone, body }
@@ -23,15 +23,28 @@ export async function POST(req: NextRequest) {
     const db = supabaseAdmin();
 
     // Blacklist guard - never message a contact who opted out (STOP/Unsubscribe)
-    const { data: existing } = await db.from("conversations").select("status").eq("wa_phone", wa).maybeSingle();
+    const { data: existing } = await db.from("conversations").select("status, our_number").eq("wa_phone", wa).maybeSingle();
     if (existing?.status === "blocked") {
       return NextResponse.json({ error: "This contact opted out (blacklisted). Message not sent." }, { status: 403 });
     }
 
-    // upsert conversation
+    // Replies follow the thread: without an explicit `from`, send from the number
+    // this conversation already lives on (its lane), so a marketing-lane contact
+    // never gets a reply from the utility identity (wrong brand, dead 24h window).
+    const bare = (s?: string | null) => (s || "").replace(/^whatsapp:/, "");
+    // Only follow the thread's number if it's one of OUR CURRENT senders — a
+    // conversation from the pre-rebuild era carries the old (dead) number, and
+    // sending "from" it would fail. Those fall through to the default sender.
+    const currentSenders = new Set(whatsappSenders().map((s) => s.replace(/^whatsapp:/, "")));
+    const threadFrom = bare(existing?.our_number);
+    const effectiveFrom = bare(from) || (currentSenders.has(threadFrom) ? threadFrom : "") || undefined;
+    // What actually goes on the wire when no from is resolved: the default sender.
+    const ourNumber = effectiveFrom || bare(cleanEnv(process.env.TWILIO_WHATSAPP_FROM)) || null;
+
+    // upsert conversation (stamping the lane it lives on)
     const { data: conv } = await db
       .from("conversations")
-      .upsert({ wa_phone: wa, last_body: displayBody, last_at: new Date().toISOString() }, { onConflict: "wa_phone" })
+      .upsert({ wa_phone: wa, last_body: displayBody, last_at: new Date().toISOString(), ...(ourNumber ? { our_number: ourNumber } : {}) }, { onConflict: "wa_phone" })
       .select()
       .single();
 
@@ -41,10 +54,10 @@ export async function POST(req: NextRequest) {
 
     // send via Twilio (template, media, or free-form)
     const tw = contentSid
-      ? await sendTemplate(e164, contentSid, variables, undefined, from)
+      ? await sendTemplate(e164, contentSid, variables, undefined, effectiveFrom)
       : mediaUrl
-      ? await sendMediaWhatsApp(e164, mediaUrl, body || undefined, from)
-      : await sendWhatsApp(e164, body, from);
+      ? await sendMediaWhatsApp(e164, mediaUrl, body || undefined, effectiveFrom)
+      : await sendWhatsApp(e164, body, effectiveFrom);
 
     // log outbound message
     await db.from("messages").insert({

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendTemplate, getContentMedia, getContentBody, renderTemplateBody } from "@/lib/twilio";
+import { sendTemplate, getContentMedia, getContentBody, renderTemplateBody, cleanEnv } from "@/lib/twilio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +19,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Max 25 recipients per batch" }, { status: 400 });
 
     const db = supabaseAdmin();
+
+    // The lane this batch actually goes out from — stamped on each conversation
+    // so the inbox can show which of our numbers the thread lives on.
+    const ourNumber = String(from || cleanEnv(process.env.TWILIO_WHATSAPP_FROM) || "").replace(/^whatsapp:/, "") || null;
 
     // Resolve the template's header image once (constant for the whole batch) so
     // every logged message shows the creative in our inbox, not just text.
@@ -81,7 +85,7 @@ export async function POST(req: NextRequest) {
         const body = renderTemplateBody(templateBody, r.vars) || r.body || label || "[template]";
         const { data: conv } = await db
           .from("conversations")
-          .upsert({ wa_phone: wa, last_body: body, last_at: new Date().toISOString() }, { onConflict: "wa_phone" })
+          .upsert({ wa_phone: wa, last_body: body, last_at: new Date().toISOString(), ...(ourNumber ? { our_number: ourNumber } : {}) }, { onConflict: "wa_phone" })
           .select()
           .single();
         const { data: msg } = await db.from("messages").insert({ conversation: conv!.id, direction: "out", body, status: realStatus, twilio_sid: tw.sid, campaign: campaignId || null, content_sid: contentSid || null, media_url: templateMedia }).select("id").single();

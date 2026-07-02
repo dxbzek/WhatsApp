@@ -14,9 +14,18 @@ const URL = clean(process.env.NEXT_PUBLIC_SUPABASE_URL) || "https://placeholder.
 // /api/* routes below using the service role, and RLS denies anon at the DB.
 
 // Server/service client (writes from API routes only - never import in client code)
+//
+// cache: "no-store" is CRITICAL. Next 14 patches global fetch with its Data
+// Cache, and supabase-js GETs are plain fetches — small responses (a thread
+// query, unreadCount) get cached indefinitely at the edge, so the inbox thread
+// froze while the conversation list (too big to cache, >2MB) stayed live.
+// `dynamic = "force-dynamic"` on the routes does NOT opt these fetches out.
 export const supabaseAdmin = () =>
   createClient(
     URL,
     clean(process.env.SUPABASE_SERVICE_ROLE_KEY) || "placeholder",
-    { auth: { persistSession: false } }
+    {
+      auth: { persistSession: false },
+      global: { fetch: (url, options) => fetch(url, { ...options, cache: "no-store" }) },
+    }
   );

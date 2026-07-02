@@ -178,7 +178,17 @@ export function credsForSender(from?: string): { sid: string; token: string } {
   const mktFrom = bareNumber(process.env.TWILIO_MKT_WHATSAPP_FROM);
   const mktSid = cleanEnv(process.env.TWILIO_MKT_ACCOUNT_SID);
   const mktToken = cleanEnv(process.env.TWILIO_MKT_AUTH_TOKEN);
-  if (f && mktFrom && f === mktFrom && mktSid && mktToken) return { sid: mktSid, token: mktToken };
+  const utilFrom = bareNumber(process.env.TWILIO_WHATSAPP_FROM);
+  const mktConfigured = !!(mktSid && mktToken);
+  // A WhatsApp number belongs to exactly ONE (sub)account, so a send FROM a number
+  // MUST auth with that number's account or Twilio rejects the (foreign) ContentSid
+  // with the misleading 21656 "Content Variables parameter is invalid". Route to the
+  // marketing lane when the chosen sender is the configured marketing number, OR -
+  // as a self-healing fallback when TWILIO_MKT_WHATSAPP_FROM is unset - whenever a
+  // NON-utility sender is chosen and the marketing lane is configured. This keeps the
+  // marketing send working even if the marketing-FROM env var was never set.
+  if (f && mktConfigured && (f === mktFrom || (utilFrom && f !== utilFrom)))
+    return { sid: mktSid, token: mktToken };
   return { sid: cleanEnv(process.env.TWILIO_ACCOUNT_SID), token: cleanEnv(process.env.TWILIO_AUTH_TOKEN) };
 }
 

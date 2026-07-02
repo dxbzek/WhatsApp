@@ -58,35 +58,38 @@ export async function twilioGet(url: string, authHeader?: string) {
 // like the recipient sees on WhatsApp. Returns null for text-only templates and
 // for variable media placeholders ("{{1}}") that aren't real URLs.
 export async function getContentMedia(contentSid: string): Promise<string | null> {
-  try {
-    const data: any = await twilioGet(`https://content.twilio.com/v1/Content/${contentSid}`);
-    const types = data?.types || {};
-    for (const key of Object.keys(types)) {
-      const m = types[key]?.media;
-      const url = Array.isArray(m) ? m[0] : m;
-      if (typeof url === "string" && /^https?:\/\//i.test(url)) return url;
-    }
-    return null;
-  } catch {
-    return null; // never block a send on media lookup
+  // Try the default (utility) account first, then the marketing lane - a template
+  // lives on ONE account, and fetching it with the wrong creds returns nothing, which
+  // is why marketing-template sends showed no header media (video/image) in the inbox.
+  for (const auth of [undefined, marketingAuthHeader() || undefined]) {
+    try {
+      const data: any = await twilioGet(`https://content.twilio.com/v1/Content/${contentSid}`, auth);
+      const types = data?.types || {};
+      for (const key of Object.keys(types)) {
+        const m = types[key]?.media;
+        const url = Array.isArray(m) ? m[0] : m;
+        if (typeof url === "string" && /^https?:\/\//i.test(url)) return url;
+      }
+    } catch { /* try next account */ }
   }
+  return null; // never block a send on media lookup
 }
 
 // Resolve a template's body TEXT from its Content SID, so logged messages show the
 // real message in our inbox instead of a bare "[template]" placeholder. Returns
 // null for templates with no text body (pure-media).
 export async function getContentBody(contentSid: string): Promise<string | null> {
-  try {
-    const data: any = await twilioGet(`https://content.twilio.com/v1/Content/${contentSid}`);
-    const types = data?.types || {};
-    for (const key of Object.keys(types)) {
-      const b = types[key]?.body;
-      if (typeof b === "string" && b.trim()) return b;
-    }
-    return null;
-  } catch {
-    return null; // never block a send on a body lookup
+  for (const auth of [undefined, marketingAuthHeader() || undefined]) {
+    try {
+      const data: any = await twilioGet(`https://content.twilio.com/v1/Content/${contentSid}`, auth);
+      const types = data?.types || {};
+      for (const key of Object.keys(types)) {
+        const b = types[key]?.body;
+        if (typeof b === "string" && b.trim()) return b;
+      }
+    } catch { /* try next account */ }
   }
+  return null; // never block a send on a body lookup
 }
 
 // Substitute {{1}},{{2}},... placeholders in a template body with content variables

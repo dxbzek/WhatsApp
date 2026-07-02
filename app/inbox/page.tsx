@@ -48,7 +48,7 @@ function laneOf(ourNumber: string | undefined, lanes: { utility: string; marketi
   if (lanes.marketing && ourNumber === lanes.marketing) return "marketing";
   return "legacy";
 }
-const LANE_LABEL: Record<string, string> = { utility: "Main line", marketing: "Marketing", legacy: "Old number" };
+const LANE_LABEL: Record<string, string> = { utility: "Utility", marketing: "Marketing", legacy: "Old number" };
 function LaneChip({ lane }: { lane: Lane }) {
   if (!lane) return null;
   return <span className={`lane-chip ${lane}`}>{LANE_LABEL[lane]}</span>;
@@ -317,7 +317,7 @@ export default function Inbox() {
             </div>
             {lanes.utility && lanes.marketing && (
               <div className="seg-tabs" style={{ marginTop: 6 }}>
-                {([["", "All numbers"], ["utility", "Main line"], ["marketing", "Marketing"]] as const).map(([id, l]) => (
+                {([["", "All numbers"], ["utility", "Utility"], ["marketing", "Marketing"]] as const).map(([id, l]) => (
                   <button key={id} className={laneTab === id ? "on" : ""} onClick={() => setLaneTab(id)}>{l}</button>
                 ))}
               </div>

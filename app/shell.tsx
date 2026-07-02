@@ -115,12 +115,13 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
         setMktNumber(d.marketing || "");
         setUtilNumber(d.utility || "");
         if (nums.length) {
-          // Lane names, Twilio-style: the main account's number vs the marketing
-          // subaccount's — not anonymous "Number 2".
+          // Lane names matching the real Twilio subaccounts: "ERE Utility (WhatsApp)"
+          // and "ERE Marketing (WhatsApp)". BOTH numbers live on subaccounts under
+          // the parent (which only holds the balance) — there is no "main line".
           const real: Sender[] = nums.map((n, i) => ({
             id: n,
             sub: "ERE Homes",
-            label: n === d.utility ? "Main line" : n === d.marketing ? "Marketing" : `Number ${i + 1}`,
+            label: n === d.utility ? "ERE Utility" : n === d.marketing ? "ERE Marketing" : `Number ${i + 1}`,
             number: formatPhone(n),
           }));
           setSenders(real);
@@ -159,7 +160,9 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
 
   const sender = senders.find((s) => s.id === senderId) || senders[0];
   const pick = (id: string) => { setSenderId(id); localStorage.setItem("om_sender", id); setAcctOpen(false); };
-  const isSub = (id: string) => !!mktNumber && id === mktNumber; // marketing = the Twilio subaccount
+  // Both lanes are Twilio SUBACCOUNTS (utility AND marketing) under the parent
+  // that holds the balance — badge any sender whose lane we know.
+  const isSub = (id: string) => (!!mktNumber && id === mktNumber) || (!!utilNumber && id === utilNumber);
   const onSub = isSub(sender.id);
 
   return (
@@ -187,18 +190,12 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
               <button key={s.id} className={`acct-item ${s.id === senderId ? "on" : ""}`} onClick={() => pick(s.id)}>
                 <div className="av">{initials(s.label)}</div>
                 <div className="ai-main">
-                  <div className="ai-t">{s.label}{isSub(s.id) && <span className="sub-badge">Subaccount</span>}{!!utilNumber && s.id === utilNumber && <span className="sub-badge main">Main account</span>}</div>
+                  <div className="ai-t">{s.label}{isSub(s.id) && <span className="sub-badge">Subaccount</span>}</div>
                   <div className="ai-s">{s.number}</div>
                 </div>
                 {s.id === senderId && <span className="ai-check"><Icon d={IC.check} s={15} /></span>}
               </button>
             ))}
-            {onSub && !!utilNumber && (
-              <button className="acct-item back" onClick={() => pick(utilNumber)}>
-                <span className="ai-arrow">←</span>
-                <div className="ai-main"><div className="ai-t">Go back to main account</div></div>
-              </button>
-            )}
             <div className="acct-menu-foot">
               <a href="https://console.twilio.com/us1/develop/sms/senders/whatsapp-senders" target="_blank" rel="noreferrer">Manage senders &amp; sub-accounts</a>
             </div>

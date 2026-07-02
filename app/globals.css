@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+﻿@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root{
   --blue:#0263E0; --blue-hover:#0455BE; --blue-tint:#EAF2FE; --blue-tint-2:#CFE0FB;
@@ -29,7 +29,7 @@ a{color:inherit;text-decoration:none;}
 
 .app{display:flex;height:100vh;height:100dvh;overflow:hidden;}
 
-/* ───── Sidebar (collapsible) ───── */
+/* â”€â”€â”€â”€â”€ Sidebar (collapsible) â”€â”€â”€â”€â”€ */
 .sidebar{width:236px;flex-shrink:0;background:var(--side);display:flex;flex-direction:column;color:var(--side-ink);border-right:1px solid #060c16;overflow:hidden;}
 .sidebar.collapsed{display:none;}
 /* Pre-hydration default: CSS (not JS) decides, so there's no first-paint flash. */
@@ -81,7 +81,7 @@ a{color:inherit;text-decoration:none;}
 .side-help:hover{background:rgba(255,255,255,.05);color:var(--side-ink-2);}
 .nav-scrim{position:fixed;inset:0;background:rgba(10,16,28,.4);z-index:40;}
 
-/* ───── Main / topbar ───── */
+/* â”€â”€â”€â”€â”€ Main / topbar â”€â”€â”€â”€â”€ */
 .main{flex:1;display:flex;flex-direction:column;min-width:0;}
 .topbar{height:56px;flex-shrink:0;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 18px;}
 .crumb{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink-3);}
@@ -115,7 +115,7 @@ a{color:inherit;text-decoration:none;}
 .inbox-page{padding:0;height:100%;}
 .maxw{max-width:1180px;margin:0 auto;}
 
-/* ───── Page head ───── */
+/* â”€â”€â”€â”€â”€ Page head â”€â”€â”€â”€â”€ */
 .page-head{display:flex;align-items:flex-start;gap:20px;margin-bottom:22px;}
 .page-head .hm{flex:1;min-width:0;}
 .h1{font-size:23px;font-weight:700;letter-spacing:-.02em;}
@@ -141,7 +141,7 @@ a{color:inherit;text-decoration:none;}
 .badge{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:4px;font-size:11.5px;font-weight:600;white-space:nowrap;border:1px solid transparent;}
 .badge .bd{width:6px;height:6px;border-radius:50%;}
 
-/* ───── KPIs ───── */
+/* â”€â”€â”€â”€â”€ KPIs â”€â”€â”€â”€â”€ */
 .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:22px;}
 .kpis.k4{grid-template-columns:repeat(4,1fr);}
 .kpis.k5{grid-template-columns:repeat(5,1fr);}
@@ -152,7 +152,7 @@ a{color:inherit;text-decoration:none;}
 .kpi .ks{font-size:11.5px;color:var(--ink-3);margin-top:6px;display:flex;align-items:center;gap:4px;}
 .kpi .ks.up{color:var(--green-ink);}
 
-/* ───── Tabs / filter bar ───── */
+/* â”€â”€â”€â”€â”€ Tabs / filter bar â”€â”€â”€â”€â”€ */
 .bar{display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--border);}
 .tabs{display:flex;align-items:center;gap:2px;}
 .tab{position:relative;height:40px;padding:0 13px;display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--ink-2);transition:color .13s;}
@@ -172,7 +172,7 @@ a{color:inherit;text-decoration:none;}
 .list-search input{flex:1;border:none;outline:none;background:transparent;font-size:13px;min-width:0;}
 .list-search input::placeholder{color:var(--muted);}
 
-/* ───── Table ───── */
+/* â”€â”€â”€â”€â”€ Table â”€â”€â”€â”€â”€ */
 .panel{background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--r-lg) var(--r-lg);overflow:hidden;}
 .ttable{width:100%;border-collapse:collapse;}
 .ttable thead th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding:11px 16px;background:var(--surface-2);border-bottom:1px solid var(--border);white-space:nowrap;}
@@ -211,7 +211,7 @@ a{color:inherit;text-decoration:none;}
 .prog-fill{height:100%;background:var(--green-dot);border-radius:20px;}
 .prog span{font-size:12px;color:var(--ink-2);}
 
-/* ───── Cards / charts ───── */
+/* â”€â”€â”€â”€â”€ Cards / charts â”€â”€â”€â”€â”€ */
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:18px;margin-bottom:16px;}
 .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;}
@@ -239,7 +239,7 @@ a{color:inherit;text-decoration:none;}
 .cm-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px;}
 .cm-time{font-size:11px;color:var(--muted);}
 
-/* ───── Inbox ───── */
+/* â”€â”€â”€â”€â”€ Inbox â”€â”€â”€â”€â”€ */
 .inbox{display:flex;height:100%;}
 .conv-col{width:340px;flex-shrink:0;border-right:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;}
 .conv-head{padding:16px 16px 12px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:11px;}
@@ -285,7 +285,7 @@ a{color:inherit;text-decoration:none;}
 .msg-input:focus{border-color:var(--blue);box-shadow:var(--ring);background:#fff;}
 .send-btn{height:40px;border-radius:20px;}
 
-/* ───── Billing ───── */
+/* â”€â”€â”€â”€â”€ Billing â”€â”€â”€â”€â”€ */
 .paycard{border:1px solid var(--border);border-radius:var(--r-lg);padding:15px;}
 .pc-row{display:flex;align-items:center;justify-content:space-between;font-size:14px;}
 .pc-brand{display:flex;align-items:center;gap:9px;font-weight:600;}
@@ -296,7 +296,7 @@ a{color:inherit;text-decoration:none;}
 .pill-on{font-size:11.5px;font-weight:700;color:#fff;background:var(--green-dot);border-radius:20px;padding:3px 11px;}
 .rc-meta{font-size:12.5px;color:var(--ink-3);margin-top:7px;}
 
-/* ───── Drawer ───── */
+/* â”€â”€â”€â”€â”€ Drawer â”€â”€â”€â”€â”€ */
 .scrim{position:fixed;inset:0;background:rgba(10,16,28,.34);backdrop-filter:blur(2px);z-index:60;animation:fade .16s ease;}
 @keyframes fade{from{opacity:0;}to{opacity:1;}}
 .drawer{position:fixed;top:0;right:0;bottom:0;width:560px;max-width:94vw;background:var(--surface);z-index:61;display:flex;flex-direction:column;box-shadow:var(--sh-lg);animation:slideIn .22s cubic-bezier(.2,.7,.2,1);}
@@ -337,7 +337,7 @@ a{color:inherit;text-decoration:none;}
 .checkrow label{display:flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer;color:var(--ink-2);}
 .checkrow input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue);}
 
-/* ───── Form controls ───── */
+/* â”€â”€â”€â”€â”€ Form controls â”€â”€â”€â”€â”€ */
 .field{margin-bottom:15px;}
 .label{display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:6px;}
 .label .opt{font-weight:400;color:var(--ink-3);}
@@ -362,7 +362,7 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 .ok-box{font-size:13px;color:var(--green-ink);background:var(--green-bg);border:1px solid var(--green-border);border-radius:var(--r);padding:11px 13px;margin-top:13px;}
 .err-box{font-size:13px;color:var(--red-ink);background:var(--red-bg);border:1px solid var(--red-border);border-radius:var(--r);padding:11px 13px;margin-top:13px;}
 
-/* ───── Composer modal ───── */
+/* â”€â”€â”€â”€â”€ Composer modal â”€â”€â”€â”€â”€ */
 .modal{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;background:var(--page);animation:slideUp .22s cubic-bezier(.2,.7,.2,1);}
 @keyframes slideUp{from{transform:translateY(14px);opacity:.5;}to{transform:none;opacity:1;}}
 .modal-head{height:60px;flex-shrink:0;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;padding:0 22px;}
@@ -378,7 +378,7 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 .sect-t{font-size:13px;font-weight:700;color:var(--ink);margin-bottom:3px;}
 .sect-d{font-size:12.5px;color:var(--ink-3);margin-bottom:14px;}
 
-/* ───── Phone ───── */
+/* â”€â”€â”€â”€â”€ Phone â”€â”€â”€â”€â”€ */
 .phone{width:300px;margin:0 auto;border:10px solid #11161f;border-radius:38px;overflow:hidden;box-shadow:var(--sh-lg);background:#11161f;}
 .phone-notch{height:20px;background:#11161f;position:relative;}
 .phone-notch::after{content:"";position:absolute;left:50%;top:6px;transform:translateX(-50%);width:84px;height:6px;border-radius:10px;background:#000;}
@@ -447,13 +447,13 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 .skel-av,.skel-l{animation:skelPulse 1.3s ease-in-out infinite;}
 .th-back{display:none;}
 
-/* ───── Toast ───── */
+/* â”€â”€â”€â”€â”€ Toast â”€â”€â”€â”€â”€ */
 .toast{position:fixed;top:66px;right:20px;z-index:90;background:var(--ink);color:#fff;padding:12px 16px;border-radius:10px;box-shadow:var(--sh-lg);font-size:13px;max-width:330px;animation:slideIn .18s ease;}
 .toast.good{background:var(--green-ink);}
 .toast.bad{background:var(--red-ink);}
 .toast a{color:#fff;text-decoration:underline;}
 
-/* ───── Login ───── */
+/* â”€â”€â”€â”€â”€ Login â”€â”€â”€â”€â”€ */
 .login-wrap{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:20px;background:var(--page);}
 .login-card{width:100%;max-width:380px;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--sh);padding:30px;}
 .login-brand{display:flex;align-items:center;gap:11px;margin-bottom:18px;}
@@ -515,7 +515,7 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 .msg-bubble,.page-sub,.cell-name .nm{overflow-wrap:anywhere;}
 .phone{max-width:100%;}
 
-/* ───── Touch devices: bigger tap targets + 16px inputs (stops iOS zoom-on-focus) ───── */
+/* â”€â”€â”€â”€â”€ Touch devices: bigger tap targets + 16px inputs (stops iOS zoom-on-focus) â”€â”€â”€â”€â”€ */
 @media (pointer:coarse){
   .input,textarea.input,select.input,.msg-input,.top-search input,.list-search input{font-size:16px;}
   .icon-btn{width:44px;height:44px;}
@@ -526,20 +526,20 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
   .top-avatar{padding:6px;margin:-6px -6px -6px -4px;}
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Motion layer — GPU-only (opacity + transform), so it composites off the main
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   Motion layer â€” GPU-only (opacity + transform), so it composites off the main
    thread and never costs layout/paint or page-speed. `backwards` fill (not
    `forwards`) means the element returns to its natural styles after the entrance,
    so it doesn't lock transforms and hover lifts still work. Entrances replay only
-   when an element truly mounts (page navigation, a new inbox row) — never on the
+   when an element truly mounts (page navigation, a new inbox row) â€” never on the
    8s/20s data polls, because React reuses DOM nodes with stable keys. The whole
    layer is switched off under prefers-reduced-motion.
-   ────────────────────────────────────────────────────────────────────────── */
+   â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 @keyframes riseIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
 @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
 
-/* Each page fades in on mount/navigation — a soft, premium page transition. */
+/* Each page fades in on mount/navigation â€” a soft, premium page transition. */
 .page{animation:fadeIn .3s ease both;}
 .page-head{animation:riseIn .44s cubic-bezier(.22,.61,.36,1) backwards;}
 
@@ -554,7 +554,7 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 /* Major content blocks rise in just behind the header. */
 .card,.sect,.panel{animation:riseIn .5s cubic-bezier(.22,.61,.36,1) .06s backwards;}
 
-/* Conversation rows and table rows arrive with a gentle fade — including new
+/* Conversation rows and table rows arrive with a gentle fade â€” including new
    inbound messages, which animate in on their own without touching the rest. */
 .conv-item{animation:fadeUp .34s ease backwards;}
 .ttable tbody tr{animation:fadeIn .3s ease backwards;}
@@ -580,9 +580,6 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 
 /* -- Twilio-style account badge in the sender pill / menu -- */
 .sub-badge{display:inline-block;margin-left:6px;font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:1px 6px;border-radius:4px;background:#FDF3D7;color:#8A6D1A;border:1px solid #EFD9A0;vertical-align:middle;}
-.sub-badge.main{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--border);}
-.acct-item.back .ai-arrow{width:24px;text-align:center;color:var(--ink-2);flex-shrink:0;}
-.acct-item.back .ai-t{color:var(--blue);font-weight:600;}
 
 /* -- Compact agent chips (campaign "Assign leads to") -- */
 .agent-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px 5px 7px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:12.5px;font-weight:600;color:var(--ink-2);cursor:pointer;transition:all .13s;}

@@ -41,6 +41,9 @@ function mediaSrc(url: string) { return url.includes("api.twilio.com") ? `/api/m
 type Lane = "utility" | "marketing" | "legacy" | "";
 function laneOf(ourNumber: string | undefined, lanes: { utility: string; marketing: string }): Lane {
   if (!ourNumber) return "";
+  // Until the lane mapping loads (or if /api/senders fails) we can't tell lanes
+  // apart — show nothing rather than mislabel a current thread as "Old number".
+  if (!lanes.utility && !lanes.marketing) return "";
   if (lanes.utility && ourNumber === lanes.utility) return "utility";
   if (lanes.marketing && ourNumber === lanes.marketing) return "marketing";
   return "legacy";

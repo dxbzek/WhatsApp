@@ -288,8 +288,17 @@ export default function Campaigns() {
       setTpls((d.templates || []).filter((t: any) => t.status === "approved"));
     });
     fetch("/api/senders").then((r) => r.json()).then((d) => {
-      setSenders(d.senders || []);
-      if (d.senders?.length) setSender(d.senders[0]);
+      const list: string[] = d.senders || [];
+      setSenders(list);
+      if (list.length) {
+        // Honour the globally-chosen sender from the top-left switcher
+        // (persisted to localStorage as "om_sender") so you pick the sub-account
+        // ONCE up top and it flows through here - instead of silently defaulting to
+        // the first (utility) number and forcing a second, easy-to-miss choice.
+        let stored: string | null = null;
+        try { stored = localStorage.getItem("om_sender"); } catch {}
+        setSender(stored && list.includes(stored) ? stored : list[0]);
+      }
     });
     // Outbound messages in the last 24h (for the daily-cap guard)
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();

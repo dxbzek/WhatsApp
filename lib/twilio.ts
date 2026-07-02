@@ -192,6 +192,42 @@ export function credsForSender(from?: string): { sid: string; token: string } {
   return { sid: cleanEnv(process.env.TWILIO_ACCOUNT_SID), token: cleanEnv(process.env.TWILIO_AUTH_TOKEN) };
 }
 
+// Cache of WhatsApp numbers owned by the MARKETING subaccount, probed once from the
+// Senders API. Lets us pick the right creds for a free-form send (auto-reply, inbox
+// reply) by the SENDER NUMBER's true owning account - no dependence on the
+// TWILIO_*_WHATSAPP_FROM env vars, which is what made auto-replies silently fail.
+let _mktNumbers: Set<string> | null = null;
+async function marketingNumbers(): Promise<Set<string>> {
+  if (_mktNumbers) return _mktNumbers;
+  const set = new Set<string>();
+  const auth = marketingAuthHeader();
+  if (auth) {
+    try {
+      const res = await fetch("https://messaging.twilio.com/v2/Channels/Senders?Channel=whatsapp", { headers: { Authorization: auth } });
+      if (res.ok) {
+        const d: any = await res.json();
+        for (const sndr of d?.senders || []) {
+          const n = bareNumber(sndr?.sender_id);
+          if (n) set.add(n);
+        }
+      }
+    } catch { /* leave empty; fall back to env-based routing */ }
+  }
+  _mktNumbers = set;
+  return set;
+}
+
+// Async, deterministic version of credsForSender: if the sender number is owned by
+// the marketing subaccount, use marketing creds; otherwise fall back to the env-based
+// sync resolver. Cached, so at most one extra API call per process.
+export async function credsForNumber(from?: string): Promise<{ sid: string; token: string }> {
+  const f = bareNumber(from);
+  const mktSid = cleanEnv(process.env.TWILIO_MKT_ACCOUNT_SID);
+  const mktToken = cleanEnv(process.env.TWILIO_MKT_AUTH_TOKEN);
+  if (f && mktSid && mktToken && (await marketingNumbers()).has(f)) return { sid: mktSid, token: mktToken };
+  return credsForSender(from);
+}
+
 // Resolve the Twilio creds of the (sub)account that OWNS a Content template. Each
 // approved template lives on exactly ONE account; only that account can send it, else
 // Twilio rejects with the misleading 21656 "Content Variables parameter is invalid".
@@ -220,7 +256,7 @@ async function postMessage(form: URLSearchParams, opts?: { sendAt?: string; from
 
   // Auth with the account that OWNS this message: an explicit override (e.g. the
   // account that owns the Content template) wins, else infer from the sender number.
-  const { sid, token } = opts?.creds || credsForSender(resolvedFrom);
+  const { sid, token } = opts?.creds || (await credsForNumber(resolvedFrom));
 
   // Scheduled sends require a Messaging Service + ScheduleType=fixed. BUT we must
   // ALSO set From: without it Twilio picks any number from the MS sender pool, so

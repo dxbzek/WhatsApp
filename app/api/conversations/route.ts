@@ -65,13 +65,18 @@ export async function GET(req: NextRequest) {
     }
 
     if (view === "by-status") {
-      // Leads grouped by stage for the Lead Status page. Real leads only: not
-      // internal, not suppressed (blocked/invalid). Joined with the agent name in
-      // a second query (no FK-embed reliance) so it stays robust.
+      // Leads grouped by stage for the Lead Status page. GENUINE leads only —
+      // not every broadcast recipient. Every drip/broadcast contact is a
+      // conversation with lead_status defaulted to 'new' and source_campaign_id/
+      // lead_ref set, so those are NOT discriminators. A real lead is someone who
+      // engaged or was worked: they replied, were classified hot/warm, were
+      // assigned an agent, have a pipeline stage, or came in via a Meta lead form.
+      // Without this filter the board floods with ~7.5k "Not Contacted Yet" rows.
       const { data, error } = await db.from("conversations")
         .select("id, wa_phone, name, lead_ref, lead_status, lead_stage, stage_updated_at, assigned_agent_id, assigned_at, source, source_campaign_id, created_at")
         .eq("is_internal", false)
         .not("status", "in", "(blocked,invalid)")
+        .or("replied.eq.true,lead_status.eq.hot,lead_status.eq.warm,assigned_agent_id.not.is.null,lead_stage.not.is.null,source.eq.meta_lead_form")
         .order("stage_updated_at", { ascending: false, nullsFirst: false })
         .limit(2000);
       if (error) throw new Error(error.message);

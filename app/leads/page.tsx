@@ -48,6 +48,12 @@ const ellipsis: React.CSSProperties = { whiteSpace: "nowrap", overflow: "hidden"
 export default function Leads() {
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Sections start collapsed except the active-work stages. "Not Contacted Yet"
+  // is the big backlog, so it stays closed by default to keep the page short.
+  const [open, setOpen] = useState<Record<string, boolean>>({
+    null: false, contacted: true, viewing: true, won: true, lost: false,
+  });
+  const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
   const load = () => {
     setLeads(null); setErr(null);
@@ -86,18 +92,28 @@ export default function Leads() {
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
           {SECTIONS.map((s) => {
             const rows = byStage[s.key];
+            const isOpen = open[s.key] && rows.length > 0;
             return (
               <div className="card" key={s.key}>
-                <div className="card-head">
+                <div
+                  className="card-head"
+                  onClick={() => rows.length > 0 && toggle(s.key)}
+                  style={{ cursor: rows.length > 0 ? "pointer" : "default", userSelect: "none" }}
+                >
                   <div className="card-t" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ width: 9, height: 9, borderRadius: 9, background: s.color, display: "inline-block" }} />
                     {s.label}
                   </div>
-                  <div className="card-meta">{rows.length} {rows.length === 1 ? "lead" : "leads"}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div className="card-meta">{rows.length} {rows.length === 1 ? "lead" : "leads"}</div>
+                    {rows.length > 0 && (
+                      <span style={{ display: "inline-flex", color: "var(--ink-3)", transform: isOpen ? "none" : "rotate(-90deg)", transition: "transform .15s" }}>
+                        <Icon d={IC.chevron} s={16} w={2} />
+                      </span>
+                    )}
+                  </div>
                 </div>
-                {rows.length === 0 ? (
-                  <div className="perf"><div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>None in this stage.</div></div></div>
-                ) : (
+                {isOpen && (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 270px), 1fr))", gap: 12 }}>
                     {rows.map((l) => (
                       <LeadCard key={l.id} lead={l} color={s.color} />

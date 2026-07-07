@@ -352,9 +352,18 @@ export default function Campaigns() {
   });
 
   // Parse phone numbers from pasted text or CSV (first phone-like token per line)
+  // Recipients to send to. When the paste/upload is a structured CSV (has a phone
+  // header), take phones ONLY from that phone column — the same source the preview
+  // table uses. Otherwise the greedy regex also scrapes phone-shaped tokens out of
+  // OTHER columns (a created_at like 2026-07-03 -> "20260703", long ids), which
+  // inflates the count AND makes the send target junk numbers. Fall back to the
+  // regex only for a plain pasted number list with no header.
   const numbers = Array.from(
     new Set(
-      raw.split(/[\n,;]+/).map((s) => {
+      (pasted?.records?.length
+        ? pasted.records.map((r: any) => String(r.phone || ""))
+        : raw.split(/[\n,;]+/)
+      ).map((s: string) => {
         const m = s.match(/\+?\d[\d\s-]{7,}\d/);
         return m ? m[0].replace(/[^0-9+]/g, "") : "";
       }).filter(Boolean)

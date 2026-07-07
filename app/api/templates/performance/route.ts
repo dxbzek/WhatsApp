@@ -105,10 +105,15 @@ export async function GET() {
       stats[sid].conversations = seen;
       stats[sid].replied = convsReplied[sid].size;
       // Leads = distinct conversations that got this template AND turned hot
-      // (tapped Interested). Rate is of DELIVERED (the real conversion: of
-      // everyone who actually received it, how many turned into a lead).
+      // FROM ENGAGING THIS SEND — i.e. hot AND they replied/tapped after receiving
+      // it (convsReplied = an inbound dated after this template's outbound; a
+      // converting "Interested" tap arrives as exactly such an inbound). Without
+      // the reply gate, a list of already-hot contacts (e.g. opted-in Meta buyer
+      // leads) would each be miscounted as a lead just for receiving the blast,
+      // massively overstating a campaign sent to a warm audience. Rate is of
+      // DELIVERED (of everyone who received it, how many this send turned hot).
       let leads = 0;
-      for (const cid of convsSeen[sid]) if (leadConvs.has(cid)) leads++;
+      for (const cid of convsSeen[sid]) if (leadConvs.has(cid) && convsReplied[sid].has(cid)) leads++;
       stats[sid].leads = leads;
       // One decimal: cold-outreach interest rates are well under 1%, so rounding
       // to whole percent would flatten a real 0.6% down to "0% / 1%".

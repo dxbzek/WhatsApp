@@ -64,6 +64,26 @@ export async function POST(req: NextRequest) {
     const alreadySentSet = new Set<string>();
     for (const [wa, id] of idByPhone) if (skipConvIds.has(id)) alreadySentSet.add(wa);
 
+    // Marketing frequency guard. Meta caps a user who receives too many MARKETING
+    // messages in a short window (error 63049 — the #1 Nima failure, 17 of 25). The
+    // per-template already-sent check above does NOT catch this: a contact who got a
+    // DIFFERENT campaign recently still gets blasted and Meta throttles them. So skip
+    // anyone who received ANY broadcast in the last COOLDOWN_DAYS. Same-contact
+    // cooldown only, so a daily ramp to NEW contacts is unaffected. 0 = disable.
+    const COOLDOWN_DAYS = Number(process.env.MARKETING_COOLDOWN_DAYS || 7);
+    const recentSet = new Set<string>();
+    if (COOLDOWN_DAYS > 0 && convIdList.length) {
+      const since = new Date(Date.now() - COOLDOWN_DAYS * 86400000).toISOString();
+      for (let i = 0; i < convIdList.length; i += 300) {
+        const { data } = await db.from("messages").select("conversation")
+          .eq("direction", "out").not("campaign", "is", null).gte("created_at", since)
+          .in("conversation", convIdList.slice(i, i + 300));
+        for (const m of data || []) recentSet.add((m as any).conversation);
+      }
+    }
+    const recentSentSet = new Set<string>();
+    for (const [wa, id] of idByPhone) if (recentSet.has(id)) recentSentSet.add(wa);
+
     const results: any[] = [];
     for (const r of recipients) {
       const e164raw = String(r.phone).replace(/[^0-9+]/g, "");
@@ -73,6 +93,7 @@ export async function POST(req: NextRequest) {
       if (blockedSet.has(wa)) { results.push({ phone: e164, status: "skipped_blacklist" }); continue; }
       if (invalidSet.has(wa)) { results.push({ phone: e164, status: "skipped_invalid" }); continue; }
       if (alreadySentSet.has(wa)) { results.push({ phone: e164, status: "skipped_already_sent" }); continue; }
+      if (recentSentSet.has(wa)) { results.push({ phone: e164, status: "skipped_recent" }); continue; }
 
       try {
         const tw = await sendTemplate(e164, contentSid, r.vars || undefined, sendAt || undefined, from || undefined);

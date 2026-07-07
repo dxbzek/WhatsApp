@@ -72,6 +72,24 @@ export async function POST(req: NextRequest) {
         // stop before re-processing the agent status report.
         if (isDupeInsert(insErr)) return ok200();
       }
+      // TESTING ONLY: still fire the matched auto-reply so an agent can tap a
+      // template's buttons on their own phone and see exactly what a real contact
+      // receives. This is deliberately the ONLY thing we do here — no hot status,
+      // no lead distribution, no Pipedrive push — so an agent testing NEVER turns
+      // into a lead. The conversation stays internal (is_internal: true above), so
+      // it also never shows in the inbox/lead views.
+      if (aconv) {
+        try {
+          const atext = body.trim().toLowerCase().replace(/[\s!.?,]+$/, "");
+          const { data: arules } = await db.from("auto_replies").select("trigger,reply,enabled").eq("enabled", true);
+          const arule = (arules || []).find((r: any) => (r.trigger || "").trim().toLowerCase() === atext);
+          if (arule?.reply) {
+            const tw = await sendWhatsApp(from, arule.reply, toNumber || undefined);
+            await db.from("messages").insert({ conversation: aconv.id, direction: "out", body: arule.reply, status: tw.status, twilio_sid: tw.sid });
+            await db.from("conversations").update({ last_direction: "out", last_status: tw.status, last_body: arule.reply }).eq("id", aconv.id);
+          }
+        } catch { /* never fail the webhook */ }
+      }
       // Pass the replied-to alert SID so a button tap maps to the exact lead.
       try { await handleAgentReport(from, body, originalSid); } catch { /* never fail the webhook */ }
       return ok200();

@@ -136,6 +136,36 @@ async function atomicRrPointer(
   return typeof data === "number" ? data : Number(data);
 }
 
+// Global lead-gen tracker(s). Every lead alert is CC'd to these number(s) no
+// matter which agent the lead was assigned to and regardless of round-robin, so
+// the lead-gen owner monitors 100% of leads without being in each campaign's
+// agent list. Override the default via LEAD_TRACKER_WA (comma-separated E.164).
+const LEAD_TRACKER_WA = (process.env.LEAD_TRACKER_WA || "+971524766133")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+
+// CC every tracker with the same lead alert, skipping any number already alerted
+// as an assigned agent (dedupe by digits) so no one is pinged twice. The alert's
+// source line is prefixed [TRACKER] so the monitor can tell a copy from a lead
+// that is actually theirs to work. Best-effort: never breaks routing.
+async function ccTrackers(
+  db: ReturnType<typeof supabaseAdmin>,
+  alreadyAlertedWa: string[],
+  conversationId: string | undefined,
+  leadRef: string, leadName: string, contactPhone: string, source: string,
+): Promise<void> {
+  try {
+    if (LEAD_TRACKER_WA.length === 0) return;
+    const digits = (w: string) => w.replace(/[^0-9]/g, "");
+    const seen = new Set(alreadyAlertedWa.map(digits));
+    const src = `[TRACKER] ${source}`;
+    for (const wa of LEAD_TRACKER_WA) {
+      if (seen.has(digits(wa))) continue;
+      const r = await sendAgentAlert("Lead tracker", wa, leadRef, leadName, contactPhone, src);
+      if (r.ok && conversationId) await logAgentAlert(db, { agentId: null, agentWa: wa, conversationId, alertSid: r.sid });
+    }
+  } catch { /* tracker CC is best-effort */ }
+}
+
 // Load active agents for the given ids, preserving the configured order.
 async function loadAgents(db: ReturnType<typeof supabaseAdmin>, ids: string[]): Promise<Agent[]> {
   if (ids.length === 0) return [];
@@ -223,6 +253,8 @@ export async function distributeLead(opts: {
     for (const r of results) {
       if (r.ok) await logAgentAlert(db, { agentId: r.id, agentWa: r.wa, conversationId: opts.conversationId, alertSid: r.sid });
     }
+    // CC the global lead-gen tracker(s) with a copy of every lead, deduped.
+    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, about);
     return { assigned: results.map((r) => r.name) };
   } catch {
     return null;
@@ -343,6 +375,10 @@ export async function distributeMetaLead(opts: {
         if (r.ok) await logAgentAlert(db, { agentId: r.id, agentWa: r.wa, conversationId: opts.conversationId, alertSid: r.sid });
       }
     }
+
+    // CC the global lead-gen tracker(s) with a copy of every lead, deduped — for
+    // both sales and recruitment leads, so the monitor sees 100% of them.
+    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, isRecruit ? `Recruitment · ${recruitSource}` : enquiry);
 
     // Agent(s) chosen but no alert got through -> safety net so it is not silent.
     if (!alertOk) {

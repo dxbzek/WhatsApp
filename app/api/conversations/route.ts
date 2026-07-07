@@ -175,6 +175,14 @@ export async function POST(req: NextRequest) {
         allowed.assigned_agent_id = a;
         allowed.assigned_at = a ? new Date().toISOString() : null;
       }
+      // Tag as broker: someone who replied but is an agent/broker, not a real
+      // buyer. Flag them AND block + suppress so no future marketing send reaches
+      // them (the campaign send path already skips status='blocked' by phone, so
+      // this holds even if they're re-uploaded in a later list).
+      if ("is_broker" in patch) {
+        allowed.is_broker = !!patch.is_broker;
+        if (patch.is_broker) { allowed.status = "blocked"; allowed.suppressed_at = new Date().toISOString(); }
+      }
     }
     if (!Object.keys(allowed).length) return NextResponse.json({ error: "no valid fields" }, { status: 400 });
     const db = supabaseAdmin();

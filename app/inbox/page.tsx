@@ -213,6 +213,15 @@ export default function Inbox() {
     } catch { /* ignore */ }
   }
 
+  // Tag a contact as a broker (an agent/broker who replied, not a real buyer):
+  // block + suppress them so no future marketing send reaches them, and reflect
+  // it in the UI. Optimistic, then persisted via the gated route.
+  async function tagBroker(c: UIConv) {
+    setConvos((p) => p.map((x) => (x.id === c.id ? { ...x, blocked: true } : x)));
+    setToast({ kind: "good", text: "Tagged as broker — blocked from future marketing." });
+    if (c.live) await patchConvo(c.id, { is_broker: true });
+  }
+
   async function openConvo(c: UIConv) {
     setActiveId(c.id);
     setShowThread(true);
@@ -405,6 +414,7 @@ export default function Inbox() {
                     <div className="avatar-menu" style={{ width: 210 }}>
                       <button className="am-item" onClick={() => { setMoreOpen(false); pushPipedrive(active); }}><Icon d={IC.users} s={16} />Push to Pipedrive</button>
                       <button className="am-item" onClick={() => { setMoreOpen(false); setLead(active.id, active.unread ? "new" : active.lead || "new"); markUnread(active); }}><Icon d={IC.inbox} s={16} />Mark as unread</button>
+                      <button className="am-item" onClick={() => { setMoreOpen(false); if (confirm("Tag this contact as a broker? They will be blocked from all future marketing sends.")) tagBroker(active); }}><Icon d={IC.users} s={16} />Tag as broker</button>
                     </div>
                   </>
                 )}

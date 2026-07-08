@@ -24,6 +24,19 @@ export async function POST(req: NextRequest) {
     // so the inbox can show which of our numbers the thread lives on.
     const ourNumber = String(from || cleanEnv(process.env.TWILIO_WHATSAPP_FROM) || "").replace(/^whatsapp:/, "") || null;
 
+    // Kill-switch: if this sender is paused in send_guard — a penalty pause
+    // (63051 locked / 90010 rate limit) or a manual remediation hold after a Meta
+    // spam/quality flag — refuse the whole batch. The drip dispatcher already
+    // honors this; enforce it on manual "send now" too so a pause truly stops ALL
+    // sends. Matched by digits, like the dispatcher, so any format of the row hits.
+    const senderDigits = String(ourNumber || "").replace(/[^0-9]/g, "");
+    if (senderDigits) {
+      const { data: guards } = await db.from("send_guard").select("sender").gt("paused_until", new Date().toISOString());
+      const pausedDigits = new Set((guards || []).map((g: any) => String(g.sender).replace(/[^0-9]/g, "")));
+      if (pausedDigits.has(senderDigits))
+        return NextResponse.json({ error: "Sends from this number are paused (Meta quality/penalty hold). Clear the pause in send_guard to resume." }, { status: 423 });
+    }
+
     // Resolve the template's header image once (constant for the whole batch) so
     // every logged message shows the creative in our inbox, not just text.
     const templateMedia = await getContentMedia(contentSid);

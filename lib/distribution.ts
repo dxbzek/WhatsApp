@@ -10,7 +10,7 @@ import { ensureLeadRef } from "@/lib/leadRef";
 // Its quick-reply buttons Contacted / Viewing / Won / Lost feed handleAgentReport,
 // which moves the lead's stage. The old parent-account SIDs (ere_meta_lead_alert +
 // the WA-campaign alert) are DEAD after the utility repoint — never reintroduce them.
-const AGENT_LEAD_ALERT_SID = "HX9866d614203dd8a9c3f503402ee76032";
+const AGENT_LEAD_ALERT_SID = "HXe1b69d2c15b5cf888655ce75bba4ec23";
 
 // Dedicated recruitment alert (utility subaccount, text-only, NO status buttons).
 // Recruitment leads are candidates applying to JOIN ERE, not property enquiries, so

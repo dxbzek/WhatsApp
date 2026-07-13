@@ -19,15 +19,23 @@ export function twilioCreds() {
 // account-level failures to plain guidance; pass everything else through.
 export function twilioError(status: number, data: any, fallback: string): Error {
   const code = data?.code;
+  let err: Error;
   if (status === 401 || code === 20003) {
-    return new Error(
+    err = new Error(
       "Twilio rejected the credentials. The account is likely suspended, or the API key/token changed. Check the Twilio console."
     );
+  } else if (status === 403 || code === 20005) {
+    err = new Error("Twilio account is not active (suspended or closed). Open the Twilio console to restore it.");
+  } else {
+    err = new Error(data?.message || fallback);
   }
-  if (status === 403 || code === 20005) {
-    return new Error("Twilio account is not active (suspended or closed). Open the Twilio console to restore it.");
-  }
-  return new Error(data?.message || fallback);
+  // Preserve Twilio's numeric error code AND HTTP status on the thrown Error so
+  // callers (e.g. the dispatcher's catch) can persist a real error_code instead
+  // of null — a plain `new Error(message)` was silently dropping data.code, which
+  // is why failed sends logged "No error code reported by Twilio" with no clue why.
+  if (code != null) (err as any).code = code;
+  (err as any).twilioStatus = status;
+  return err;
 }
 
 // Marketing-lane subaccount creds (its own WABA + number, separate from the utility

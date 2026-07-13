@@ -175,7 +175,14 @@ async function runLocked(db: ReturnType<typeof supabaseAdmin>) {
       await db.from("conversations").update({ last_direction: "out", last_status: status, last_body: m.body || "[template]", last_at: new Date().toISOString(), ...(senderBare ? { our_number: "+" + senderBare } : {}) }).eq("id", m.conversation);
       sent++;
     } catch (e: any) {
-      await db.from("messages").update({ status: "failed", error_code: e?.code ? String(e.code) : null }).eq("id", m.id);
+      // Persist BOTH the numeric Twilio code (now preserved by twilioError) and a
+      // short human message, so the campaign log shows WHY a send failed instead of
+      // the useless "No error code reported by Twilio".
+      await db.from("messages").update({
+        status: "failed",
+        error_code: e?.code != null ? String(e.code) : null,
+        error_detail: e?.message ? String(e.message).slice(0, 300) : null,
+      }).eq("id", m.id);
       failed++;
     }
     await new Promise((r) => setTimeout(r, THROTTLE_MS));

@@ -7,7 +7,7 @@ import { formatPhone } from "@/lib/format";
 import { PageHead } from "@/lib/ui";
 
 type TplButton = { type: string; title: string; url?: string | null; phone?: string | null };
-type Tpl = { sid: string; name: string; status: string; body: string | null; variables: Record<string, string>; media?: string | null; footer?: string | null; buttons?: TplButton[] };
+type Tpl = { sid: string; name: string; status: string; body: string | null; variables: Record<string, string>; media?: string | null; footer?: string | null; buttons?: TplButton[]; lane?: "utility" | "marketing" | null };
 
 const BATCH = 25;
 // Named CRM segments are saved locally (single-user console - no backend needed).
@@ -175,6 +175,10 @@ export default function Campaigns() {
   }, [doneMsg, router]);
   const [senders, setSenders] = useState<string[]>([]);
   const [sender, setSender] = useState("");
+  // Which sender number is the utility lane vs the marketing lane, so the UI can
+  // keep a template and its sender on the SAME Twilio account (a cross-lane pair is
+  // unsendable — see the send route's lane guard).
+  const [senderLanes, setSenderLanes] = useState<{ utility: string; marketing: string }>({ utility: "", marketing: "" });
   const [optIn, setOptIn] = useState(false);
   const [excludeReached, setExcludeReached] = useState(true); // skip contacts already reached
   const [sentToday, setSentToday] = useState<number | null>(null);
@@ -290,6 +294,7 @@ export default function Campaigns() {
     fetch("/api/senders").then((r) => r.json()).then((d) => {
       const list: string[] = d.senders || [];
       setSenders(list);
+      setSenderLanes({ utility: d.utility || "", marketing: d.marketing || "" });
       if (list.length) {
         // Honour the globally-chosen sender from the top-left switcher
         // (persisted to localStorage as "om_sender") so you pick the sub-account
@@ -310,6 +315,31 @@ export default function Campaigns() {
 
   const tpl = tpls.find((t) => t.sid === tplSid);
   const tplB = tpls.find((t) => t.sid === tplSidB);
+
+  // --- Lane matching (Marketing vs Utility) ---------------------------------
+  // A WhatsApp number and an approved template each belong to exactly one Twilio
+  // account, so they must be paired within the same lane or the send is rejected.
+  // Resolve the lane of a number and of the selected template, filter the sender
+  // dropdown to the template's lane, and flag a mismatch so Send is blocked.
+  const laneOfNumber = (num: string): "utility" | "marketing" | null =>
+    senderLanes.marketing && num === senderLanes.marketing ? "marketing"
+      : senderLanes.utility && num === senderLanes.utility ? "utility"
+        : senderLanes.utility ? "utility" : null; // unlabelled numbers default to utility
+  const tplLane: "utility" | "marketing" | null = (tpl?.lane as any) || null;
+  const laneSenders = tplLane ? senders.filter((s) => laneOfNumber(s) === tplLane) : senders;
+  const senderLane = laneOfNumber(sender);
+  const laneMismatch = !!(tpl && tplLane && senderLane && senderLane !== tplLane);
+  const laneLabel = (l: string | null) => (l === "marketing" ? "Marketing" : l === "utility" ? "Utility" : "");
+
+  // When the picked template's lane differs from the current sender, snap the sender
+  // to the matching-lane number so the two never drift apart. Keeps the "impossible
+  // by construction" guarantee even as templates are switched.
+  useEffect(() => {
+    if (!tplLane || !senders.length) return;
+    if (laneOfNumber(sender) === tplLane) return;
+    const match = senders.find((s) => laneOfNumber(s) === tplLane);
+    if (match && match !== sender) setSender(match);
+  }, [tplLane, senders, senderLanes]); // eslint-disable-line
   // Internal/operational templates (agent lead alerts, the team briefing) are NOT
   // customer broadcasts — keep them out of the campaign picker so they can never
   // be blasted to owners by mistake.
@@ -396,6 +426,7 @@ export default function Campaigns() {
 
   async function sendTest() {
     if (!tplSid) return setTestStatus("Pick a template first.");
+    if (laneMismatch) return setTestStatus(`Sender is on the ${laneLabel(senderLane)} lane but the template is on the ${laneLabel(tplLane)} lane. Pick the ${laneLabel(tplLane)} sender.`);
     const phone = testPhone.trim();
     if (!phone) return setTestStatus("Enter your test number.");
     setSendingTest(true);
@@ -440,6 +471,8 @@ export default function Campaigns() {
     setDoneMsg(null);
     if (!tplSid) return setErr("Pick an approved template.");
     if (abTest && (!tplSidB || tplSidB === tplSid)) return setErr("Pick a different Variant B template for the A/B test.");
+    if (laneMismatch) return setErr(`This template is on the ${laneLabel(tplLane)} lane. Pick the ${laneLabel(tplLane)} sender number — a template can only be sent from its own account.`);
+    if (abTest && tplB && tplLane && (tplB.lane as any) !== tplLane) return setErr("Both A/B templates must be on the same lane (they share one sender number).");
     if (numbers.length === 0) return setErr("Add at least one recipient.");
     if (!optIn) return setErr("Please confirm these recipients opted in to WhatsApp messages.");
     // Collect every heads-up into ONE final confirm instead of stacking dialogs.
@@ -734,7 +767,7 @@ export default function Campaigns() {
             <div style={{ marginTop: 8 }}>
               <select value={tplSidB} onChange={(e) => setTplSidB(e.target.value)} className="input">
                 <option value="">Select Variant B template…</option>
-                {campaignTpls.filter((t) => t.sid !== tplSid).map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
+                {campaignTpls.filter((t) => t.sid !== tplSid && (!tplLane || t.lane === tplLane)).map((t) => <option key={t.sid} value={t.sid}>{t.name}</option>)}
               </select>
               <div className="hint" style={{ marginBottom: 0 }}>Half get the template above (A), half get this one (B). The campaign log shows which wins.</div>
             </div>
@@ -791,7 +824,7 @@ export default function Campaigns() {
                 </div>
                 <button
                   onClick={sendTest}
-                  disabled={sendingTest || !testPhone.trim()}
+                  disabled={sendingTest || !testPhone.trim() || laneMismatch}
                   className="btn btn-sec"
                 >
                   {sendingTest ? "Sending…" : "Send test to me →"}
@@ -915,10 +948,30 @@ export default function Campaigns() {
 
         <div className="sect">
           <div className="sect-t">3 · Send from</div>
-          <select value={sender} onChange={(e) => setSender(e.target.value)} className="input" style={{ maxWidth: 280 }}>
-            {senders.length === 0 && <option value="">(no sender configured)</option>}
-            {senders.map((s) => <option key={s} value={s}>{formatPhone(s)}</option>)}
-          </select>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <select value={sender} onChange={(e) => setSender(e.target.value)} className="input" style={{ maxWidth: 280 }}>
+              {senders.length === 0 && <option value="">(no sender configured)</option>}
+              {(laneSenders.length ? laneSenders : senders).map((s) => (
+                <option key={s} value={s}>{formatPhone(s)}{laneOfNumber(s) ? ` · ${laneLabel(laneOfNumber(s))}` : ""}</option>
+              ))}
+            </select>
+            {senderLane && (
+              <span className="tag" style={{ background: senderLane === "marketing" ? "var(--amber-bg, #fde9c8)" : "var(--green-bg, #dff3e4)", color: senderLane === "marketing" ? "var(--amber-ink)" : "var(--green-ink)", padding: "2px 8px", borderRadius: 6, fontSize: 12, fontWeight: 700 }}>
+                {laneLabel(senderLane)} lane
+              </span>
+            )}
+          </div>
+          {tpl && tplLane && (
+            laneMismatch ? (
+              <div className="hint" style={{ color: "var(--red-ink, #b42318)", fontWeight: 600, marginBottom: 0 }}>
+                This template lives on the {laneLabel(tplLane)} lane but the sender is on the {laneLabel(senderLane)} lane. A template can only be sent from its own number. Pick the {laneLabel(tplLane)} sender.
+              </div>
+            ) : (
+              <div className="hint" style={{ marginBottom: 0 }}>
+                Sender matches the template&apos;s {laneLabel(tplLane)} lane. Only {laneLabel(tplLane)}-lane numbers are shown.
+              </div>
+            )
+          )}
 
         </div>
 
@@ -1082,7 +1135,7 @@ export default function Campaigns() {
           </div>
         )}
 
-        <button onClick={run} disabled={running} className="btn btn-primary" style={{ marginTop: 16 }}>
+        <button onClick={run} disabled={running || laneMismatch} className="btn btn-primary" style={{ marginTop: 16 }}>
           {running ? "Working…" : mode === "now" ? "Send campaign" : mode === "later" ? "Schedule campaign" : "Start drip campaign"}
         </button>
 

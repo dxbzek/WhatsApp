@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendTemplate, getContentMedia, getContentBody, renderTemplateBody, cleanEnv } from "@/lib/twilio";
+import { sendTemplate, getContentMedia, getContentBody, renderTemplateBody, cleanEnv, credsForContent, credsForNumber } from "@/lib/twilio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +35,27 @@ export async function POST(req: NextRequest) {
       const pausedDigits = new Set((guards || []).map((g: any) => String(g.sender).replace(/[^0-9]/g, "")));
       if (pausedDigits.has(senderDigits))
         return NextResponse.json({ error: "Sends from this number are paused (Meta quality/penalty hold). Clear the pause in send_guard to resume." }, { status: 423 });
+    }
+
+    // Lane guard: the template and the chosen sender number MUST live on the same
+    // Twilio (sub)account. A WhatsApp number belongs to exactly one account and an
+    // approved template to exactly one account, so a Marketing template can only go
+    // out from the Marketing number, Utility from Utility. A cross-lane pair (e.g.
+    // the Nima MARKETING template sent from the UTILITY number) is unsendable: Twilio
+    // 404s the foreign ContentSid and returns no SID and no error code, which is why
+    // that batch failed silently. Catch it ONCE up front and stop the whole batch
+    // with a message a human can act on, instead of 149 opaque per-message failures.
+    if (ourNumber) {
+      const [tplCreds, numCreds] = await Promise.all([
+        credsForContent(contentSid).catch(() => null),
+        credsForNumber(ourNumber).catch(() => null),
+      ]);
+      if (tplCreds?.sid && numCreds?.sid && tplCreds.sid !== numCreds.sid) {
+        return NextResponse.json(
+          { error: "This template and the chosen sender number are on different WhatsApp lanes (one is Marketing, the other Utility). A template can only be sent from the number on its own account — pick the sender that matches the template's lane." },
+          { status: 409 }
+        );
+      }
     }
 
     // Resolve the template's header image once (constant for the whole batch) so

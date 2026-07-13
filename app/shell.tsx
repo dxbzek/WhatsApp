@@ -15,6 +15,7 @@ const NAV = [
   { id: "Automation", href: "/automation", icon: IC.bolt },
   { id: "Insights", href: "/insights", icon: IC.insights },
   { id: "Suppressed", href: "/suppressed", icon: IC.ban },
+  { id: "Sender health", href: "/sender-health", icon: IC.phone },
   { id: "Logs", href: "/logs", icon: IC.clock },
   { id: "Billing", href: "/billing", icon: IC.billing },
 ];
@@ -28,13 +29,14 @@ const CRUMB: Record<string, string[]> = {
   "/automation": ["Automation"],
   "/insights": ["Analytics"],
   "/suppressed": ["Suppressed contacts"],
+  "/sender-health": ["Sender health"],
   "/logs": ["Activity log"],
   "/billing": ["Account", "Billing"],
 };
 const PAGE_TITLE: Record<string, string> = {
   "/": "Dashboard", "/inbox": "Inbox", "/leads": "Lead Status", "/templates": "Templates",
   "/campaigns": "Campaigns", "/automation": "Automation", "/insights": "Insights",
-  "/suppressed": "Suppressed", "/logs": "Logs", "/billing": "Billing",
+  "/suppressed": "Suppressed", "/sender-health": "Sender health", "/logs": "Logs", "/billing": "Billing",
 };
 
 const initials = (s: string) => s.replace(/[^a-zA-Z ]/g, "").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();

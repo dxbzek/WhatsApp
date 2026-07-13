@@ -9,7 +9,7 @@ type Campaign = {
   mode: string; total: number; sent: number; scheduled: number; failed: number; skipped: number;
   status: string; finish_at: string | null; created_at: string; template_sid_b?: string | null;
 };
-type Recipient = { status: string | null; error_code?: string | null; created_at: string; scheduled_at?: string | null; conversation: { wa_phone: string; name: string | null } | null };
+type Recipient = { status: string | null; error_code?: string | null; error_detail?: string | null; created_at: string; scheduled_at?: string | null; conversation: { wa_phone: string; name: string | null } | null };
 
 type Funnel = { sent: number; delivered: number; read: number; failed: number; scheduled: number; deliveryRate: number; readRate: number; reasons?: Record<string, number> };
 
@@ -188,7 +188,11 @@ function Recipients({ campaignId }: { campaignId: string }) {
         const isFail = r.status === "failed" || r.status === "undelivered";
         const when = isSched && r.scheduled_at ? r.scheduled_at : r.created_at;
         const timeLabel = when ? `${isSched ? "scheduled for" : "sent"} ${new Date(when).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : "";
-        const cause = isFail ? (r.error_code ? `${errorCause(r.error_code)} · ${r.error_code}` : "Failed — no error code reported") : "";
+        const cause = isFail
+          ? (r.error_code
+              ? `${errorCause(r.error_code)} · ${r.error_code}`
+              : (r.error_detail || "Failed — no error code reported"))
+          : "";
         return (
           <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--border-soft)", fontSize: 13 }}>
             <div style={{ minWidth: 0, overflow: "hidden" }}>

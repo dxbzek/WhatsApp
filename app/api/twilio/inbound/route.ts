@@ -4,6 +4,7 @@ import { sendWhatsApp } from "@/lib/twilio";
 import { verifyTwilioWebhook } from "@/lib/twilioSignature";
 import { distributeLead } from "@/lib/distribution";
 import { handleAgentReport } from "@/lib/agentReport";
+import { handleLeadQualification } from "@/lib/leadQualify";
 
 const ok200 = () => new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
@@ -91,7 +92,13 @@ export async function POST(req: NextRequest) {
         } catch { /* never fail the webhook */ }
       }
       // Pass the replied-to alert SID so a button tap maps to the exact lead.
-      try { await handleAgentReport(from, body, originalSid); } catch { /* never fail the webhook */ }
+      // Try the qualification workflow first (Interested / No answer / Not
+      // interested / Broker status buttons); only fall through to the legacy
+      // sales-pipeline handler when the tap was NOT a status button.
+      try {
+        const handledQual = await handleLeadQualification(from, body, originalSid);
+        if (!handledQual) await handleAgentReport(from, body, originalSid);
+      } catch { /* never fail the webhook */ }
       return ok200();
     }
   }

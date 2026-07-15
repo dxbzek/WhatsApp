@@ -56,3 +56,49 @@ export async function syncLeadToCrm(opts: {
   if (error) return { ok: false, error: error.message };
   return { ok: true, id: data?.id };
 }
+
+// Flag a contact as a broker/agent so they are blocked from ALL owner/buyer
+// marketing, and so the next audience refresh excludes them from Meta. Upsert by
+// phone: update if the contact already exists (e.g. synced as a Buyer Lead on
+// ingest), else insert a minimal broker record. Never touches phone fields on an
+// update (a CRM trigger wipes phone_e164 if it is set directly). Best-effort.
+export async function crmFlagBroker(e164: string, name?: string): Promise<{ ok: boolean; skipped?: string; error?: string }> {
+  const db = crmAdmin();
+  if (!db) return { ok: false, skipped: "crm_unconfigured" };
+  const bare = clean(e164).replace("+", "");
+  if (!bare) return { ok: false, skipped: "no_phone" };
+  const { data: existing, error: selErr } = await db.from("contacts").select("id").eq("phone_e164", bare).limit(1);
+  if (selErr) return { ok: false, error: selErr.message };
+  if (existing && existing.length) {
+    const { error } = await db.from("contacts").update({ is_broker: true, contact_category: "Broker" }).eq("id", existing[0].id);
+    return error ? { ok: false, error: error.message } : { ok: true };
+  }
+  const { error } = await db.from("contacts").insert({
+    name: clean(name) || null, phone: "+" + bare, phone_e164: bare, phone_norm: bare.slice(-9),
+    is_broker: true, contact_category: "Broker", lead_source: "meta_lead_form", source_batch: "meta_broker_flag",
+  });
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+// Tag a contact as a "Meta Lead Enquirer" (reached but not interested right now)
+// so they stay in the CRM for future nurture instead of being lost. Upsert by
+// phone; never re-tags a known broker as a nurture lead. Best-effort.
+export async function crmTagEnquirer(e164: string, name?: string, detail?: string): Promise<{ ok: boolean; skipped?: string; error?: string }> {
+  const db = crmAdmin();
+  if (!db) return { ok: false, skipped: "crm_unconfigured" };
+  const bare = clean(e164).replace("+", "");
+  if (!bare) return { ok: false, skipped: "no_phone" };
+  const { data: existing, error: selErr } = await db.from("contacts").select("id, is_broker").eq("phone_e164", bare).limit(1);
+  if (selErr) return { ok: false, error: selErr.message };
+  if (existing && existing.length) {
+    if (existing[0].is_broker) return { ok: true, skipped: "is_broker" };
+    const { error } = await db.from("contacts").update({ contact_category: "Meta Lead Enquirer" }).eq("id", existing[0].id);
+    return error ? { ok: false, error: error.message } : { ok: true };
+  }
+  const { error } = await db.from("contacts").insert({
+    name: clean(name) || null, phone: "+" + bare, phone_e164: bare, phone_norm: bare.slice(-9),
+    lead_source: "meta_lead_form", contact_category: "Meta Lead Enquirer",
+    source_batch: detail ? `meta:${clean(detail)}` : "meta_lead_form",
+  });
+  return error ? { ok: false, error: error.message } : { ok: true };
+}

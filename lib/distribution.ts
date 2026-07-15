@@ -10,7 +10,11 @@ import { ensureLeadRef } from "@/lib/leadRef";
 // Its quick-reply buttons Contacted / Viewing / Won / Lost feed handleAgentReport,
 // which moves the lead's stage. The old parent-account SIDs (ere_meta_lead_alert +
 // the WA-campaign alert) are DEAD after the utility repoint — never reintroduce them.
-const AGENT_LEAD_ALERT_SID = "HXe1b69d2c15b5cf888655ce75bba4ec23";
+// Env-overridable so we can flip to the new status-button template
+// (ere_lead_status_alert: Interested / No answer / Not interested / Broker) the
+// moment WhatsApp approves it, WITHOUT a code deploy — just set AGENT_LEAD_ALERT_SID
+// in Vercel. Falls back to the current v2 (Contacted/Viewing/Won/Lost) until then.
+const AGENT_LEAD_ALERT_SID = (process.env.AGENT_LEAD_ALERT_SID || "HXe1b69d2c15b5cf888655ce75bba4ec23").trim();
 
 // Dedicated recruitment alert (utility subaccount, text-only, NO status buttons).
 // Recruitment leads are candidates applying to JOIN ERE, not property enquiries, so

@@ -148,20 +148,23 @@ const LEAD_TRACKER_WA = (process.env.LEAD_TRACKER_WA || "+971524766133")
   .split(",").map((s) => s.trim()).filter(Boolean);
 
 // CC every tracker with the same lead alert, skipping any number already alerted
-// as an assigned agent (dedupe by digits) so no one is pinged twice. The alert's
-// source line is prefixed [TRACKER] so the monitor can tell a copy from a lead
-// that is actually theirs to work. Best-effort: never breaks routing.
+// as an assigned agent (dedupe by digits) so no one is pinged twice. The tracker
+// number(s) only ever monitor (never get assigned leads), so no "this is a copy"
+// marker is needed — every alert they receive is a monitor copy by definition. We
+// just prefix the channel (WhatsApp reply vs Meta form) so the origin is visible.
+// Best-effort: never breaks routing.
 async function ccTrackers(
   db: ReturnType<typeof supabaseAdmin>,
   alreadyAlertedWa: string[],
   conversationId: string | undefined,
   leadRef: string, leadName: string, contactPhone: string, source: string,
+  channel: string,
 ): Promise<void> {
   try {
     if (LEAD_TRACKER_WA.length === 0) return;
     const digits = (w: string) => w.replace(/[^0-9]/g, "");
     const seen = new Set(alreadyAlertedWa.map(digits));
-    const src = `[TRACKER] ${source}`;
+    const src = `${channel} · ${source}`;
     for (const wa of LEAD_TRACKER_WA) {
       if (seen.has(digits(wa))) continue;
       const r = await sendAgentAlert("Lead tracker", wa, leadRef, leadName, contactPhone, src);
@@ -258,7 +261,8 @@ export async function distributeLead(opts: {
       if (r.ok) await logAgentAlert(db, { agentId: r.id, agentWa: r.wa, conversationId: opts.conversationId, alertSid: r.sid });
     }
     // CC the global lead-gen tracker(s) with a copy of every lead, deduped.
-    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, about);
+    // This path is always an inbound WhatsApp reply to a campaign.
+    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, about, "WhatsApp");
     return { assigned: results.map((r) => r.name) };
   } catch {
     return null;
@@ -382,7 +386,7 @@ export async function distributeMetaLead(opts: {
 
     // CC the global lead-gen tracker(s) with a copy of every lead, deduped — for
     // both sales and recruitment leads, so the monitor sees 100% of them.
-    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, isRecruit ? `Recruitment · ${recruitSource}` : enquiry);
+    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, isRecruit ? `Recruitment · ${recruitSource}` : enquiry, "Meta");
 
     // Agent(s) chosen but no alert got through -> safety net so it is not silent.
     if (!alertOk) {

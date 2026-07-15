@@ -41,8 +41,8 @@ function Login() {
     <div className="login-wrap">
       <form onSubmit={submit} className="login-card">
         <div className="login-brand">
-          <div className="brand-tile" aria-label="ERE Homes">ERE</div>
-          <div><div className="lb-n">ERE Homes</div><div className="lb-s">WhatsApp Console</div></div>
+          <img className="login-logo-img" src="/ere-logo-black.png" alt="ERE Homes" />
+          <div className="lb-s">WhatsApp Console</div>
         </div>
 
         <div className="field">

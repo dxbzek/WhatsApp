@@ -170,8 +170,7 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
   return (
     <aside className={`sidebar ${!mounted ? "pre-mount" : open ? "" : "collapsed"}`}>
       <div className="side-brand">
-        <div className="side-logo brand-tile" aria-label="ERE Homes">ERE</div>
-        <div className="bt"><div className="n">ERE Homes</div><div className="s">Messaging</div></div>
+        <img className="side-logo-img" src="/ere-logo-white.png" alt="ERE Homes" />
         <button className="side-toggle" onClick={onClose} title="Hide sidebar" aria-label="Hide sidebar"><Icon d={IC.cleft} s={18} /></button>
       </div>
 

@@ -146,6 +146,8 @@ export default function Campaigns() {
   const [redirectIn, setRedirectIn] = useState<number | null>(null);
   const [agents, setAgents] = useState<{ id: string; name: string; wa_number: string }[]>([]);
   const [agentIds, setAgentIds] = useState<string[]>([]);
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const agentMenuRef = useRef<HTMLDivElement | null>(null);
   const [blurb, setBlurb] = useState("");
   // The agent heads-up auto-fills from the chosen template's name so the user
   // never has to write it. We only stop auto-filling once they type their own.
@@ -176,6 +178,16 @@ export default function Campaigns() {
   useEffect(() => {
     fetch("/api/agents").then((r) => r.json()).then((d) => setAgents(d.agents || [])).catch(() => {});
   }, []);
+
+  // Close the agent multi-select when clicking outside it.
+  useEffect(() => {
+    if (!agentMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (agentMenuRef.current && !agentMenuRef.current.contains(e.target as Node)) setAgentMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [agentMenuOpen]);
 
   // After a send completes (doneMsg set), auto-route to the campaign log so the
   // user lands on the live delivery numbers. Counts down so the summary is
@@ -539,11 +551,11 @@ export default function Campaigns() {
           const before = sendNumbers.length;
           sendNumbers = sendNumbers.filter((p) => !reached.has(p.replace(/[^0-9]/g, "")));
           const dropped = before - sendNumbers.length;
-          if (dropped > 0) notes.push(`${dropped} already received a WhatsApp from ERE — skipped (no double-messaging).`);
+          if (dropped > 0) notes.push(`${dropped} were messaged in the last 7 days — skipped (7-day cooldown).`);
         }
       } catch { /* best-effort: if the lookup fails, fall back to sending to all */ }
     }
-    if (sendNumbers.length === 0) { busyRef.current = false; return setErr("Everyone on this list has already been reached. Nothing to send."); }
+    if (sendNumbers.length === 0) { busyRef.current = false; return setErr("Everyone on this list was messaged in the last 7 days. Nothing to send yet — they become eligible again after the cooldown, or untick the skip box to send now."); }
 
     const hasMapping = tplVars.length > 0;
     let blanks = 0;
@@ -1003,22 +1015,45 @@ export default function Campaigns() {
             <div className="hint" style={{ margin: 0 }}>No agents configured yet.</div>
           ) : (
             <>
-              <div style={{ display: "grid", gap: 6 }}>
-                {agents.map((a) => {
-                  const on = agentIds.includes(a.id);
-                  return (
-                    <label key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={() => setAgentIds((cur) => on ? cur.filter((x) => x !== a.id) : [...cur, a.id])}
-                        style={{ accentColor: "var(--blue)" }}
-                      />
-                      <span>{a.name}</span>
-                      <span className="hint" style={{ margin: 0 }}>{formatPhone(a.wa_number)}</span>
-                    </label>
-                  );
-                })}
+              <div ref={agentMenuRef} style={{ position: "relative" }}>
+                <button
+                  type="button"
+                  className="input"
+                  onClick={() => setAgentMenuOpen((o) => !o)}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", textAlign: "left", cursor: "pointer" }}
+                >
+                  <span style={agentIds.length ? undefined : { color: "#6b7280" }}>
+                    {agentIds.length === 0
+                      ? "Choose agents…"
+                      : agents.filter((a) => agentIds.includes(a.id)).map((a) => a.name).join(", ")}
+                  </span>
+                  <span aria-hidden style={{ marginLeft: 8, opacity: 0.55 }}>▾</span>
+                </button>
+                {agentMenuOpen && (
+                  <div
+                    style={{
+                      position: "absolute", zIndex: 20, top: "calc(100% + 4px)", left: 0, right: 0,
+                      background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8,
+                      boxShadow: "0 10px 28px rgba(0,0,0,0.14)", padding: 6, maxHeight: 300, overflowY: "auto",
+                    }}
+                  >
+                    {agents.map((a) => {
+                      const on = agentIds.includes(a.id);
+                      return (
+                        <label key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "6px 8px", borderRadius: 6 }}>
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={() => setAgentIds((cur) => on ? cur.filter((x) => x !== a.id) : [...cur, a.id])}
+                            style={{ accentColor: "var(--blue)" }}
+                          />
+                          <span>{a.name}</span>
+                          <span className="hint" style={{ margin: 0 }}>{formatPhone(a.wa_number)}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               <div className="hint" style={{ marginTop: 8, marginBottom: 6 }}>
                 {agentIds.length === 0
@@ -1128,7 +1163,7 @@ export default function Campaigns() {
           </label>
           <label style={{ fontSize: 14, display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", marginBottom: 10 }}>
             <input type="checkbox" checked={excludeReached} onChange={(e) => setExcludeReached(e.target.checked)} style={{ marginTop: 3, accentColor: "var(--blue)" }} />
-            <span><b>Skip anyone already reached.</b> Drops contacts who already got a delivered/read message, so a re-send never double-messages them. Failed or never-sent numbers stay in for a retry.</span>
+            <span><b>Skip anyone messaged in the last 7 days.</b> Drops contacts who already got a message within the past week, so a re-send never double-messages them too soon. After 7 days they become eligible again. Failed or never-sent numbers stay in for a retry.</span>
           </label>
           <div style={{ fontSize: 13, background: "var(--amber-bg)", border: "1px solid var(--amber-border)", borderRadius: "var(--r)", padding: "8px 12px", color: "var(--amber-ink)" }}>
             + Make sure this template gives a clear way out (e.g. “Reply STOP to unsubscribe”). When someone replies STOP they’re blacklisted automatically and never messaged again.

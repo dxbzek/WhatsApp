@@ -27,6 +27,12 @@ export async function POST(req: NextRequest) {
     const db = supabaseAdmin();
     const reached = new Set<string>();
 
+    // A contact only counts as "reached" if we messaged them within the cooldown
+    // window. After that they become eligible again, so a warm list can be
+    // re-engaged on a sensible cadence instead of being blocked forever.
+    const COOLDOWN_DAYS = 7;
+    const cutoffIso = new Date(Date.now() - COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
     // Chunk so the IN lists stay sane on large master lists.
     for (let i = 0; i < keys.length; i += 500) {
       const slice = keys.slice(i, i + 500);
@@ -50,6 +56,7 @@ export async function POST(req: NextRequest) {
           .select("conversation")
           .eq("direction", "out")
           .in("status", ["queued", "accepted", "sent", "delivered", "read"])
+          .gte("created_at", cutoffIso)
           .in("conversation", idSlice);
         // #6: scope "reached" to THIS campaign's template(s), so a contact who got
         // a DIFFERENT template is not wrongly excluded from this campaign.

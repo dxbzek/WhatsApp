@@ -63,12 +63,15 @@ export async function POST(req: NextRequest) {
       for (const c of data || []) convByPhone.set((c as any).wa_phone, { id: (c as any).id, status: (c as any).status });
     }
 
-    // HARD never-resend guard. Never send a template to a number it was EVER
-    // already sent — ANY campaign, ANY status. A failed/undelivered send still
-    // counts as "sent" (Meta sees it), so retrying it is exactly the double-send
-    // that tanks the quality rating. This is the permanent fix: build the set of
-    // candidate conversations that already have an outbound message on THIS
-    // content_sid, and exclude them below.
+    // Resend cooldown guard. Never send a template to a number that got it within
+    // the last 7 days — ANY campaign, ANY status (a failed/undelivered send still
+    // counts as "sent" to Meta, so re-sending too soon is the double-send that
+    // tanks the quality rating). After the cooldown the contact is eligible again,
+    // so a warm list can be re-engaged on a sensible cadence. Build the set of
+    // candidate conversations messaged on THIS content_sid within the window and
+    // exclude them below.
+    const COOLDOWN_DAYS = 7;
+    const cutoffIso = new Date(Date.now() - COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString();
     const candidateConvIds = Array.from(
       new Set(ordered.map((r) => convByPhone.get(r.wa)?.id).filter(Boolean) as string[])
     );
@@ -77,6 +80,7 @@ export async function POST(req: NextRequest) {
       const { data } = await db.from("messages")
         .select("conversation")
         .eq("direction", "out").eq("content_sid", contentSid)
+        .gte("created_at", cutoffIso)
         .in("conversation", candidateConvIds.slice(i, i + 300));
       for (const m of data || []) alreadySentTemplate.add((m as any).conversation);
     }

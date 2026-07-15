@@ -280,7 +280,9 @@ function Coverage({ c, f }: { c: Campaign; f: Funnel | undefined }) {
         <div style={{ width: w(r.failed), background: "var(--red)" }} />
       </div>
       <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 12, color: "var(--ink-2)", flexWrap: "wrap" }}>
-        <Legend n={r.delivered} label="delivered" color="var(--green-dot)" />
+        {/* delivered here excludes read (funnel counts a read msg in BOTH), so the
+            chips stay mutually exclusive and sum to the total instead of over-counting. */}
+        <Legend n={Math.max(0, r.delivered - r.read)} label="delivered" color="var(--green-dot)" />
         <Legend n={r.read} label="read" color="var(--green-ink)" />
         <Legend n={r.scheduled} label="scheduled" color="var(--blue)" />
         <Legend n={r.pending} label="pending" color="var(--amber-dot)" />

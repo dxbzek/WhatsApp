@@ -82,7 +82,7 @@ export default function Inbox() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [q, setQ] = useState("");
-  const [tab, setTab] = useState<"all" | "unread" | "hot" | "replied" | "optout">("all");
+  const [tab, setTab] = useState<"all" | "unread" | "hot" | "replied" | "whatsapp" | "meta">("all");
   const [showThread, setShowThread] = useState(false);
   const [tplOpen, setTplOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -91,7 +91,6 @@ export default function Inbox() {
   const [sender, setSender] = useState("");
   const [lanes, setLanes] = useState<{ utility: string; marketing: string }>({ utility: "", marketing: "" });
   const [laneTab, setLaneTab] = useState<"" | "utility" | "marketing">(""); // "" = all numbers
-  const [sourceTab, setSourceTab] = useState<"" | "whatsapp" | "meta">(""); // "" = both; split Meta lead-form leads from WhatsApp threads
   const [sending, setSending] = useState(false);
   const [loaded, setLoaded] = useState(false); // first conversation fetch settled
   const [toast, setToast] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
@@ -295,13 +294,14 @@ export default function Inbox() {
   }
 
   const list = convos
-    // Replied = anyone who messaged back (opt-outs included, but labelled on the row).
-    // Opt-outs get their own filter. Unread/Hot stay actionable-only (no opt-outs).
+    // Replied = anyone who messaged back. Unread/Hot stay actionable-only (no
+    // opt-outs). WhatsApp/Meta split the list by lead source.
     .filter((c) => (
       tab === "unread" ? c.unread > 0 && !c.blocked
         : tab === "hot" ? c.tag === "Hot" && !c.blocked
         : tab === "replied" ? !!c.replied
-        : tab === "optout" ? !!c.blocked
+        : tab === "whatsapp" ? c.sourceKind !== "meta"
+        : tab === "meta" ? c.sourceKind === "meta"
         : true))
     // Per-agent filter: "" = all, "none" = unassigned, "pool" = abandoned leads
     // (released back, stage "lost"), else a specific agent id.
@@ -311,9 +311,6 @@ export default function Inbox() {
     // Lane filter: "" = every conversation from BOTH numbers (the default — the
     // inbox is always the unified view), else only the picked lane.
     .filter((c) => (laneTab === "" ? true : laneOf(c.ourNumber, lanes) === laneTab))
-    // Source filter: "" = both, "meta" = Meta lead-form leads only, "whatsapp" =
-    // everything that isn't a Meta lead (real WhatsApp threads + campaign contacts).
-    .filter((c) => (sourceTab === "" ? true : sourceTab === "meta" ? c.sourceKind === "meta" : c.sourceKind !== "meta"))
     .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.toLowerCase()) || (c.waPhone || "").includes(q.replace(/[^0-9]/g, "")));
 
   return (
@@ -324,7 +321,7 @@ export default function Inbox() {
             <div className="conv-title">Inbox</div>
             <div className="list-search full"><Icon d={IC.search} s={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search conversations…" /></div>
             <div className="seg-tabs">
-              {([["all", "All"], ["unread", "Unread"], ["replied", "Replied"], ["optout", "Opt-outs"], ["hot", "Hot"]] as const).map(([id, l]) => (
+              {([["all", "All"], ["unread", "Unread"], ["replied", "Replied"], ["hot", "Hot"], ["whatsapp", "WhatsApp"], ["meta", "Meta"]] as const).map(([id, l]) => (
                 <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>
               ))}
             </div>
@@ -335,27 +332,20 @@ export default function Inbox() {
                 ))}
               </div>
             )}
-            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-              <select className="seltrig" value={sourceTab} onChange={(e) => setSourceTab(e.target.value as "" | "whatsapp" | "meta")} title="Filter by source" aria-label="Filter by source" style={{ height: 32, flex: 1, minWidth: 0 }}>
-                <option value="">All sources</option>
-                <option value="whatsapp">WhatsApp</option>
-                <option value="meta">Meta Leads</option>
-              </select>
-              {agents.length > 0 && (
-                <>
-                  <select className="seltrig" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} title="Filter by agent" aria-label="Filter by agent" style={{ height: 32, flex: 1, minWidth: 0 }}>
-                    <option value="">All agents</option>
-                    <option value="none">Unassigned</option>
-                    <option value="pool">♻ Lead Pool</option>
-                    {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                  </select>
-                  <select className="seltrig" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} title="Filter by stage" aria-label="Filter by stage" style={{ height: 32, flex: 1, minWidth: 0 }}>
-                    <option value="">Any stage</option>
-                    {STAGES.filter((s) => s.id).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-                  </select>
-                </>
-              )}
-            </div>
+            {agents.length > 0 && (
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <select className="seltrig" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} title="Filter by agent" aria-label="Filter by agent" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                  <option value="">All agents</option>
+                  <option value="none">Unassigned</option>
+                  <option value="pool">♻ Lead Pool</option>
+                  {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                <select className="seltrig" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} title="Filter by stage" aria-label="Filter by stage" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                  <option value="">Any stage</option>
+                  {STAGES.filter((s) => s.id).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              </div>
+            )}
           </div>
           {loaded && !live && (
             <div style={{ background: "var(--amber-bg)", color: "var(--amber-ink)", borderBottom: "1px solid var(--amber-border)", padding: "8px 16px", fontSize: 12, fontWeight: 600 }}>

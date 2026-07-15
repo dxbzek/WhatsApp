@@ -25,7 +25,8 @@ export async function middleware(req: NextRequest) {
   return NextResponse.redirect(url);
 }
 
-// Run on everything except Next internals / static assets.
+// Run on everything except Next internals and static assets (incl. public/ images,
+// which must load on the unauthenticated /login page — e.g. the brand logo).
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|ico)$).*)"],
 };

@@ -91,6 +91,7 @@ export default function Inbox() {
   const [sender, setSender] = useState("");
   const [lanes, setLanes] = useState<{ utility: string; marketing: string }>({ utility: "", marketing: "" });
   const [laneTab, setLaneTab] = useState<"" | "utility" | "marketing">(""); // "" = all numbers
+  const [sourceTab, setSourceTab] = useState<"" | "whatsapp" | "meta">(""); // "" = both; split Meta lead-form leads from WhatsApp threads
   const [sending, setSending] = useState(false);
   const [loaded, setLoaded] = useState(false); // first conversation fetch settled
   const [toast, setToast] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
@@ -310,6 +311,9 @@ export default function Inbox() {
     // Lane filter: "" = every conversation from BOTH numbers (the default — the
     // inbox is always the unified view), else only the picked lane.
     .filter((c) => (laneTab === "" ? true : laneOf(c.ourNumber, lanes) === laneTab))
+    // Source filter: "" = both, "meta" = Meta lead-form leads only, "whatsapp" =
+    // everything that isn't a Meta lead (real WhatsApp threads + campaign contacts).
+    .filter((c) => (sourceTab === "" ? true : sourceTab === "meta" ? c.sourceKind === "meta" : c.sourceKind !== "meta"))
     .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.toLowerCase()) || (c.waPhone || "").includes(q.replace(/[^0-9]/g, "")));
 
   return (
@@ -322,6 +326,11 @@ export default function Inbox() {
             <div className="seg-tabs">
               {([["all", "All"], ["unread", "Unread"], ["replied", "Replied"], ["optout", "Opt-outs"], ["hot", "Hot"]] as const).map(([id, l]) => (
                 <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>
+              ))}
+            </div>
+            <div className="seg-tabs" style={{ marginTop: 6 }}>
+              {([["", "All sources"], ["whatsapp", "WhatsApp"], ["meta", "Meta Leads"]] as const).map(([id, l]) => (
+                <button key={id} className={sourceTab === id ? "on" : ""} onClick={() => setSourceTab(id)}>{l}</button>
               ))}
             </div>
             {lanes.utility && lanes.marketing && (

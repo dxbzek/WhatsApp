@@ -328,11 +328,6 @@ export default function Inbox() {
                 <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>
               ))}
             </div>
-            <div className="seg-tabs" style={{ marginTop: 6 }}>
-              {([["", "All sources"], ["whatsapp", "WhatsApp"], ["meta", "Meta Leads"]] as const).map(([id, l]) => (
-                <button key={id} className={sourceTab === id ? "on" : ""} onClick={() => setSourceTab(id)}>{l}</button>
-              ))}
-            </div>
             {lanes.utility && lanes.marketing && (
               <div className="seg-tabs" style={{ marginTop: 6 }}>
                 {([["", "All numbers"], ["utility", "Utility"], ["marketing", "Marketing"]] as const).map(([id, l]) => (
@@ -340,20 +335,27 @@ export default function Inbox() {
                 ))}
               </div>
             )}
-            {agents.length > 0 && (
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <select className="seltrig" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} title="Filter by agent" aria-label="Filter by agent" style={{ height: 32, flex: 1, minWidth: 0 }}>
-                  <option value="">All agents</option>
-                  <option value="none">Unassigned</option>
-                  <option value="pool">♻ Lead Pool</option>
-                  {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-                <select className="seltrig" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} title="Filter by stage" aria-label="Filter by stage" style={{ height: 32, flex: 1, minWidth: 0 }}>
-                  <option value="">Any stage</option>
-                  {STAGES.filter((s) => s.id).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-                </select>
-              </div>
-            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <select className="seltrig" value={sourceTab} onChange={(e) => setSourceTab(e.target.value as "" | "whatsapp" | "meta")} title="Filter by source" aria-label="Filter by source" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                <option value="">All sources</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="meta">Meta Leads</option>
+              </select>
+              {agents.length > 0 && (
+                <>
+                  <select className="seltrig" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} title="Filter by agent" aria-label="Filter by agent" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                    <option value="">All agents</option>
+                    <option value="none">Unassigned</option>
+                    <option value="pool">♻ Lead Pool</option>
+                    {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                  <select className="seltrig" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} title="Filter by stage" aria-label="Filter by stage" style={{ height: 32, flex: 1, minWidth: 0 }}>
+                    <option value="">Any stage</option>
+                    {STAGES.filter((s) => s.id).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                  </select>
+                </>
+              )}
+            </div>
           </div>
           {loaded && !live && (
             <div style={{ background: "var(--amber-bg)", color: "var(--amber-ink)", borderBottom: "1px solid var(--amber-border)", padding: "8px 16px", fontSize: 12, fontWeight: 600 }}>

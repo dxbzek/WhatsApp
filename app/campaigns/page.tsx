@@ -572,7 +572,7 @@ export default function Campaigns() {
         const finishIso = isNow ? new Date().toISOString() : new Date(dripFinishMs).toISOString();
         const cr = await fetch("/api/campaign/create", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: abTest ? `${tpl?.name} (A/B)` : tpl?.name, templateSid: tplSid, templateName: tpl?.name, templateSidB: abTest ? tplSidB : undefined, templateNameB: abTest ? tplB?.name : undefined, sender, mode, total: recipients.length, finishAt: finishIso, agentIds, distribution: "round_robin", blurb }),
+          body: JSON.stringify({ name: abTest ? `${tpl?.name} (A/B)` : tpl?.name, templateSid: tplSid, templateName: tpl?.name, templateSidB: abTest ? tplSidB : undefined, templateNameB: abTest ? tplB?.name : undefined, sender, mode, total: recipients.length, finishAt: finishIso, agentIds, distribution: "round_robin", blurb: (blurb.trim() || defaultBlurb(tpl?.name || "")) }),
         });
         const cd = await cr.json();
         if (!cr.ok) throw new Error(cd.error || "Could not create the campaign.");
@@ -645,7 +645,7 @@ export default function Campaigns() {
       const cr = await fetch("/api/campaign/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: finishAtIso, agentIds, distribution: "round_robin", blurb }),
+        body: JSON.stringify({ name: tpl?.name, templateSid: tplSid, templateName: tpl?.name, sender, mode, total: recipients.length, finishAt: finishAtIso, agentIds, distribution: "round_robin", blurb: (blurb.trim() || defaultBlurb(tpl?.name || "")) }),
       });
       const cd = await cr.json();
       if (cr.ok) campaignId = cd.id;
@@ -983,37 +983,58 @@ export default function Campaigns() {
           {agents.length === 0 ? (
             <div className="hint" style={{ margin: 0 }}>No agents configured yet.</div>
           ) : (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {agents.map((a) => {
-                const on = agentIds.includes(a.id);
-                return (
-                  <button
-                    key={a.id}
-                    type="button"
-                    onClick={() => setAgentIds((cur) => on ? cur.filter((x) => x !== a.id) : [...cur, a.id])}
-                    className={`agent-chip${on ? " on" : ""}`}
-                    title={formatPhone(a.wa_number)}
-                  >
-                    <span className="ac-dot" aria-hidden>{on ? "✓" : ""}</span>
-                    {a.name}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {agentIds.length > 0 && (
             <>
-              <div className="hint" style={{ marginBottom: 6 }}>
-                {agentIds.length === 1 ? "All leads go to this agent." : `Round-robin across ${agentIds.length} agents.`}
+              <select
+                className="input"
+                value=""
+                onChange={(e) => {
+                  const id = e.target.value;
+                  if (id && !agentIds.includes(id)) setAgentIds((cur) => [...cur, id]);
+                }}
+              >
+                <option value="">{agentIds.length ? "Add another agent…" : "Choose an agent…"}</option>
+                {agents.filter((a) => !agentIds.includes(a.id)).map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+              {agentIds.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                  {agentIds.map((id) => {
+                    const a = agents.find((x) => x.id === id);
+                    if (!a) return null;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setAgentIds((cur) => cur.filter((x) => x !== id))}
+                        className="agent-chip on"
+                        title={`Remove ${a.name} (${formatPhone(a.wa_number)})`}
+                      >
+                        {a.name}
+                        <span className="ac-dot" aria-hidden>×</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="hint" style={{ marginTop: 8, marginBottom: 6 }}>
+                {agentIds.length === 0
+                  ? "No agent assigned yet — leads stay unassigned until you pick one."
+                  : agentIds.length === 1
+                  ? "All leads go to this agent."
+                  : `Round-robin across ${agentIds.length} agents.`}
               </div>
+              <label className="hint" style={{ display: "block", marginBottom: 4, fontWeight: 600 }}>
+                What to say to the lead (goes in every agent alert)
+              </label>
               <input
                 value={blurb}
                 onChange={(e) => { setBlurb(e.target.value); setBlurbTouched(true); }}
                 className="input"
                 maxLength={140}
-                placeholder='Heads-up for the agent, e.g. "Buyers for off-market Palm villas under AED 25M"'
+                placeholder='e.g. "Wants the off-market Palm villa list under AED 25M — call and send it"'
               />
-              <div className="hint" style={{ marginBottom: 0 }}>Auto-filled from the template, so you can leave it. It goes in the agent&apos;s lead alert. Edit only if you want something different.</div>
+              <div className="hint" style={{ marginBottom: 0 }}>Always sent with the lead alert so the agent knows what the lead asked for. Auto-filled from the template; edit to be specific.</div>
             </>
           )}
         </div>

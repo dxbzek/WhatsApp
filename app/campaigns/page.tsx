@@ -150,7 +150,26 @@ export default function Campaigns() {
   // The agent heads-up auto-fills from the chosen template's name so the user
   // never has to write it. We only stop auto-filling once they type their own.
   const [blurbTouched, setBlurbTouched] = useState(false);
-  const defaultBlurb = (name: string) => (name || "").replace(/_v\d+$/i, "").replace(/[_-]+/g, " ").trim().replace(/^\w/, (c) => c.toUpperCase());
+  // Turn the chosen template into a real "what to say" instruction the agent can
+  // act on (what the lead wants + the next step), not just the template name.
+  // Keyword-matched so a/b and _v2 variants all resolve; unknown templates fall
+  // back to a generic call-to-action sentence. Capped to the field's 140 chars.
+  const AGENT_GUIDANCE: { match: RegExp; say: string }[] = [
+    { match: /valuation/i, say: "Wants a free property valuation. Call, get the unit details, and give them a figure." },
+    { match: /owner_buyers|buyers/i, say: "Owner with a property. We have buyers waiting. Call to get the details and bring them buyers." },
+    { match: /owner_pricing|pricing/i, say: "Owner may be mispriced. Call to review recent sold prices and reprice to sell." },
+    { match: /off_market|off.market/i, say: "Buyer wants the off-market and ready-unit shortlist. Call and send matching deals." },
+    { match: /distress/i, say: "Buyer interested in distressed Palm villas under AED 25M. Call and send the best-priced options." },
+    { match: /offplan|off_plan|nima/i, say: "Interested in Emaar Nima off-plan at The Valley. Call and send the payment plan." },
+    { match: /property_management|pm_|^pm/i, say: "Owner interested in property management. Call to explain the service and sign them up." },
+    { match: /recruit/i, say: "Candidate interested in joining ERE. Call to discuss the role and book an interview." },
+  ];
+  const defaultBlurb = (name: string) => {
+    const hit = AGENT_GUIDANCE.find((g) => g.match.test(name || ""));
+    if (hit) return hit.say;
+    const pretty = (name || "").replace(/_v\d+$/i, "").replace(/[_-]+/g, " ").trim();
+    return (pretty ? `Responded to our "${pretty}" message. Call to find out what they need and help.` : "").slice(0, 140);
+  };
   const router = useRouter();
 
   // Load agents for the lead-distribution picker.
@@ -984,39 +1003,23 @@ export default function Campaigns() {
             <div className="hint" style={{ margin: 0 }}>No agents configured yet.</div>
           ) : (
             <>
-              <select
-                className="input"
-                value=""
-                onChange={(e) => {
-                  const id = e.target.value;
-                  if (id && !agentIds.includes(id)) setAgentIds((cur) => [...cur, id]);
-                }}
-              >
-                <option value="">{agentIds.length ? "Add another agent…" : "Choose an agent…"}</option>
-                {agents.filter((a) => !agentIds.includes(a.id)).map((a) => (
-                  <option key={a.id} value={a.id}>{a.name}</option>
-                ))}
-              </select>
-              {agentIds.length > 0 && (
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-                  {agentIds.map((id) => {
-                    const a = agents.find((x) => x.id === id);
-                    if (!a) return null;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => setAgentIds((cur) => cur.filter((x) => x !== id))}
-                        className="agent-chip on"
-                        title={`Remove ${a.name} (${formatPhone(a.wa_number)})`}
-                      >
-                        {a.name}
-                        <span className="ac-dot" aria-hidden>×</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              <div style={{ display: "grid", gap: 6 }}>
+                {agents.map((a) => {
+                  const on = agentIds.includes(a.id);
+                  return (
+                    <label key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => setAgentIds((cur) => on ? cur.filter((x) => x !== a.id) : [...cur, a.id])}
+                        style={{ accentColor: "var(--blue)" }}
+                      />
+                      <span>{a.name}</span>
+                      <span className="hint" style={{ margin: 0 }}>{formatPhone(a.wa_number)}</span>
+                    </label>
+                  );
+                })}
+              </div>
               <div className="hint" style={{ marginTop: 8, marginBottom: 6 }}>
                 {agentIds.length === 0
                   ? "No agent assigned yet — leads stay unassigned until you pick one."

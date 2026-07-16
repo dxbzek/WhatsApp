@@ -48,18 +48,18 @@ type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: 
 // Returns the Twilio SID so a later button tap can be correlated back to this lead
 // (via agent_alert_log). Records the real error instead of a silent drop.
 // Build a one-tap wa.me reply link: the agent taps it to open THEIR OWN WhatsApp
-// chat with the lead, an opener pre-written, and sends it themselves (1:1 human,
-// so no template / throttle / ban risk — like replying to a Property Finder lead).
-// Digits only, no "+". Returns "" when there is no usable number, so callers can
-// append it unconditionally. The opener names the agent, so it MUST be built
-// per-recipient (never baked into a shared source string reused across agents).
-function replyLink(agentName: string, leadName: string, contactPhone: string, context?: string | null): string {
+// chat with the lead and messages them directly (1:1 human, so no template /
+// throttle / ban risk — like replying to a Property Finder lead). We deliberately
+// DO NOT put a `?text=` pre-fill here: WhatsApp renders a pre-filled deep link as a
+// giant raw percent-encoded URL in the message body (ugly). A plain wa.me/<digits>
+// shows as a short clean link and still opens the chat in one tap. (A pre-written
+// opener would need a short redirect link or a template URL button — see notes.)
+// Digits only, no "+". Returns "" when there is no usable number so callers can
+// append it unconditionally.
+function replyLink(contactPhone: string): string {
   const digits = (contactPhone || "").replace(/[^0-9]/g, "");
   if (digits.length < 8) return "";
-  const who = leadName && leadName !== "New contact" ? leadName : "there";
-  const about = context && context.trim() ? ` about your enquiry on ${context.trim()}` : " about your property enquiry";
-  const msg = `Hi ${who}, this is ${agentName} from ERE Homes${about}. Is now a good time for a quick call?`;
-  return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
+  return `https://wa.me/${digits}`;
 }
 
 async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string, source: string, replyContext?: string | null): Promise<AlertOutcome> {
@@ -68,8 +68,8 @@ async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, 
     // even ""). Monitor/safety sends (tracker CC, fallback) omit it and stay clean.
     let src = source;
     if (replyContext !== undefined) {
-      const link = replyLink(agentName, leadName, contactPhone, replyContext);
-      if (link) src = `${source} · Reply now: ${link}`;
+      const link = replyLink(contactPhone);
+      if (link) src = `${source} · Reply: ${link}`;
     }
     const r: any = await sendTemplate(toWa, AGENT_LEAD_ALERT_SID, {
       "1": agentName, "2": leadRef || "—", "3": leadName, "4": contactPhone, "5": src,

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { twilioCreds, twilioGet } from "@/lib/twilio";
+import { twilioCreds, twilioGet, cleanEnv } from "@/lib/twilio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,10 +14,20 @@ export async function GET(req: NextRequest) {
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const sinceStr = since.toISOString().slice(0, 10);
 
-    // Live prepaid balance
+    // Live prepaid balance. The prepaid balance lives on the PARENT Twilio account,
+    // NOT the WhatsApp subaccount this console authenticates as — so Balance.json
+    // against the subaccount SID returns nothing (the "prepaid balance unavailable"
+    // dash). When parent creds are configured, read the balance from the parent;
+    // otherwise fall back to this account so behaviour is unchanged.
     let balance: { balance: string; currency: string } | null = null;
     try {
-      const b: any = await twilioGet(`/2010-04-01/Accounts/${sid}/Balance.json`);
+      const parentSid = cleanEnv(process.env.TWILIO_PARENT_ACCOUNT_SID);
+      const parentToken = cleanEnv(process.env.TWILIO_PARENT_ACCOUNT_TOKEN);
+      const balSid = parentSid || sid;
+      const auth = parentSid && parentToken
+        ? "Basic " + Buffer.from(`${parentSid}:${parentToken}`).toString("base64")
+        : undefined;
+      const b: any = await twilioGet(`/2010-04-01/Accounts/${balSid}/Balance.json`, auth);
       balance = { balance: b.balance, currency: b.currency };
     } catch {
       balance = null;

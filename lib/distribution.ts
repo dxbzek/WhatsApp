@@ -47,10 +47,32 @@ type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: 
 // Send one lead-alert to an agent's WhatsApp via the approved UTILITY template.
 // Returns the Twilio SID so a later button tap can be correlated back to this lead
 // (via agent_alert_log). Records the real error instead of a silent drop.
-async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string, source: string): Promise<AlertOutcome> {
+// Build a one-tap wa.me reply link: the agent taps it to open THEIR OWN WhatsApp
+// chat with the lead, an opener pre-written, and sends it themselves (1:1 human,
+// so no template / throttle / ban risk — like replying to a Property Finder lead).
+// Digits only, no "+". Returns "" when there is no usable number, so callers can
+// append it unconditionally. The opener names the agent, so it MUST be built
+// per-recipient (never baked into a shared source string reused across agents).
+function replyLink(agentName: string, leadName: string, contactPhone: string, context?: string | null): string {
+  const digits = (contactPhone || "").replace(/[^0-9]/g, "");
+  if (digits.length < 8) return "";
+  const who = leadName && leadName !== "New contact" ? leadName : "there";
+  const about = context && context.trim() ? ` about your enquiry on ${context.trim()}` : " about your property enquiry";
+  const msg = `Hi ${who}, this is ${agentName} from ERE Homes${about}. Is now a good time for a quick call?`;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
+}
+
+async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string, source: string, replyContext?: string | null): Promise<AlertOutcome> {
   try {
+    // Append the one-tap reply link ONLY when the caller opts in (passes a context,
+    // even ""). Monitor/safety sends (tracker CC, fallback) omit it and stay clean.
+    let src = source;
+    if (replyContext !== undefined) {
+      const link = replyLink(agentName, leadName, contactPhone, replyContext);
+      if (link) src = `${source} · Reply now: ${link}`;
+    }
     const r: any = await sendTemplate(toWa, AGENT_LEAD_ALERT_SID, {
-      "1": agentName, "2": leadRef || "—", "3": leadName, "4": contactPhone, "5": source,
+      "1": agentName, "2": leadRef || "—", "3": leadName, "4": contactPhone, "5": src,
     });
     return { ok: true, sid: r?.sid || null, error: null };
   } catch (e: any) {
@@ -61,7 +83,8 @@ async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, 
 // Ping a single agent's WhatsApp with a lead alert/reminder (used by the stale-lead
 // watcher). Reuses the approved UTILITY alert template.
 export async function pingAgent(agentName: string, wa_number: string, leadRef: string, leadName: string, contactPhone: string, source: string): Promise<boolean> {
-  return (await sendAgentAlert(agentName, wa_number, leadRef, leadName, contactPhone, source)).ok;
+  // Stale-lead reminder to the assigned agent — include the one-tap reply link ("").
+  return (await sendAgentAlert(agentName, wa_number, leadRef, leadName, contactPhone, source, "")).ok;
 }
 
 // Send one recruitment alert to a recruiter's WhatsApp via the approved recruit
@@ -91,10 +114,10 @@ async function alertRecruiters(targets: Agent[], candidateName: string, contactP
 // Ping each target agent with the lead, personalised by name. Best-effort: a
 // per-agent failure never blocks the rest. Returns per-agent outcome (incl. the
 // Twilio SID) so the caller knows whether at least one alert reached an agent.
-async function alertAgents(targets: Agent[], leadRef: string, leadName: string, contactPhone: string, source: string): Promise<{ id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[]> {
+async function alertAgents(targets: Agent[], leadRef: string, leadName: string, contactPhone: string, source: string, replyContext?: string | null): Promise<{ id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[]> {
   const results: { id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[] = [];
   for (const a of targets) {
-    const r = await sendAgentAlert(a.name, a.wa_number, leadRef, leadName, contactPhone, source);
+    const r = await sendAgentAlert(a.name, a.wa_number, leadRef, leadName, contactPhone, source, replyContext);
     results.push({ id: a.id, name: a.name, wa: a.wa_number, ...r });
   }
   return results;
@@ -257,7 +280,9 @@ export async function distributeLead(opts: {
     // to. Best-effort: a text-only template just yields no link.
     const sentImg = camp.template_sid ? await getContentMedia(camp.template_sid) : null;
     const about = sentImg ? `${baseAbout} · See what we sent: ${sentImg}` : baseAbout;
-    const results = await alertAgents(targets, leadRef, leadName, opts.contactPhone, about);
+    // "" = attach the one-tap reply link with a generic opener (a WhatsApp-campaign
+    // name isn't a clean property to name to the client).
+    const results = await alertAgents(targets, leadRef, leadName, opts.contactPhone, about, "");
     // Log each successful alert so a later button tap maps back to THIS lead.
     for (const r of results) {
       if (r.ok) await logAgentAlert(db, { agentId: r.id, agentWa: r.wa, conversationId: opts.conversationId, alertSid: r.sid });
@@ -371,7 +396,8 @@ export async function distributeMetaLead(opts: {
     const recruitSource = [campaign || (route.label && String(route.label).trim()) || String(route.ref), opts.email && opts.email.trim(), (opts.previewUrl || "").trim() ? `See the ad: ${opts.previewUrl!.trim()}` : ""].filter(Boolean).join(" · ");
     const results = isRecruit
       ? await alertRecruiters(targets, leadName, opts.contactPhone, recruitSource)
-      : await alertAgents(targets, leadRef, leadName, opts.contactPhone, enquiry);
+      // `place` = the specific property, named in the one-tap reply opener.
+      : await alertAgents(targets, leadRef, leadName, opts.contactPhone, enquiry, place);
     const assigned = results.map((r) => r.name);
     const alertOk = results.some((r) => r.ok);
     const alertSid = results.find((r) => r.ok)?.sid ?? null;

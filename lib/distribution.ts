@@ -7,14 +7,16 @@ import { ensureLeadRef } from "@/lib/leadRef";
 // bursts with error 63049). Variables:
 //   {{1}} agent name, {{2}} lead ID (lead_ref), {{3}} lead name, {{4}} number,
 //   {{5}} source (what the lead responded to + any tappable link).
-// Its quick-reply buttons Contacted / Viewing / Won / Lost feed handleAgentReport,
-// which moves the lead's stage. The old parent-account SIDs (ere_meta_lead_alert +
-// the WA-campaign alert) are DEAD after the utility repoint — never reintroduce them.
-// Env-overridable so we can flip to the new status-button template
-// (ere_lead_status_alert: Interested / No answer / Not interested / Broker) the
-// moment WhatsApp approves it, WITHOUT a code deploy — just set AGENT_LEAD_ALERT_SID
-// in Vercel. Falls back to the current v2 (Contacted/Viewing/Won/Lost) until then.
-const AGENT_LEAD_ALERT_SID = (process.env.AGENT_LEAD_ALERT_SID || "HXe1b69d2c15b5cf888655ce75bba4ec23").trim();
+// Live template = ere_lead_status_alert (approved 16 Jul 2026). Its quick-reply
+// buttons Interested / No answer / Not interested / Broker feed
+// handleLeadQualification, which stamps the lead's qualification (CPQL numerator),
+// re-arms the follow-up on No answer, and flags brokers in the CRM. The old
+// parent-account SIDs (ere_meta_lead_alert + the WA-campaign alert) are DEAD after
+// the utility repoint — never reintroduce them.
+// Env-overridable (AGENT_LEAD_ALERT_SID) so we can point at a new template without a
+// code deploy; the previous v2 (Contacted/Viewing/Won/Lost -> handleAgentReport) is
+// HXe1b69d2c15b5cf888655ce75bba4ec23 if we ever need to roll back via env.
+const AGENT_LEAD_ALERT_SID = (process.env.AGENT_LEAD_ALERT_SID || "HX806fe135dda04884c869931f8a1ca4bb").trim();
 
 // Dedicated recruitment alert (utility subaccount, text-only, NO status buttons).
 // Recruitment leads are candidates applying to JOIN ERE, not property enquiries, so

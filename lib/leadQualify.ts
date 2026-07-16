@@ -22,6 +22,17 @@ const STATUS: Record<string, Qual> = {
   "broker": "broker",
 };
 
+// True when `body` is one of the 4 agent status-button taps (Interested / No
+// answer / Not interested / Broker). The inbound webhook uses this to SKIP the
+// customer-preview auto-reply on a status tap — those buttons are agent actions,
+// not customer buttons, so the only response should be the qualification confirm.
+// (Without this, "Not interested" also matched the leftover customer auto-reply
+// rule of the same name and the agent got TWO messages.)
+export function isLeadStatusTap(body: string): boolean {
+  const key = body.trim().toLowerCase().replace(/[\s!.?,]+$/, "");
+  return Object.prototype.hasOwnProperty.call(STATUS, key);
+}
+
 const CONFIRM: Record<Qual, string> = {
   qualified: "marked Interested — qualified lead. Keep working it.",
   no_answer: "marked No answer — we'll remind you to try again shortly.",

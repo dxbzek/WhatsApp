@@ -4,7 +4,7 @@ import { sendWhatsApp } from "@/lib/twilio";
 import { verifyTwilioWebhook } from "@/lib/twilioSignature";
 import { distributeLead } from "@/lib/distribution";
 import { handleAgentReport } from "@/lib/agentReport";
-import { handleLeadQualification } from "@/lib/leadQualify";
+import { handleLeadQualification, isLeadStatusTap } from "@/lib/leadQualify";
 
 const ok200 = () => new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
@@ -74,12 +74,17 @@ export async function POST(req: NextRequest) {
         if (isDupeInsert(insErr)) return ok200();
       }
       // TESTING ONLY: still fire the matched auto-reply so an agent can tap a
-      // template's buttons on their own phone and see exactly what a real contact
-      // receives. This is deliberately the ONLY thing we do here — no hot status,
-      // no lead distribution, no Pipedrive push — so an agent testing NEVER turns
-      // into a lead. The conversation stays internal (is_internal: true above), so
-      // it also never shows in the inbox/lead views.
-      if (aconv) {
+      // MARKETING template's buttons on their own phone and see exactly what a real
+      // contact receives. This is deliberately the ONLY thing we do here — no hot
+      // status, no lead distribution, no Pipedrive push — so an agent testing NEVER
+      // turns into a lead. The conversation stays internal (is_internal: true above),
+      // so it also never shows in the inbox/lead views.
+      // SKIP it on a lead-status tap (Interested / No answer / Not interested /
+      // Broker): those are AGENT status actions handled by handleLeadQualification
+      // below, not customer buttons. "Not interested" collides with the leftover
+      // customer auto-reply of the same name, so without this the agent got TWO
+      // replies (the customer preview + the status confirm).
+      if (aconv && !isLeadStatusTap(body)) {
         try {
           const atext = body.trim().toLowerCase().replace(/[\s!.?,]+$/, "");
           const { data: arules } = await db.from("auto_replies").select("trigger,reply,enabled").eq("enabled", true);

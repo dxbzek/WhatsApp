@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
+import { sendTemplate } from "@/lib/twilio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +27,43 @@ const SCAN_CAP = 8000; // max recent outbound rows to scan
 const bare = (s: string) => String(s || "").replace(/^whatsapp:/, "").replace(/[^0-9]/g, "");
 const RESOLVED_OK = new Set(["delivered", "read"]);
 const RESOLVED_FAIL = new Set(["failed", "undelivered"]);
+
+// Who to tell when a sender is auto-paused, and with which approved template.
+// Before this existed, a pause was completely silent: dispatch just returned
+// {"claimed":N,"sent":0,"held":N} every 5 min forever and the campaign log still
+// rendered an ETA, so a stalled drip looked healthy (ere_offmarket_palm sat paused
+// ~6h on 2026-07-17 before anyone noticed). Defaults to the lead-gen tracker number.
+const QUALITY_ALERT_WA = (process.env.QUALITY_ALERT_WA || process.env.LEAD_TRACKER_WA || "+971524766133")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+// Env-overridable so the template can be repointed without a deploy. Empty = alert
+// disabled (the pause still happens — the brake never depends on the alert).
+const QUALITY_ALERT_SID = (process.env.QUALITY_ALERT_SID || "").trim();
+
+// Ping the owner(s) that a sender just got paused. Sent from the DEFAULT (utility)
+// lane on purpose — the sender we are alerting about is the one that was just
+// paused, so it must not carry its own alert. Best-effort in every direction: an
+// alert failure must never stop the pause from being written.
+async function alertPause(sender: string, why: string, stats: string, until: Date): Promise<{ wa: string; ok: boolean; error: string | null }[]> {
+  const out: { wa: string; ok: boolean; error: string | null }[] = [];
+  if (!QUALITY_ALERT_SID || QUALITY_ALERT_WA.length === 0) return out;
+  const untilStr = until.toLocaleString("en-GB", {
+    timeZone: "Asia/Dubai", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  for (const wa of QUALITY_ALERT_WA) {
+    try {
+      await sendTemplate(wa, QUALITY_ALERT_SID, {
+        "1": `+${sender}`,
+        "2": why,
+        "3": stats,
+        "4": `${untilStr} Dubai`,
+      });
+      out.push({ wa, ok: true, error: null });
+    } catch (e: any) {
+      out.push({ wa, ok: false, error: e?.message || "alert failed" });
+    }
+  }
+  return out;
+}
 
 async function run(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
@@ -98,16 +136,21 @@ async function run(req: NextRequest) {
     const why = lowDelivery
       ? `delivery ${deliveryRate}% < ${DELIVERY_FLOOR}% floor`
       : `marketing throttle ${throttleRate}% > ${THROTTLE_CEIL}% ceiling`;
+    const pausedUntil = new Date(now + PAUSE_HOURS * 3600000);
+    const stats = `${s.delivered}✓/${s.failed}✗/${s.throttle49}⏸ of ${s.attempts}`;
     await db.from("send_guard").upsert(
       {
         sender,
-        paused_until: new Date(now + PAUSE_HOURS * 3600000).toISOString(),
-        reason: `auto quality pause — ${why} over ${WINDOW_HOURS}h (${s.delivered}✓/${s.failed}✗/${s.throttle49}⏸ of ${s.attempts}). Review before clearing.`,
+        paused_until: pausedUntil.toISOString(),
+        reason: `auto quality pause — ${why} over ${WINDOW_HOURS}h (${stats}). Review before clearing.`,
         updated_at: new Date(now).toISOString(),
       },
       { onConflict: "sender" }
     );
-    pausedNow.push({ sender, why });
+    // Only NEW pauses reach here (already-paused senders are skipped above), so the
+    // owner is told once per pause, not once an hour for the pause's whole lifetime.
+    const alerted = await alertPause(sender, why, stats, pausedUntil);
+    pausedNow.push({ sender, why, alerted });
   }
 
   return NextResponse.json({ window_hours: WINDOW_HOURS, scanned: rows.length, evaluated, pausedNow });

@@ -346,11 +346,19 @@ function DripTracker({ c, f }: { c: Campaign; f: Funnel | undefined }) {
   const slow = etaMin != null && etaMin > 120; // dripping unusually slowly
   const leftLabel = ratePerMin === 0 ? "starting…"
     : etaMin! >= 60 ? `~${Math.floor(etaMin! / 60)}h ${etaMin! % 60}m left` : `~${etaMin} min left`;
+  // Time-only would print a 26h ETA as "done by 02:12 PM" — reading as this afternoon
+  // when it means tomorrow afternoon. That hid a stalled ere_offmarket_palm on
+  // 2026-07-17: the figure was right, the missing date made it look nearly done.
+  // Only spend the extra words when the ETA is not today.
+  const etaLabel = !etaTime ? null
+    : etaTime.toDateString() === new Date(now).toDateString()
+      ? etaTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : etaTime.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
   return (
     <div style={{ marginTop: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, color: "var(--blue)", marginBottom: 6 }}>
         <span>{leftLabel}{stillScheduled > 0 ? ` · ${stillScheduled.toLocaleString()} still scheduled` : ""}</span>
-        {etaTime && <span>{slow ? "slow · " : ""}done by {etaTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+        {etaLabel && <span>{slow ? "slow · " : ""}done by {etaLabel}</span>}
       </div>
       <div className="prog-bar" style={{ width: "100%", background: "var(--blue-tint)" }}>
         <div className="prog-fill" style={{ width: `${pct}%`, background: "var(--blue)", transition: "width .6s linear" }} />

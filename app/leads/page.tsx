@@ -1,7 +1,10 @@
 "use client";
-import { useEffect, useState } from "react";
-import { Icon, IC, PageHead } from "@/lib/ui";
+import { useEffect, useMemo, useState } from "react";
+import { Icon, IC, PageHead, Skeleton, Avatar } from "@/lib/ui";
+import { Pager } from "@/lib/Pager";
 import { formatPhone } from "@/lib/format";
+
+const PAGE_SIZE = 50;
 
 // A lead as returned by /api/conversations?view=by-status.
 type Lead = {
@@ -17,14 +20,15 @@ type Lead = {
   source: string | null;
 };
 
-// Stage sections in the order the board reads. "null" = not contacted yet.
-const SECTIONS: { key: string; label: string; color: string }[] = [
-  { key: "null", label: "Not Contacted Yet", color: "var(--ink-3)" },
-  { key: "contacted", label: "Contacted", color: "var(--blue)" },
-  { key: "viewing", label: "Viewing", color: "var(--amber-dot)" },
-  { key: "won", label: "Won", color: "var(--green-dot)" },
-  { key: "lost", label: "Lost", color: "var(--red)" },
+// The pipeline, in the order a lead travels it. "" = no stage set yet.
+const STAGES: { key: string; label: string; short: string; color: string }[] = [
+  { key: "", label: "Not contacted yet", short: "Not contacted", color: "var(--ink-3)" },
+  { key: "contacted", label: "Contacted", short: "Contacted", color: "var(--blue)" },
+  { key: "viewing", label: "Viewing", short: "Viewing", color: "var(--amber-dot)" },
+  { key: "won", label: "Won", short: "Won", color: "var(--green-dot)" },
+  { key: "lost", label: "Lost", short: "Lost", color: "var(--red)" },
 ];
+const stageMeta = (k: string | null) => STAGES.find((s) => s.key === (k || "")) || STAGES[0];
 
 const dash = "—";
 
@@ -40,20 +44,17 @@ function relTime(iso: string | null): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.round(h / 24);
   if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleString([], { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" });
 }
-
-const ellipsis: React.CSSProperties = { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 };
 
 export default function Leads() {
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // Sections start collapsed except the active-work stages. "Not Contacted Yet"
-  // is the big backlog, so it stays closed by default to keep the page short.
-  const [open, setOpen] = useState<Record<string, boolean>>({
-    null: false, contacted: true, viewing: true, won: true, lost: false,
-  });
-  const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
+  const [filter, setFilter] = useState<string>("all");
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  useEffect(() => { setPage(1); }, [filter, q]); // new filter/search -> back to page 1
 
   const load = () => {
     setLeads(null); setErr(null);
@@ -64,99 +65,176 @@ export default function Leads() {
   };
   useEffect(load, []);
 
-  // Bucket leads by stage. A null/unknown stage falls into "Not Contacted Yet".
-  const byStage: Record<string, Lead[]> = { null: [], contacted: [], viewing: [], won: [], lost: [] };
-  for (const l of leads || []) {
-    const key = l.lead_stage && byStage[l.lead_stage] ? l.lead_stage : "null";
-    byStage[key].push(l);
+  // Move a lead's stage. Optimistic: the row updates immediately, and we roll it
+  // back if the write fails, so a dropped request can't leave the board lying.
+  async function setStage(lead: Lead, next: string) {
+    const prev = lead.lead_stage;
+    const now = new Date().toISOString();
+    setBusy(lead.id);
+    setLeads((ls) => (ls || []).map((l) => (l.id === lead.id ? { ...l, lead_stage: next || null, stage_updated_at: now } : l)));
+    const ok = await fetch("/api/conversations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: lead.id, patch: { lead_stage: next } }),
+    }).then((r) => r.ok).catch(() => false);
+    if (!ok) {
+      setLeads((ls) => (ls || []).map((l) => (l.id === lead.id ? { ...l, lead_stage: prev, stage_updated_at: lead.stage_updated_at } : l)));
+      setErr("Could not move that lead. Nothing was saved.");
+    }
+    setBusy(null);
   }
-  const total = (leads || []).length;
+
+  const all = useMemo(() => leads || [], [leads]);
+
+  // Counts per stage drive both the funnel strip and the filter tabs.
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: all.length };
+    for (const s of STAGES) c[s.key || "none"] = 0;
+    for (const l of all) c[(l.lead_stage || "none")] = (c[(l.lead_stage || "none")] || 0) + 1;
+    return c;
+  }, [all]);
+
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return all.filter((l) => {
+      if (filter !== "all" && (l.lead_stage || "") !== filter) return false;
+      if (!needle) return true;
+      return [l.name, l.wa_phone, l.lead_ref, l.agent_name, l.source]
+        .some((v) => (v || "").toLowerCase().includes(needle));
+    });
+  }, [all, filter, q]);
+
+  const totalPages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = shown.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   return (
     <div className="page"><div className="maxw">
-      <PageHead title="Lead Status" sub="Every lead by stage — from first touch to won or lost. Agents move stages by replying to alerts.">
+      <PageHead title="Lead Status" sub="Every lead by stage — from first touch to won or lost. Move a lead with the stage dropdown on its row.">
         <button className="btn btn-sec" onClick={load}><Icon d={IC.refresh} s={15} />Refresh</button>
       </PageHead>
 
       {err && <div className="err-box" style={{ marginBottom: 14 }}>{err}</div>}
 
-      {leads === null && !err && (
-        <div className="card"><div className="perf"><div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>Loading leads…</div></div></div></div>
-      )}
+      {leads && all.length > 0 && <Funnel counts={counts} total={all.length} />}
 
-      {leads && total === 0 && !err && (
-        <div className="card"><div className="perf"><div className="perf-row"><div className="perf-name" style={{ color: "var(--ink-3)" }}>No leads yet.</div></div></div></div>
-      )}
-
-      {leads && total > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          {SECTIONS.map((s) => {
-            const rows = byStage[s.key];
-            const isOpen = open[s.key] && rows.length > 0;
-            return (
-              <div className="card" key={s.key}>
-                <div
-                  className="card-head"
-                  onClick={() => rows.length > 0 && toggle(s.key)}
-                  style={{ cursor: rows.length > 0 ? "pointer" : "default", userSelect: "none" }}
-                >
-                  <div className="card-t" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 9, background: s.color, display: "inline-block" }} />
-                    {s.label}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div className="card-meta">{rows.length} {rows.length === 1 ? "lead" : "leads"}</div>
-                    {rows.length > 0 && (
-                      <span style={{ display: "inline-flex", color: "var(--ink-3)", transform: isOpen ? "none" : "rotate(-90deg)", transition: "transform .15s" }}>
-                        <Icon d={IC.chevron} s={16} w={2} />
-                      </span>
-                    )}
-                  </div>
-                </div>
-                {isOpen && (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 270px), 1fr))", gap: 12 }}>
-                    {rows.map((l) => (
-                      <LeadCard key={l.id} lead={l} color={s.color} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+      <div className="bar">
+        <div className="tabs">
+          <button className={`tab ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>
+            All<span className="cnt">{counts.all ?? 0}</span>
+          </button>
+          {STAGES.map((s) => (
+            <button key={s.key || "none"} className={`tab ${filter === s.key ? "active" : ""}`} onClick={() => setFilter(s.key)}>
+              {s.short}<span className="cnt">{counts[s.key || "none"] ?? 0}</span>
+            </button>
+          ))}
         </div>
-      )}
+        <div className="bar-right">
+          <div className="list-search">
+            <Icon d={IC.search} s={15} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, phone, ref, agent" aria-label="Search leads" />
+            {q && (
+              <button onClick={() => setQ("")} aria-label="Clear search" style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", flex: "none" }}>
+                <Icon d={IC.x} s={14} />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        {leads === null && !err ? <Skeleton rows={8} /> : shown.length > 0 ? (
+          <table className="ttable">
+            <thead>
+              <tr><th>Lead</th><th>Stage</th><th>Agent</th><th>Source</th><th>Updated</th></tr>
+            </thead>
+            <tbody>
+              {pageRows.map((l) => {
+                const m = stageMeta(l.lead_stage);
+                const named = l.name && l.name !== "+" + l.wa_phone;
+                const name = named ? (l.name as string) : `+${formatPhone(l.wa_phone)}`;
+                const when = l.stage_updated_at || l.assigned_at;
+                return (
+                  <tr key={l.id} className="norow">
+                    <td>
+                      <div className="cell-name">
+                        <Avatar name={name} size={30} />
+                        <div className="nm">
+                          <div className="t" style={{ fontFamily: "var(--sans)", display: "flex", alignItems: "center", gap: 7 }}>
+                            {name}
+                            {l.lead_ref && <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-2)", background: "var(--chip)", borderRadius: 5, padding: "1px 5px" }}>{l.lead_ref.toUpperCase()}</span>}
+                          </div>
+                          {named && <div className="p">+{formatPhone(l.wa_phone)}</div>}
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 8, background: m.color, flex: "none" }} />
+                        <select
+                          className="input"
+                          value={l.lead_stage || ""}
+                          disabled={busy === l.id}
+                          onChange={(e) => setStage(l, e.target.value)}
+                          aria-label={`Stage for ${name}`}
+                          style={{ height: 32, width: "auto", minWidth: 140, fontSize: 13 }}
+                        >
+                          {STAGES.map((s) => <option key={s.key || "none"} value={s.key}>{s.label}</option>)}
+                        </select>
+                      </div>
+                    </td>
+                    <td className={l.agent_name ? "tcol-type" : "tcol-muted"}>{l.agent_name || "Unassigned"}</td>
+                    <td className="tcol-muted">{l.source || dash}</td>
+                    <td className="tcol-muted" title={when || ""}>{relTime(when)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <div className="empty">
+            <div className="ei"><Icon d={IC.users} s={22} /></div>
+            <h4>{all.length === 0 ? "No leads yet" : "Nothing matches"}</h4>
+            <div>{all.length === 0 ? "Leads appear here once someone replies, gets classified, or comes in from a Meta form." : "Try a different stage or search."}</div>
+          </div>
+        )}
+      </div>
+
+      {leads !== null && <Pager page={safePage} totalPages={totalPages} total={shown.length} onPage={setPage} unit="leads" />}
     </div></div>
   );
 }
 
-function LeadCard({ lead, color }: { lead: Lead; color: string }) {
-  const name = lead.name && lead.name !== ("+" + lead.wa_phone) ? lead.name : `+${formatPhone(lead.wa_phone)}`;
-  // The most relevant timestamp for the stage: when it last moved, else assigned.
-  const when = lead.stage_updated_at || lead.assigned_at;
+// The funnel strip: one proportional bar across the pipeline plus a legend.
+// A stage with no leads keeps its legend entry (reading "0") but contributes no
+// bar segment, so an empty pipeline looks empty instead of looking broken.
+function Funnel({ counts, total }: { counts: Record<string, number>; total: number }) {
   return (
-    <div style={{
-      border: "1px solid var(--border)", borderLeft: `3px solid ${color}`, borderRadius: 10,
-      padding: "12px 14px", background: "var(--surface)", display: "flex", flexDirection: "column", gap: 8, minWidth: 0,
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <div style={{ ...ellipsis, fontWeight: 650, color: "var(--ink-1)", flex: 1 }} title={name}>{name}</div>
-        {lead.lead_ref && (
-          <span className="mono" style={{ fontSize: 11, color: "var(--ink-2)", background: "var(--chip)", borderRadius: 6, padding: "2px 6px", flex: "none" }}>{lead.lead_ref.toUpperCase()}</span>
-        )}
+    <div className="card">
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 12 }}>
+        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--ink)" }}>{total.toLocaleString()}</div>
+        <div style={{ fontSize: 13, color: "var(--ink-2)" }}>{total === 1 ? "lead" : "leads"} in the pipeline</div>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, color: "var(--ink-2)" }}>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
-          <Icon d={IC.phone} s={13} /><span style={{ ...ellipsis, color: "var(--ink-1)" }}>+{formatPhone(lead.wa_phone)}</span>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
-          <span style={{ color: "var(--ink-3)", flex: "none" }}>Agent</span><span style={{ ...ellipsis, color: "var(--ink-1)" }}>{lead.agent_name || "Unassigned"}</span>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
-          <span style={{ color: "var(--ink-3)", flex: "none" }}>Source</span><span style={{ ...ellipsis, color: "var(--ink-1)" }}>{lead.source || dash}</span>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
-          <span style={{ color: "var(--ink-3)", flex: "none" }}>Updated</span><span style={{ ...ellipsis, color: "var(--ink-1)" }}>{relTime(when)}</span>
-        </div>
+      <div style={{ display: "flex", height: 10, borderRadius: 6, overflow: "hidden", background: "var(--chip)", gap: 2 }}>
+        {STAGES.map((s) => {
+          const n = counts[s.key || "none"] || 0;
+          if (!n) return null;
+          return <div key={s.key || "none"} title={`${s.label}: ${n}`} style={{ flex: n, background: s.color, minWidth: 3 }} />;
+        })}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 20px", marginTop: 12 }}>
+        {STAGES.map((s) => {
+          const n = counts[s.key || "none"] || 0;
+          const pct = total ? Math.round((n / total) * 100) : 0;
+          return (
+            <div key={s.key || "none"} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, opacity: n ? 1 : 0.55 }}>
+              <span style={{ width: 8, height: 8, borderRadius: 8, background: s.color, flex: "none" }} />
+              <span style={{ color: "var(--ink-2)" }}>{s.label}</span>
+              <span className="mono" style={{ color: "var(--ink)", fontWeight: 600 }}>{n}</span>
+              <span style={{ color: "var(--ink-3)" }}>{pct}%</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

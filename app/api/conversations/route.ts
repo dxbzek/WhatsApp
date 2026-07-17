@@ -5,6 +5,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+// lead_routes.ref of the pipeline the Lead Status board hides — agent hiring,
+// not property. Conversations carry the route in `source_ref`.
+const HIDDEN_ROUTE = "Recruitment";
+
 // Read/update WhatsApp conversations through the service role, behind the app
 // login gate (middleware). The browser must NOT touch this table with the public
 // anon key (RLS denies anon), so the inbox/dashboard/suppressed/sidebar call this
@@ -73,14 +77,26 @@ export async function GET(req: NextRequest) {
       // assigned an agent, have a pipeline stage, or came in via a Meta lead form.
       // Without this filter the board floods with ~7.5k "Not Contacted Yet" rows.
       const { data, error } = await db.from("conversations")
-        .select("id, wa_phone, name, lead_ref, lead_status, lead_stage, stage_updated_at, assigned_agent_id, assigned_at, source, source_campaign_id, created_at")
+        .select("id, wa_phone, name, lead_ref, lead_status, lead_stage, stage_updated_at, assigned_agent_id, assigned_at, source, source_ref, source_campaign_id, created_at")
         .eq("is_internal", false)
         .not("status", "in", "(blocked,invalid)")
         .or("replied.eq.true,lead_status.eq.hot,lead_status.eq.warm,assigned_agent_id.not.is.null,lead_stage.not.is.null,source.eq.meta_lead_form")
         .order("stage_updated_at", { ascending: false, nullsFirst: false })
         .limit(2000);
       if (error) throw new Error(error.message);
-      const rows = data || [];
+
+      // Recruitment applicants are not property leads: the `Recruitment` entry in
+      // lead_routes ("Agent recruitment") feeds agent hiring, which this board
+      // doesn't track. Filter on the ROUTE (source_ref), never on the agent — of
+      // the 115 recruitment leads only 44 are assigned (Fadilah), so an agent
+      // filter would strand the other 71 here. The route also holds if recruitment
+      // changes hands, and keeps Fadilah's property leads (if any) on the board.
+      // Done in JS, not in the query, because excluding it there needs a second
+      // .or() (to stay NULL-safe — most rows have no source_ref) and two or=
+      // params on one PostgREST request is a semantic I could not verify against
+      // this DB. The board is ~200 rows against the 2000 limit, so filtering after
+      // the fetch is equivalent and obviously correct.
+      const rows = (data || []).filter((r: any) => r.source_ref !== HIDDEN_ROUTE);
 
       // Resolve agent names for the assigned_agent_id set.
       const agentIds = Array.from(new Set(rows.map((r: any) => r.assigned_agent_id).filter(Boolean)));

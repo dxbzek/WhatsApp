@@ -197,7 +197,9 @@ export default function Leads() {
         <div className="bar-right">
           <div className="list-search">
             <Icon d={IC.search} s={15} />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, phone, ref, agent" aria-label="Search leads" />
+            {/* Keep the placeholder short enough for the 230px .list-search box —
+                the full field list lives in the aria-label, not the visible text. */}
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search leads" aria-label="Search leads by name, phone, ref, agent or source" />
             {q && (
               <button onClick={() => setQ("")} aria-label="Clear search" style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", flex: "none" }}>
                 <Icon d={IC.x} s={14} />
@@ -216,8 +218,12 @@ export default function Leads() {
             <tbody>
               {pageRows.map((l) => {
                 const m = stageMeta(l.lead_stage);
-                const named = l.name && l.name !== "+" + l.wa_phone;
-                const name = named ? (l.name as string) : `+${formatPhone(l.wa_phone)}`;
+                // formatPhone already returns the leading "+", so never prefix one.
+                const phone = formatPhone(l.wa_phone);
+                // A name that is really just the phone number back again (with or
+                // without a +) isn't a name — fall back to the formatted number.
+                const named = !!l.name && l.name.replace(/[^0-9]/g, "") !== l.wa_phone.replace(/[^0-9]/g, "");
+                const name = named ? (l.name as string) : phone;
                 const when = l.stage_updated_at || l.assigned_at;
                 return (
                   <tr key={l.id} className="norow">
@@ -225,11 +231,14 @@ export default function Leads() {
                       <div className="cell-name">
                         <Avatar name={name} size={30} />
                         <div className="nm">
-                          <div className="t" style={{ fontFamily: "var(--sans)", display: "flex", alignItems: "center", gap: 7 }}>
-                            {name}
-                            {l.lead_ref && <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-2)", background: "var(--chip)", borderRadius: 5, padding: "1px 5px" }}>{l.lead_ref.toUpperCase()}</span>}
+                          {/* The ref chip sits OUTSIDE .t: .t is an ellipsis/nowrap box
+                              capped at 280px, so a chip inside it gets clipped by a long
+                              name. As a flex:none sibling it always survives. */}
+                          <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                            <div className="t" style={{ fontFamily: "var(--sans)" }} title={name}>{name}</div>
+                            {l.lead_ref && <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-2)", background: "var(--chip)", borderRadius: 5, padding: "1px 5px", flex: "none" }}>{l.lead_ref.toUpperCase()}</span>}
                           </div>
-                          {named && <div className="p">+{formatPhone(l.wa_phone)}</div>}
+                          {named && <div className="p">{phone}</div>}
                         </div>
                       </div>
                     </td>

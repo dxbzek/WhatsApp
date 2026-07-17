@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { Icon, IC, PageHead, Skeleton, Avatar } from "@/lib/ui";
+import { Icon, IC, PageHead, Skeleton, Avatar, Toast } from "@/lib/ui";
 import { Pager } from "@/lib/Pager";
 import { formatPhone } from "@/lib/format";
 
@@ -16,9 +16,15 @@ type Lead = {
   lead_stage: string | null;
   stage_updated_at: string | null;
   assigned_at: string | null;
+  assigned_agent_id: string | null;
   agent_name: string | null;
   source: string | null;
 };
+
+type Agent = { id: string; name: string };
+
+// A toast that may carry an Undo. `undo` runs the reverse write.
+type Note = { kind: "good" | "bad" | "ink"; text: string; undo?: () => void };
 
 // The pipeline, in the order a lead travels it. "" = no stage set yet.
 const STAGES: { key: string; label: string; short: string; color: string }[] = [
@@ -47,9 +53,18 @@ function relTime(iso: string | null): string {
   return new Date(iso).toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" });
 }
 
+const patchLead = (id: string, patch: Record<string, unknown>) =>
+  fetch("/api/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, patch }),
+  }).then((r) => r.ok).catch(() => false);
+
 export default function Leads() {
   const [leads, setLeads] = useState<Lead[] | null>(null);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<Note | null>(null);
   const [filter, setFilter] = useState<string>("all");
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -64,24 +79,74 @@ export default function Leads() {
       .catch(() => setErr("Could not load leads."));
   };
   useEffect(load, []);
+  useEffect(() => {
+    fetch("/api/agents").then((r) => r.json())
+      .then((d) => setAgents((d.agents || []).map((a: any) => ({ id: a.id, name: a.name }))))
+      .catch(() => {});
+  }, []);
 
-  // Move a lead's stage. Optimistic: the row updates immediately, and we roll it
-  // back if the write fails, so a dropped request can't leave the board lying.
-  async function setStage(lead: Lead, next: string) {
-    const prev = lead.lead_stage;
-    const now = new Date().toISOString();
-    setBusy(lead.id);
-    setLeads((ls) => (ls || []).map((l) => (l.id === lead.id ? { ...l, lead_stage: next || null, stage_updated_at: now } : l)));
-    const ok = await fetch("/api/conversations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: lead.id, patch: { lead_stage: next } }),
-    }).then((r) => r.ok).catch(() => false);
-    if (!ok) {
-      setLeads((ls) => (ls || []).map((l) => (l.id === lead.id ? { ...l, lead_stage: prev, stage_updated_at: lead.stage_updated_at } : l)));
-      setErr("Could not move that lead. Nothing was saved.");
-    }
+  const patchRow = (id: string, fn: (l: Lead) => Lead) =>
+    setLeads((ls) => (ls || []).map((l) => (l.id === id ? fn(l) : l)));
+
+  // Write one field for one lead, optimistically: the row updates immediately,
+  // and rolls back if the write fails, so a dropped request can't leave the
+  // board lying. On success we offer an Undo that writes the old value back.
+  async function commit(id: string, patch: Record<string, unknown>, apply: (l: Lead) => Lead, revert: (l: Lead) => Lead, done: Note) {
+    setBusy(id);
+    patchRow(id, apply);
+    const ok = await patchLead(id, patch);
     setBusy(null);
+    if (!ok) { patchRow(id, revert); setNote({ kind: "bad", text: "Could not save that. Nothing changed." }); return; }
+    setNote(done);
+  }
+
+  // The reverse write behind Undo. Deliberately offers no further undo, so a
+  // mis-tap can't ping-pong. Note the server re-stamps stage_updated_at /
+  // assigned_at to now on the way back, and a move into contacted/viewing/won
+  // stamps first_response_at once — undoing the stage does NOT clear that.
+  async function undoTo(id: string, patch: Record<string, unknown>, apply: (l: Lead) => Lead) {
+    setBusy(id);
+    patchRow(id, apply);
+    const ok = await patchLead(id, patch);
+    setBusy(null);
+    setNote(ok ? { kind: "ink", text: "Change undone." } : { kind: "bad", text: "Could not undo that." });
+  }
+
+  function moveStage(lead: Lead, next: string) {
+    const prev = lead.lead_stage || "";
+    if (next === prev) return;
+    const now = new Date().toISOString();
+    commit(
+      lead.id,
+      { lead_stage: next },
+      (l) => ({ ...l, lead_stage: next || null, stage_updated_at: now }),
+      (l) => ({ ...l, lead_stage: lead.lead_stage, stage_updated_at: lead.stage_updated_at }),
+      {
+        kind: "good",
+        text: `Moved to ${stageMeta(next).label}.`,
+        undo: () => undoTo(lead.id, { lead_stage: prev }, (l) => ({ ...l, lead_stage: prev || null, stage_updated_at: new Date().toISOString() })),
+      },
+    );
+  }
+
+  function assign(lead: Lead, agentId: string) {
+    const prev = lead.assigned_agent_id || "";
+    if (agentId === prev) return;
+    const now = new Date().toISOString();
+    const nameOf = (id: string) => agents.find((a) => a.id === id)?.name || null;
+    commit(
+      lead.id,
+      { assigned_agent_id: agentId },
+      (l) => ({ ...l, assigned_agent_id: agentId || null, agent_name: agentId ? nameOf(agentId) : null, assigned_at: agentId ? now : null }),
+      (l) => ({ ...l, assigned_agent_id: lead.assigned_agent_id, agent_name: lead.agent_name, assigned_at: lead.assigned_at }),
+      {
+        kind: "good",
+        text: agentId ? `Assigned to ${nameOf(agentId) || "agent"}.` : "Moved back to the pool.",
+        undo: () => undoTo(lead.id, { assigned_agent_id: prev }, (l) => ({
+          ...l, assigned_agent_id: prev || null, agent_name: prev ? nameOf(prev) : null, assigned_at: prev ? new Date().toISOString() : null,
+        })),
+      },
+    );
   }
 
   const all = useMemo(() => leads || [], [leads]);
@@ -110,7 +175,7 @@ export default function Leads() {
 
   return (
     <div className="page"><div className="maxw">
-      <PageHead title="Lead Status" sub="Every lead by stage — from first touch to won or lost. Move a lead with the stage dropdown on its row.">
+      <PageHead title="Lead Status" sub="Every lead by stage — from first touch to won or lost. Move a lead or hand it to an agent right from its row.">
         <button className="btn btn-sec" onClick={load}><Icon d={IC.refresh} s={15} />Refresh</button>
       </PageHead>
 
@@ -144,7 +209,7 @@ export default function Leads() {
 
       <div className="panel">
         {leads === null && !err ? <Skeleton rows={8} /> : shown.length > 0 ? (
-          <table className="ttable">
+          <table className="ttable" style={{ minWidth: 820 }}>
             <thead>
               <tr><th>Lead</th><th>Stage</th><th>Agent</th><th>Source</th><th>Updated</th></tr>
             </thead>
@@ -175,7 +240,7 @@ export default function Leads() {
                           className="input"
                           value={l.lead_stage || ""}
                           disabled={busy === l.id}
-                          onChange={(e) => setStage(l, e.target.value)}
+                          onChange={(e) => moveStage(l, e.target.value)}
                           aria-label={`Stage for ${name}`}
                           style={{ height: 32, width: "auto", minWidth: 140, fontSize: 13 }}
                         >
@@ -183,7 +248,24 @@ export default function Leads() {
                         </select>
                       </div>
                     </td>
-                    <td className={l.agent_name ? "tcol-type" : "tcol-muted"}>{l.agent_name || "Unassigned"}</td>
+                    <td>
+                      <select
+                        className="input"
+                        value={l.assigned_agent_id || ""}
+                        disabled={busy === l.id}
+                        onChange={(e) => assign(l, e.target.value)}
+                        aria-label={`Agent for ${name}`}
+                        style={{ height: 32, width: "auto", minWidth: 140, fontSize: 13, color: l.assigned_agent_id ? "var(--ink)" : "var(--ink-3)" }}
+                      >
+                        <option value="">Unassigned</option>
+                        {/* A lead can hold an agent who has since been deactivated; keep them
+                            listed so the row shows the truth instead of falling back to Unassigned. */}
+                        {l.assigned_agent_id && !agents.some((a) => a.id === l.assigned_agent_id) && (
+                          <option value={l.assigned_agent_id}>{l.agent_name || "Former agent"}</option>
+                        )}
+                        {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    </td>
                     <td className="tcol-muted">{l.source || dash}</td>
                     <td className="tcol-muted" title={when || ""}>{relTime(when)}</td>
                   </tr>
@@ -201,6 +283,22 @@ export default function Leads() {
       </div>
 
       {leads !== null && <Pager page={safePage} totalPages={totalPages} total={shown.length} onPage={setPage} unit="leads" />}
+
+      {note && (
+        <Toast kind={note.kind} ms={note.undo ? 7000 : 3200} onDone={() => setNote(null)}>
+          <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span>{note.text}</span>
+            {note.undo && (
+              <button
+                onClick={() => { const u = note.undo!; setNote(null); u(); }}
+                style={{ color: "#fff", textDecoration: "underline", fontWeight: 600, flex: "none" }}
+              >
+                Undo
+              </button>
+            )}
+          </span>
+        </Toast>
+      )}
     </div></div>
   );
 }

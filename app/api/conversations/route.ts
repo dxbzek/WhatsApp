@@ -107,6 +107,9 @@ export async function GET(req: NextRequest) {
         lead_stage: r.lead_stage,
         stage_updated_at: r.stage_updated_at,
         assigned_at: r.assigned_at,
+        // Both the id and the name: the id drives the Lead Status assign
+        // dropdown, the name is what the row displays.
+        assigned_agent_id: r.assigned_agent_id,
         agent_name: r.assigned_agent_id ? agentName.get(r.assigned_agent_id) || null : null,
         // Source label: the campaign name if attributed, else Meta/WhatsApp derived
         // from the source column, else null.

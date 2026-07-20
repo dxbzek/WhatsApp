@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { Icon, IC, Avatar, CHECK2, Skeleton, Toast } from "@/lib/ui";
-import { CONVOS, SEED_TEMPLATES, type Tpl } from "@/lib/fixtures";
+import { type Tpl } from "@/lib/fixtures";
 import { formatPhone } from "@/lib/format";
 
 type UIMsg = { id: string; from: "in" | "out"; t: string; at: string; status?: string | null; media?: string | null; contentSid?: string | null };
@@ -68,14 +68,6 @@ function Ticks({ status }: { status?: string | null }) {
   return <span style={{ color: "#8a9398" }} title={status || ""}>✓</span>;
 }
 
-function demoConvs(): UIConv[] {
-  return CONVOS.map((c) => ({
-    id: String(c.id), name: c.name, phone: c.phone, tag: c.tag, lead: c.tag === "Hot" ? "hot" : c.tag === "Warm" ? "warm" : "new",
-    unread: c.unread, time: c.time, community: c.community, live: false, loaded: true,
-    replied: c.messages.some((m) => m.from === "in"),
-    messages: c.messages.map((m, i) => ({ id: String(i), from: m.from, t: m.t, at: m.at })),
-  }));
-}
 
 export default function Inbox() {
   const [convos, setConvos] = useState<UIConv[]>([]);
@@ -86,7 +78,9 @@ export default function Inbox() {
   const [showThread, setShowThread] = useState(false);
   const [tplOpen, setTplOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [approved, setApproved] = useState<Tpl[]>(SEED_TEMPLATES.filter((t) => t.status === "approved"));
+  // Starts empty and fills from /api/templates — never seeded with sample
+  // templates, which would offer a send against a SID that doesn't exist.
+  const [approved, setApproved] = useState<Tpl[]>([]);
   const [senders, setSenders] = useState<string[]>([]);
   const [sender, setSender] = useState("");
   const [lanes, setLanes] = useState<{ utility: string; marketing: string }>({ utility: "", marketing: "" });
@@ -113,13 +107,13 @@ export default function Inbox() {
     return next;
   });
 
-  // Initial load: senders, approved templates, drafts, and conversations
-  // (live Supabase → fixtures fallback). Also seed search from ?q=.
+  // Initial load: senders, approved templates, drafts, and conversations —
+  // all live only, no fallbacks. Also seed search from ?q=.
   useEffect(() => {
     try { setDrafts(JSON.parse(localStorage.getItem("om_drafts") || "{}")); } catch { /* ignore */ }
     try { const p = new URLSearchParams(window.location.search).get("q"); if (p) setQ(p); } catch { /* ignore */ }
     fetch("/api/senders").then((r) => r.json()).then((d) => { setSenders(d.senders || []); if (d.senders?.length) setSender(d.senders[0]); setLanes({ utility: d.utility || "", marketing: d.marketing || "" }); }).catch(() => {});
-    fetch("/api/templates").then((r) => r.json()).then((d) => { const a = (d.templates || []).filter((t: Tpl) => t.status === "approved"); if (a.length) setApproved(a); }).catch(() => {});
+    fetch("/api/templates").then((r) => r.json()).then((d) => { setApproved((d.templates || []).filter((t: Tpl) => t.status === "approved")); }).catch(() => {});
     fetch("/api/agents").then((r) => r.json()).then((d) => { const list = (d.agents || []).map((a: any) => ({ id: a.id, name: a.name })); setAgents(list); const m: Record<string, string> = {}; list.forEach((a: any) => { m[a.id] = a.name; }); setAgentNames(m); }).catch(() => {});
     loadConvs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -132,8 +126,10 @@ export default function Inbox() {
       // no longer reads the conversations table directly (RLS denies anon).
       const res = await fetch("/api/conversations?view=inbox");
       if (!res.ok) throw new Error("no live data");
+      // An empty result is a REAL answer (nothing in the inbox yet), not a
+      // failure — it must render the empty state. Treating it as "no live data"
+      // is what used to swap in sample conversations.
       const data: any[] = (await res.json()).conversations || [];
-      if (data.length === 0) throw new Error("no live data");
       const mapped: UIConv[] = data.map((c: any) => ({
         id: c.id, name: c.name || "+" + c.wa_phone, phone: formatPhone(c.wa_phone), waPhone: c.wa_phone,
         tag: tagOf(c.lead_status), lead: c.lead_status || "new", unread: c.unread ? 1 : 0, time: hhmm(c.last_at),
@@ -151,10 +147,10 @@ export default function Inbox() {
       });
       if (!activeId && data[0]) setActiveId(data[0].id);
     } catch {
-      const d = demoConvs();
+      // The fetch genuinely failed. Show nothing plus an honest error banner —
+      // never substitute sample conversations for the real inbox.
       setLive(false);
-      setConvos(d);
-      if (!activeId) setActiveId(d[0].id);
+      setConvos([]);
     } finally {
       setLoaded(true);
     }
@@ -349,7 +345,7 @@ export default function Inbox() {
           </div>
           {loaded && !live && (
             <div style={{ background: "var(--amber-bg)", color: "var(--amber-ink)", borderBottom: "1px solid var(--amber-border)", padding: "8px 16px", fontSize: 12, fontWeight: 600 }}>
-              Showing sample data — not connected to the live inbox. These replies aren&apos;t real.
+              Couldn&apos;t load the live inbox. Nothing is shown rather than sample data. Retrying automatically.
             </div>
           )}
           <div className="conv-list">

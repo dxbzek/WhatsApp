@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Icon, IC, Avatar, useModCombo, Toast } from "@/lib/ui";
-import { SENDERS, type Sender } from "@/lib/fixtures";
+import { type Sender } from "@/lib/fixtures";
 import { formatPhone } from "@/lib/format";
 
 const NAV = [
@@ -98,15 +98,18 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 /* ── Sidebar ── */
 function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path: string; open: boolean; mounted: boolean; isMobile: boolean; onClose: () => void; closeOnNav: () => void }) {
   const [acctOpen, setAcctOpen] = useState(false);
-  const [senders, setSenders] = useState<Sender[]>(SENDERS);
-  const [senderId, setSenderId] = useState<string>(SENDERS[0].id);
+  // Empty until /api/senders answers. Never seeded with sample numbers — the
+  // switcher must only ever show WhatsApp numbers we actually own.
+  const [senders, setSenders] = useState<Sender[]>([]);
+  const [senderId, setSenderId] = useState<string>("");
   const [mktNumber, setMktNumber] = useState(""); // the subaccount's number, for the badge
   const [utilNumber, setUtilNumber] = useState("");
   // Start at 0 so the badge stays hidden until the live unread count loads —
   // never show a seed number as if it were real.
   const [unread, setUnread] = useState<number>(0);
 
-  // Load real WhatsApp senders; fall back to the fixtures.
+  // Load the real WhatsApp senders. No fallback: if this fails the switcher
+  // shows a neutral placeholder, not an invented number.
   useEffect(() => {
     let live = true;
     fetch("/api/senders")
@@ -129,15 +132,9 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
           setSenders(real);
           const stored = localStorage.getItem("om_sender");
           setSenderId(real.find((s) => s.id === stored) ? stored! : real[0].id);
-        } else {
-          const stored = localStorage.getItem("om_sender");
-          if (stored && SENDERS.find((s) => s.id === stored)) setSenderId(stored);
         }
       })
-      .catch(() => {
-        const stored = localStorage.getItem("om_sender");
-        if (stored && SENDERS.find((s) => s.id === stored)) setSenderId(stored);
-      });
+      .catch(() => { /* leave the switcher on its placeholder */ });
     return () => { live = false; };
   }, []);
 
@@ -160,7 +157,10 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
     return () => { live = false; clearInterval(poll); };
   }, []);
 
-  const sender = senders.find((s) => s.id === senderId) || senders[0];
+  // Placeholder while /api/senders is in flight or unavailable. Deliberately
+  // shows no number rather than a plausible-looking fake one.
+  const PLACEHOLDER: Sender = { id: "", sub: "ERE Homes", label: "Loading…", number: "—" };
+  const sender = senders.find((s) => s.id === senderId) || senders[0] || PLACEHOLDER;
   const pick = (id: string) => { setSenderId(id); localStorage.setItem("om_sender", id); setAcctOpen(false); };
   // Both lanes are Twilio SUBACCOUNTS (utility AND marketing) under the parent
   // that holds the balance — badge any sender whose lane we know.

@@ -68,6 +68,8 @@ async function run(req: NextRequest) {
         adsetId: lead.adset_id,
         campaignId: lead.campaign_id,
         adsetName: lead.adset_name,
+        adName: lead.ad_name,
+        answers: lead.answers, // qualifying answers (rent vs sell, community, …)
       });
       if (res.status === "routed") routed++;
 

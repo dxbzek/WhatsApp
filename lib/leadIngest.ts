@@ -28,6 +28,8 @@ export async function ingestMetaLead(opts: {
   adsetId?: string;
   campaignId?: string;
   adsetName?: string;
+  adName?: string;       // exact ad name — more specific than the campaign
+  answers?: Record<string, string>; // the form's qualifying answers, label -> value
 }): Promise<IngestResult> {
   const e164 = normalizePhone(opts.phone || "");
   if (!e164) return { ok: false, error: "Missing or invalid phone" };
@@ -39,7 +41,17 @@ export async function ingestMetaLead(opts: {
 
   const db = supabaseAdmin();
   const leadName = name || "New contact";
-  const preview = `New lead from Meta ad${detail ? ` — ${detail}` : ""}`;
+  const headline = `New lead from Meta ad${detail ? ` — ${detail}` : ""}`;
+
+  // The qualifying answers are the useful part — what they want and where — so
+  // they lead the inbox row. The row is narrow and the source is already shown
+  // by the Meta tag, so "New lead from Meta ad — <campaign>" wasted every
+  // visible character. Falls back to the headline for forms that ask nothing
+  // beyond name/phone/email.
+  const answers = opts.answers || {};
+  const answerLine = Object.entries(answers).map(([k, v]) => `${k}: ${v}`);
+  const summary = Object.values(answers).filter(Boolean).join(" · ");
+  const preview = summary ? `New lead · ${summary}` : headline;
 
   // Upsert the conversation as a hot lead, tagged with its Meta source.
   const { data: conv, error: convErr } = await db
@@ -65,8 +77,16 @@ export async function ingestMetaLead(opts: {
     .single();
   if (convErr || !conv) return { ok: false, error: convErr?.message || "Upsert failed" };
 
-  // Log the lead in-thread so the agent sees the context (and email) on open.
-  const noteLines = [preview, email ? `Email: ${email}` : "", ref ? `Ref: ${ref}` : ""].filter(Boolean);
+  // Log the lead in-thread so the agent has the full picture on open: which ad
+  // produced it, how to reach them, and every answer they gave on the form.
+  const adName = (opts.adName || "").trim();
+  const noteLines = [
+    headline,
+    adName && adName !== detail ? `Ad: ${adName}` : "",
+    email ? `Email: ${email}` : "",
+    ref ? `Ref: ${ref}` : "",
+    ...answerLine,
+  ].filter(Boolean);
   await db.from("messages").insert({
     conversation: conv.id, direction: "in", body: noteLines.join("\n"), status: "received",
   });
@@ -120,6 +140,10 @@ export async function ingestMetaLead(opts: {
     adset_id: (opts.adsetId || "").trim() || null,
     campaign_id: (opts.campaignId || "").trim() || null,
     adset_name: (opts.adsetName || "").trim() || null,
+    ad_name: adName || null,
+    // Raw qualifying answers, kept for reporting (e.g. rent vs sell split by
+    // campaign) without re-querying Meta.
+    answers: answerLine.length ? answers : null,
     preview_url: previewUrl || null,
   });
 

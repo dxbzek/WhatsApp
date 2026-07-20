@@ -25,7 +25,25 @@ export type MetaLead = {
   adset_id: string;
   campaign_id: string;
   adset_name: string;    // raw ad-set name, for attribution
+  ad_name: string;       // exact ad name — more specific than the campaign
+  // Every OTHER answer on the form, label -> value, already humanised. These are
+  // the qualifying questions ("Do you want to rent it out or sell?", "Which
+  // building or community is it in?") that Meta returns and we used to discard,
+  // leaving the agent with just an email address. Name/phone/email are excluded
+  // because they already have dedicated columns.
+  answers: Record<string, string>;
 };
+
+// Form field keys and choice values come back machine-shaped ("rent_or_sell",
+// "rent_it_out"). Turn them into something an agent can read at a glance.
+function humanise(s: string): string {
+  const t = String(s || "").replace(/[_-]+/g, " ").trim();
+  if (!t) return "";
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+// Answers that already have their own field on the conversation.
+const CORE_FIELDS = new Set(["full_name", "first_name", "last_name", "phone_number", "phone", "email"]);
 
 // Turn a pipe-named ad asset ("ERE | Marina Residences 1 | Palm Jumeirah | 24 Jun
 // 2026") into a human listing label ("Marina Residences 1 · Palm Jumeirah") by
@@ -98,10 +116,17 @@ export async function fetchFormLeads(pageToken: string, formId: string, limit = 
     // Route on the campaign name; show the specific listing (ad set / ad) in the alert.
     const detail = l.campaign_name || l.adset_name || l.ad_name || "";
     const listing = cleanLabel(l.adset_name || l.ad_name || "");
+    // Keep every non-core answer, humanised, in the order the form asked them.
+    const answers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(fd)) {
+      if (CORE_FIELDS.has(k) || !v) continue;
+      answers[humanise(k)] = humanise(v);
+    }
     return {
       id: String(l.id), created_time: l.created_time, name, phone, email, detail, listing,
       ad_id: String(l.ad_id || ""), adset_id: String(l.adset_id || ""),
       campaign_id: String(l.campaign_id || ""), adset_name: String(l.adset_name || ""),
+      ad_name: String(l.ad_name || ""), answers,
     };
   });
 }

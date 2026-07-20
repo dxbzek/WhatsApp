@@ -101,7 +101,7 @@ export async function ingestMetaLead(opts: {
   const dist = await distributeMetaLead({
     conversationId: conv.id,
     contactPhone: e164, contactName: leadName, ref, detail,
-    listing: (opts.listing || "").trim(), email, previewUrl,
+    listing: (opts.listing || "").trim(), email, previewUrl, answers,
   });
   const alertStatus = dist.alertOk ? "sent" : dist.fallbackOk ? "fallback" : "none";
 

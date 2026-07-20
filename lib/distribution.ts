@@ -18,6 +18,30 @@ import { ensureLeadRef } from "@/lib/leadRef";
 // HXe1b69d2c15b5cf888655ce75bba4ec23 if we ever need to roll back via env.
 const AGENT_LEAD_ALERT_SID = (process.env.AGENT_LEAD_ALERT_SID || "HX806fe135dda04884c869931f8a1ca4bb").trim();
 
+// Outcome follow-up template (utility subaccount, quick-reply, 4 buttons:
+// Interested / No answer / Not interested / Broker). Sent 24h after an agent taps
+// "Contacted" on the main alert, to convert that holding state into a real outcome.
+// Vars: {{1}} agent name, {{2}} lead ID (lead_ref), {{3}} lead name, {{4}} number.
+// Env-overridable so a re-approved template can be swapped without a code deploy.
+const LEAD_OUTCOME_FOLLOWUP_SID = (process.env.LEAD_OUTCOME_FOLLOWUP_SID || "").trim();
+
+// Ask an agent for the outcome of a lead they already contacted. Returns the
+// Twilio SID: the caller MUST repoint lead_events.alert_sid at it, because button
+// taps correlate to a lead purely by the SID they were replied on — leave alert_sid
+// on the original alert and the tap would resolve, but only via the fallback
+// "agent's most recent lead" path, which is wrong whenever they hold several leads.
+export async function sendOutcomeFollowup(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string): Promise<string | null> {
+  if (!LEAD_OUTCOME_FOLLOWUP_SID) return null; // template not provisioned yet — no-op, never throw
+  try {
+    const r: any = await sendTemplate(toWa, LEAD_OUTCOME_FOLLOWUP_SID, {
+      "1": agentName, "2": leadRef || "—", "3": leadName, "4": contactPhone,
+    });
+    return r?.sid || null;
+  } catch {
+    return null;
+  }
+}
+
 // Dedicated recruitment alert (utility subaccount, text-only, NO status buttons).
 // Recruitment leads are candidates applying to JOIN ERE, not property enquiries, so
 // they get their own recruiter-facing template instead of the sales-pipeline alert.
@@ -55,7 +79,10 @@ type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: 
 // short clean link (a raw pre-filled wa.me link renders as a giant percent-encoded
 // URL — ugly). r.php params: p=digits, q=property/campaign, a=agent, n=lead name.
 // Returns "" when there is no usable number so callers can append it unconditionally.
-function replyLink(agentName: string, leadName: string, contactPhone: string, context?: string | null): string {
+// `adUrl` (the IG/FB permalink of the creative) is carried through to r.php so the
+// PRE-WRITTEN message the agent sends already contains the ad. Leads routinely forget
+// which listing they enquired about; naming it back to them removes a round trip.
+function replyLink(agentName: string, leadName: string, contactPhone: string, context?: string | null, adUrl?: string | null): string {
   const digits = (contactPhone || "").replace(/[^0-9]/g, "");
   if (digits.length < 8) return "";
   const qs = new URLSearchParams({ p: digits });
@@ -65,16 +92,18 @@ function replyLink(agentName: string, leadName: string, contactPhone: string, co
   if (nm) qs.set("n", nm.slice(0, 120));
   const ag = (agentName || "").trim();
   if (ag) qs.set("a", ag.slice(0, 120));
+  const ad = (adUrl || "").trim();
+  if (ad.startsWith("https://")) qs.set("ad", ad.slice(0, 120));
   return `https://erehomes.ae/r.php?${qs.toString()}`;
 }
 
-async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string, source: string, replyContext?: string | null): Promise<AlertOutcome> {
+async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string, source: string, replyContext?: string | null, adUrl?: string | null): Promise<AlertOutcome> {
   try {
     // Append the one-tap reply link ONLY when the caller opts in (passes a context,
     // even ""). Monitor/safety sends (tracker CC, fallback) omit it and stay clean.
     let src = source;
     if (replyContext !== undefined) {
-      const link = replyLink(agentName, leadName, contactPhone, replyContext);
+      const link = replyLink(agentName, leadName, contactPhone, replyContext, adUrl);
       if (link) src = `${source} · Reply: ${link}`;
     }
     const r: any = await sendTemplate(toWa, AGENT_LEAD_ALERT_SID, {
@@ -120,10 +149,10 @@ async function alertRecruiters(targets: Agent[], candidateName: string, contactP
 // Ping each target agent with the lead, personalised by name. Best-effort: a
 // per-agent failure never blocks the rest. Returns per-agent outcome (incl. the
 // Twilio SID) so the caller knows whether at least one alert reached an agent.
-async function alertAgents(targets: Agent[], leadRef: string, leadName: string, contactPhone: string, source: string, replyContext?: string | null): Promise<{ id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[]> {
+async function alertAgents(targets: Agent[], leadRef: string, leadName: string, contactPhone: string, source: string, replyContext?: string | null, adUrl?: string | null): Promise<{ id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[]> {
   const results: { id: string; name: string; wa: string; ok: boolean; sid: string | null; error: string | null }[] = [];
   for (const a of targets) {
-    const r = await sendAgentAlert(a.name, a.wa_number, leadRef, leadName, contactPhone, source, replyContext);
+    const r = await sendAgentAlert(a.name, a.wa_number, leadRef, leadName, contactPhone, source, replyContext, adUrl);
     results.push({ id: a.id, name: a.name, wa: a.wa_number, ...r });
   }
   return results;
@@ -334,10 +363,25 @@ export async function distributeMetaLead(opts: {
   listing?: string;      // specific property (ad set/ad) shown in the alert
   email?: string;        // lead's email, shown in the alert
   previewUrl?: string;   // stable public link to the exact ad creative (IG/FB permalink)
+  answers?: Record<string, string>; // the form's qualifying answers, label -> value
 }): Promise<MetaLeadResult> {
   const leadName = opts.contactName && opts.contactName !== opts.contactPhone ? opts.contactName : "New contact";
   const listing = (opts.listing || "").trim();
   const emailPart = opts.email && opts.email.trim() ? ` · ${opts.email.trim()}` : "";
+  // The qualifying answers ride inside the existing free-text {{4}} "Enquiry"
+  // variable, so the agent sees "Rent it out · Talia the Valley" in the alert
+  // without a new Meta-approved template. Values only: the labels are obvious
+  // in context and every character counts in a WhatsApp alert.
+  const answersPart = Object.values(opts.answers || {}).filter(Boolean).join(" · ");
+
+  // The pre-filled opener reads "about your enquiry on <q>", so q must be a
+  // PLACE and nothing else — "on Rent it out · Talia the Valley" reads broken.
+  // When the form asked which building/community the property is in, that beats
+  // the ad-set label ("Owner Listings"), which is an internal name the owner has
+  // never seen. Falls back to the ad set when no place-like answer exists.
+  const placeAnswer = Object.entries(opts.answers || {})
+    .find(([label]) => /building|community|area|location|project/i.test(label))?.[1]
+    ?.trim() || "";
   const context = [listing || opts.detail, opts.email].filter(Boolean).join(" · ");
   // Lead ID for {{2}} in the agent template + later button-tap correlation. Captured
   // up front (before any alert or fallback) so every send path can name the lead.
@@ -394,7 +438,10 @@ export async function distributeMetaLead(opts: {
     // Tappable "See the ad" link to the exact creative so the agent knows what the
     // lead responded to. Single line: WhatsApp template params can't carry newlines.
     const previewPart = (opts.previewUrl || "").trim() ? ` · See the ad: ${opts.previewUrl!.trim()}` : "";
-    const enquiry = [place, campaign].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" — ") + emailPart + previewPart;
+    // Answers go BEFORE the email/ad link: what they want is the part the agent
+    // acts on, and a long preview URL can push the tail out of the notification.
+    const answersSuffix = answersPart ? ` · ${answersPart}` : "";
+    const enquiry = [place, campaign].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" — ") + answersSuffix + emailPart + previewPart;
     // Recruitment leads are candidates joining ERE — route them to the recruiter via
     // the recruit template (no property "enquiry", no sales status buttons). Detect on
     // the matched route ref or the ad/campaign name, same test as leadIngest.
@@ -403,7 +450,11 @@ export async function distributeMetaLead(opts: {
     const results = isRecruit
       ? await alertRecruiters(targets, leadName, opts.contactPhone, recruitSource)
       // `place` = the specific property, named in the one-tap reply opener.
-      : await alertAgents(targets, leadRef, leadName, opts.contactPhone, enquiry, place);
+      // previewUrl rides along so the opener also carries the ad itself.
+      // A one-character answer ("t") is a mis-tap, not a community — it would
+      // produce "about your enquiry on t". Require something plausible.
+      : await alertAgents(targets, leadRef, leadName, opts.contactPhone, enquiry,
+          placeAnswer.length >= 3 ? placeAnswer : place, opts.previewUrl || null);
     const assigned = results.map((r) => r.name);
     const alertOk = results.some((r) => r.ok);
     const alertSid = results.find((r) => r.ok)?.sid ?? null;

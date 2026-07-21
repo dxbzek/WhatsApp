@@ -14,16 +14,25 @@ import { ensureLeadRef } from "@/lib/leadRef";
 // parent-account SIDs (ere_meta_lead_alert + the WA-campaign alert) are DEAD after
 // the utility repoint — never reintroduce them.
 // Env-overridable (AGENT_LEAD_ALERT_SID) so we can point at a new template without a
-// code deploy; the previous v2 (Contacted/Viewing/Won/Lost -> handleAgentReport) is
-// HXe1b69d2c15b5cf888655ce75bba4ec23 if we ever need to roll back via env.
-const AGENT_LEAD_ALERT_SID = (process.env.AGENT_LEAD_ALERT_SID || "HX806fe135dda04884c869931f8a1ca4bb").trim();
+// code deploy. Rollback ladder if v3 misbehaves, newest first:
+//   HX806fe135dda04884c869931f8a1ca4bb  ere_lead_status_alert    (4 buttons, no Contacted)
+//   HXe1b69d2c15b5cf888655ce75bba4ec23  ere_agent_lead_alert_v2  (-> handleAgentReport)
+// LIVE 21 Jul 2026: ere_lead_status_alert_v3, approved UTILITY, same body and same 5
+// vars as HX806f (cloned from it), plus a 5th "Contacted" button.
+const AGENT_LEAD_ALERT_SID = (process.env.AGENT_LEAD_ALERT_SID || "HX7409f1f2a6bb4c39d4177239af8c88e2").trim();
 
 // Outcome follow-up template (utility subaccount, quick-reply, 4 buttons:
 // Interested / No answer / Not interested / Broker). Sent 24h after an agent taps
 // "Contacted" on the main alert, to convert that holding state into a real outcome.
 // Vars: {{1}} agent name, {{2}} lead ID (lead_ref), {{3}} lead name, {{4}} number.
-// Env-overridable so a re-approved template can be swapped without a code deploy.
-const LEAD_OUTCOME_FOLLOWUP_SID = (process.env.LEAD_OUTCOME_FOLLOWUP_SID || "").trim();
+// LIVE 21 Jul 2026, approved UTILITY. Must go live together with the v3 alert above:
+// the Contacted button writes a HOLDING state, and this template is the only thing
+// that resolves it. Alert live + this unset would strand every contacted lead.
+// KNOWN WORDING GAP: the body says "contacted yesterday", which is right when the cron
+// fires on schedule (every 30 min, claims rows >24h old) but wrong whenever a send
+// slips — failed send, agent number down, quiet hours. A revised template carrying the
+// real contacted date is in review; swap it in here when it approves.
+const LEAD_OUTCOME_FOLLOWUP_SID = (process.env.LEAD_OUTCOME_FOLLOWUP_SID || "HXe86db093de2c30950ab529526c1da626").trim();
 
 // Ask an agent for the outcome of a lead they already contacted. Returns the
 // Twilio SID: the caller MUST repoint lead_events.alert_sid at it, because button

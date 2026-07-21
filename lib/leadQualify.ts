@@ -3,12 +3,22 @@ import { sendWhatsApp } from "@/lib/twilio";
 import { crmFlagBroker, crmTagEnquirer } from "@/lib/crmSync";
 
 // Template sent TO THE LEAD (not the agent) when an agent taps "No answer": the lead
-// enquired, we called, they missed it. ONE variable, {{1}} lead name.
+// enquired, we called, they missed it. TWO variables, {{1}} lead name and {{2}} lead ref
+// (ere_lead_no_answer_nudge_v2).
 //
-// Deliberately no "what they enquired about" variable. The only field we hold is
+// Still no "what they enquired about" variable. The only field we hold is
 // lead_events.detail, which is the INTERNAL campaign name ("ERE | Abdul Listings |
 // Sale, Rent & Commercial | Leads | 14 Jul 2026"). Interpolating that into a customer
-// message would leak our ad naming to the lead. A generic phrase is always correct.
+// message would leak our ad naming to the lead. The ref gives the message the specific
+// anchor it needs without exposing anything internal.
+//
+// v1 of this template (1 var, "when is a good time for a quick call?") was approved by
+// Meta as MARKETING despite being submitted UTILITY with allow_category_change:false —
+// the categoriser reads the body, and that wording reads as re-engagement. Do not
+// point this env at the v1 SID: MARKETING is suppressed by marketing opt-outs and
+// per-user frequency caps, and a missed-call callback has to reach the person who
+// asked us to call.
+//
 // Env-overridable; while unset the whole no-answer nudge silently no-ops.
 const NO_ANSWER_NUDGE_SID = (process.env.NO_ANSWER_NUDGE_SID || "").trim();
 
@@ -27,9 +37,13 @@ const NUDGE_DELAY_MIN = 30;
 // duplicate check ourselves: one nudge per lead per 7 days, no matter how many times an
 // agent taps No answer.
 async function queueNoAnswerNudge(db: ReturnType<typeof supabaseAdmin>, opts: {
-  conversationId: string | null; leadName: string;
+  conversationId: string | null; leadName: string; leadRef: string;
 }): Promise<void> {
-  if (!NO_ANSWER_NUDGE_SID || !opts.conversationId) return;
+  // {{2}} is the lead reference and carries the template's UTILITY category: it is what
+  // makes the message a callback on a specific request the lead made, rather than
+  // generic re-engagement. Without a ref there is nothing transactional to point at, so
+  // skip the nudge instead of sending a stripped version.
+  if (!NO_ANSWER_NUDGE_SID || !opts.conversationId || !opts.leadRef) return;
   try {
     const since = new Date(Date.now() - 7 * 86400_000).toISOString();
     const { data: recent } = await db
@@ -42,14 +56,16 @@ async function queueNoAnswerNudge(db: ReturnType<typeof supabaseAdmin>, opts: {
     if (recent && recent.length > 0) return; // already nudged this week
 
     const name = opts.leadName && opts.leadName !== "New contact" ? opts.leadName : "there";
+    const ref = opts.leadRef.toUpperCase();
     await db.from("messages").insert({
       conversation: opts.conversationId,
       direction: "out",
       status: "scheduled",
       scheduled_at: new Date(Date.now() + NUDGE_DELAY_MIN * 60_000).toISOString(),
       content_sid: NO_ANSWER_NUDGE_SID,
-      content_vars: { "1": name },
-      body: `Hi ${name}, this is ERE Homes. We just tried to reach you about your property enquiry. When is a good time for a quick call?`,
+      content_vars: { "1": name, "2": ref },
+      // Mirrors the approved v2 template body exactly — this is what the inbox shows.
+      body: `Hi ${name}, we tried to call you about the property enquiry you submitted (ref ${ref}) but could not reach you.\n\nReply here with a good time to call and your ERE Homes agent will get back to you.`,
       twilio_sid: null, // MUST be null or the dispatcher treats it as Twilio-scheduled and never sends
     });
   } catch { /* best-effort: a nudge failure must never break the agent's status tap */ }
@@ -160,7 +176,7 @@ export async function handleLeadQualification(from: string, body: string, origin
     convPatch.lead_status = "hot";
     convPatch.stale_alerted_at = null; // re-arm the 2h reminder so it nudges a retry
     // ...and message the LEAD directly, so a missed call isn't a dead end.
-    await queueNoAnswerNudge(db, { conversationId: le.conversation, leadName: name || "" });
+    await queueNoAnswerNudge(db, { conversationId: le.conversation, leadName: name || "", leadRef: String(le.ref || "") });
   } else if (qual === "not_interested") {
     convPatch.lead_status = "warm";
     await crmTagEnquirer(e164, name, le.detail).catch(() => {});

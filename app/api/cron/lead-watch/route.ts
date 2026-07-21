@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { pingAgent } from "@/lib/distribution";
+import { pingAgent, sendOutcomeFollowup } from "@/lib/distribution";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +12,50 @@ export const maxDuration = 60;
 // a nudge to self-report.
 const STALE_HOURS = 2;
 const CAP = 40; // most we nudge per run, so a backlog can't blow the 60s wall
+
+// Hours after an agent taps "Contacted" before we ask them for the outcome.
+// 24h: long enough that a callback or viewing has actually happened, short enough
+// that CPQL reporting isn't lagging days behind. This cron only runs inside Dubai
+// waking hours (pg_cron `*/30 5-16`), so the ask never lands at 3am.
+const FOLLOWUP_HOURS = 24;
+
+// Second pass: convert "Contacted" holding-state leads into a real outcome by
+// re-asking the owning agent with the 4 outcome buttons. Claims rows that are still
+// qualification='contacted' FOLLOWUP_HOURS after the tap and have never been
+// followed up. Best-effort per row — one bad lead must not abort the batch.
+async function runFollowups(db: ReturnType<typeof supabaseAdmin>): Promise<number> {
+  const due = new Date(Date.now() - FOLLOWUP_HOURS * 3600_000).toISOString();
+
+  const { data: rows } = await db
+    .from("lead_events")
+    .select("id, wa_phone, name, ref, assigned_agent")
+    .eq("qualification", "contacted")
+    .is("followup_sent_at", null)
+    .not("assigned_agent", "is", null)
+    .lt("contacted_at", due)
+    .order("contacted_at", { ascending: true })
+    .limit(CAP);
+  if (!rows || rows.length === 0) return 0;
+
+  const ids = Array.from(new Set(rows.map((r: any) => r.assigned_agent))) as string[];
+  const { data: agents } = await db.from("agents").select("id, name, wa_number").in("id", ids);
+  const byId = new Map((agents || []).map((a: any) => [a.id, a]));
+
+  let sent = 0;
+  for (const r of rows as any[]) {
+    const agent = byId.get(r.assigned_agent);
+    if (!agent?.wa_number) continue;
+    const e164 = "+" + String(r.wa_phone || "").replace("+", "");
+    const leadName = r.name && r.name !== e164 ? r.name : "New contact";
+    const sid = await sendOutcomeFollowup(agent.name, agent.wa_number, r.ref || "", leadName, e164);
+    if (!sid) continue; // send failed or template unprovisioned — leave it claimable next run
+    // Repoint alert_sid at the follow-up so the agent's tap on THIS message
+    // correlates back to THIS lead (see sendOutcomeFollowup).
+    await db.from("lead_events").update({ followup_sent_at: new Date().toISOString(), alert_sid: sid }).eq("id", r.id);
+    sent++;
+  }
+  return sent;
+}
 
 // Nudge agents sitting on un-actioned leads. Claims assigned-but-unmoved leads
 // older than STALE_HOURS that we haven't nudged yet, pings the owning agent's
@@ -26,6 +70,10 @@ async function run(req: NextRequest) {
   const db = supabaseAdmin();
   const cutoff = new Date(Date.now() - STALE_HOURS * 3600_000).toISOString();
 
+  // Outcome follow-ups run FIRST and unconditionally — they are independent of the
+  // stale sweep, which returns early when nothing is stale.
+  const followedUp = await runFollowups(db).catch(() => 0);
+
   const { data: stale, error } = await db
     .from("conversations")
     .select("id, name, wa_phone, assigned_agent_id, assigned_at, lead_ref")
@@ -39,7 +87,7 @@ async function run(req: NextRequest) {
     .order("assigned_at", { ascending: true })
     .limit(CAP);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  if (!stale || stale.length === 0) return NextResponse.json({ ok: true, nudged: 0 });
+  if (!stale || stale.length === 0) return NextResponse.json({ ok: true, nudged: 0, followedUp });
 
   // Resolve the owning agents' WhatsApp numbers in one read.
   const ids = Array.from(new Set(stale.map((c) => c.assigned_agent_id))) as string[];
@@ -59,7 +107,7 @@ async function run(req: NextRequest) {
     await db.from("conversations").update({ stale_alerted_at: new Date().toISOString() }).eq("id", c.id);
     if (ok) nudged++;
   }
-  return NextResponse.json({ ok: true, nudged, scanned: stale.length });
+  return NextResponse.json({ ok: true, nudged, scanned: stale.length, followedUp });
 }
 
 export async function GET(req: NextRequest) { return run(req); }

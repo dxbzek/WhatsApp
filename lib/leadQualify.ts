@@ -3,8 +3,12 @@ import { sendWhatsApp } from "@/lib/twilio";
 import { crmFlagBroker, crmTagEnquirer } from "@/lib/crmSync";
 
 // Template sent TO THE LEAD (not the agent) when an agent taps "No answer": the lead
-// enquired, we called, they missed it. TWO variables, {{1}} lead name and {{2}} lead ref
-// (ere_lead_no_answer_nudge_v2).
+// enquired, we called, they missed it. TWO variables, {{1}} lead name and {{2}} a
+// customer-facing ref derived from the lead_events uuid (ere_lead_no_answer_nudge_v2).
+//
+// {{2}} must NOT come from lead_events.ref — despite the name, that column holds the
+// internal campaign short name ("Abdul Listings"), not a per-lead reference. It is fine
+// in the AGENT alert and would be a leak in a customer message.
 //
 // Still no "what they enquired about" variable. The only field we hold is
 // lead_events.detail, which is the INTERNAL campaign name ("ERE | Abdul Listings |
@@ -176,7 +180,14 @@ export async function handleLeadQualification(from: string, body: string, origin
     convPatch.lead_status = "hot";
     convPatch.stale_alerted_at = null; // re-arm the 2h reminder so it nudges a retry
     // ...and message the LEAD directly, so a missed call isn't a dead end.
-    await queueNoAnswerNudge(db, { conversationId: le.conversation, leadName: name || "", leadRef: String(le.ref || "") });
+    // NOT le.ref — that column holds the internal campaign short name ("Abdul Listings",
+    // "Owner Listings"), which must never reach a customer. The customer-facing ref is
+    // derived from the lead_events uuid: opaque, stable, and quotable back to us.
+    await queueNoAnswerNudge(db, {
+      conversationId: le.conversation,
+      leadName: name || "",
+      leadRef: String(le.id || "").replace(/-/g, "").slice(0, 7),
+    });
   } else if (qual === "not_interested") {
     convPatch.lead_status = "warm";
     await crmTagEnquirer(e164, name, le.detail).catch(() => {});

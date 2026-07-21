@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp } from "@/lib/twilio";
 import { crmFlagBroker, crmTagEnquirer } from "@/lib/crmSync";
+import { reassignFromRoute, pingAgent } from "@/lib/distribution";
 
 // Template sent TO THE LEAD (not the agent) when an agent taps "No answer": the lead
 // enquired, we called, they missed it. TWO variables, {{1}} lead name and {{2}} a
@@ -113,6 +114,80 @@ const STATUS: Record<string, Qual> = {
 export function isLeadStatusTap(body: string): boolean {
   const key = body.trim().toLowerCase().replace(/[\s!.?,]+$/, "");
   return Object.prototype.hasOwnProperty.call(STATUS, key);
+}
+
+// The 3 buttons on ere_lead_escalation, tapped by a MANAGER (not the assigned agent).
+// Separate from the qualification buttons above because they act on ASSIGNMENT, not on
+// the lead's status: none of them says anything about how the customer responded.
+const ESCALATION_TAPS = new Set(["take this lead", "reassign", "already handled"]);
+
+export function isEscalationTap(body: string): boolean {
+  return ESCALATION_TAPS.has(body.trim().toLowerCase());
+}
+
+// Handle a manager's escalation tap. Correlates to the lead the same way every other
+// button does — by the SID the button was replied on, which runEscalations repointed at
+// the escalation message precisely so this lookup lands on the right lead.
+//
+// Returns true if this was an escalation tap (so the webhook skips other handlers).
+export async function handleEscalationTap(from: string, body: string, originalSid: string | null): Promise<boolean> {
+  if (!isEscalationTap(body)) return false;
+  const action = body.trim().toLowerCase();
+  const db = supabaseAdmin();
+  const managerWa = "+" + String(from).replace(/^whatsapp:/, "").replace("+", "");
+  const reply = async (msg: string) => { try { await sendWhatsApp(from, msg); } catch { /* window is open, they just tapped */ } };
+
+  const { data: manager } = await db.from("agents").select("id, name").eq("wa_number", managerWa).maybeSingle();
+  if (!manager) { await reply("We could not match your number to an agent record, so that tap was not applied."); return true; }
+
+  // Only ever act on a lead THIS manager was escalated to. Without the escalated_at
+  // filter a stray tap could reassign an unrelated lead.
+  const { data: le } = await db
+    .from("lead_events")
+    .select("id, wa_phone, name, ref, assigned_agent, conversation")
+    .eq("alert_sid", originalSid || "")
+    .not("escalated_at", "is", null)
+    .maybeSingle();
+  if (!le) { await reply("We could not match that tap to an escalated lead. Open the lead in the console or reply here with the name."); return true; }
+
+  const e164 = "+" + String(le.wa_phone || "").replace("+", "");
+  const leadName = le.name && le.name !== e164 ? le.name : "this lead";
+  const bare = String(le.wa_phone || "").replace("+", "");
+
+  if (action === "already handled") {
+    // No reassignment: the manager is telling us the lead is dealt with offline. Clear
+    // the holding state so it stops being chased, but do NOT mark it qualified — we
+    // genuinely do not know the outcome, and guessing would corrupt CPQL.
+    await db.from("lead_events").update({ qualification: "resolved_offline", qualification_updated_at: new Date().toISOString() }).eq("id", le.id);
+    if (bare) { try { await db.from("conversations").update({ lead_stage: "contacted" }).eq("wa_phone", bare); } catch { /* best-effort */ } }
+    await reply(`Noted. ${leadName} is marked as handled and will stop being chased.`);
+    return true;
+  }
+
+  if (action === "take this lead") {
+    await db.from("lead_events").update({ assigned_agent: manager.name }).eq("id", le.id);
+    if (bare) { try { await db.from("conversations").update({ assigned_agent_id: manager.id, assigned_at: new Date().toISOString(), stale_alerted_at: null, escalated_at: null }).eq("wa_phone", bare); } catch { /* best-effort */ } }
+    await reply(`Done. ${leadName} is now assigned to you.`);
+    return true;
+  }
+
+  // Reassign: back into the route's round-robin, skipping whoever ignored it. Falls back
+  // to leaving the lead with the manager if the route has nobody else — an unroutable
+  // lead must stay with a human, not vanish.
+  const previous = (le as any).assigned_agent as string | null;
+  const { data: prevAgent } = previous
+    ? await db.from("agents").select("id").eq("name", previous).maybeSingle()
+    : { data: null as any };
+  const next = await reassignFromRoute(db, String(le.ref || ""), prevAgent?.id || "");
+  if (!next) { await reply(`No other agent is on the ${le.ref || "this"} route, so ${leadName} stays with you.`); return true; }
+
+  await db.from("lead_events").update({ assigned_agent: next.name }).eq("id", le.id);
+  if (bare) { try { await db.from("conversations").update({ assigned_agent_id: next.id, assigned_at: new Date().toISOString(), stale_alerted_at: null, escalated_at: null }).eq("wa_phone", bare); } catch { /* best-effort */ } }
+  // Alert the new owner exactly as if the lead had just landed, so they get the same
+  // buttons and the same one-tap opener rather than a bare "you have been assigned".
+  await pingAgent(next.name, next.wa_number, String(le.ref || ""), leadName, e164, `Reassigned by ${manager.name} — previously with ${previous || "an agent"}, not actioned.`);
+  await reply(`Done. ${leadName} is reassigned to ${next.name}.`);
+  return true;
 }
 
 const CONFIRM: Record<Qual, string> = {

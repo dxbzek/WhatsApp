@@ -4,7 +4,7 @@ import { sendWhatsApp } from "@/lib/twilio";
 import { verifyTwilioWebhook } from "@/lib/twilioSignature";
 import { distributeLead } from "@/lib/distribution";
 import { handleAgentReport } from "@/lib/agentReport";
-import { handleLeadQualification, isLeadStatusTap } from "@/lib/leadQualify";
+import { handleLeadQualification, isLeadStatusTap, handleEscalationTap, isEscalationTap } from "@/lib/leadQualify";
 
 const ok200 = () => new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
       // below, not customer buttons. "Not interested" collides with the leftover
       // customer auto-reply of the same name, so without this the agent got TWO
       // replies (the customer preview + the status confirm).
-      if (aconv && !isLeadStatusTap(body)) {
+      if (aconv && !isLeadStatusTap(body) && !isEscalationTap(body)) {
         try {
           const atext = body.trim().toLowerCase().replace(/[\s!.?,]+$/, "");
           const { data: arules } = await db.from("auto_replies").select("trigger,reply,enabled").eq("enabled", true);
@@ -100,9 +100,15 @@ export async function POST(req: NextRequest) {
       // Try the qualification workflow first (Interested / No answer / Not
       // interested / Broker status buttons); only fall through to the legacy
       // sales-pipeline handler when the tap was NOT a status button.
+      // Escalation taps (Take this lead / Reassign / Already handled) come from a
+      // MANAGER and act on assignment, not on lead status, so they are checked first
+      // and never fall through to the qualification or pipeline handlers.
       try {
-        const handledQual = await handleLeadQualification(from, body, originalSid);
-        if (!handledQual) await handleAgentReport(from, body, originalSid);
+        const handledEsc = await handleEscalationTap(from, body, originalSid);
+        if (!handledEsc) {
+          const handledQual = await handleLeadQualification(from, body, originalSid);
+          if (!handledQual) await handleAgentReport(from, body, originalSid);
+        }
       } catch { /* never fail the webhook */ }
       return ok200();
     }

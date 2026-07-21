@@ -34,6 +34,74 @@ const AGENT_LEAD_ALERT_SID = (process.env.AGENT_LEAD_ALERT_SID || "HX7409f1f2a6b
 // real contacted date is in review; swap it in here when it approves.
 const LEAD_OUTCOME_FOLLOWUP_SID = (process.env.LEAD_OUTCOME_FOLLOWUP_SID || "HXe86db093de2c30950ab529526c1da626").trim();
 
+// Manager escalation template (utility subaccount, quick-reply, 3 buttons: Take this
+// lead / Reassign / Already handled). Sent when the assigned agent has ignored both the
+// original alert and the stale nudge, or has left a Contacted lead without an outcome
+// through repeated asks.
+// Vars: {{1}} manager name, {{2}} agent who ignored it, {{3}} lead ID, {{4}} lead name,
+// {{5}} number + one-tap reply link.
+// Buttons rather than a console link on purpose: agents and managers have NO ERE console
+// access, so an escalation has to be fully actionable from inside WhatsApp.
+// Unset until the template clears Meta — sendEscalation no-ops rather than throwing.
+const LEAD_ESCALATION_SID = (process.env.LEAD_ESCALATION_SID || "").trim();
+
+// Hand a stuck lead to a manager. Returns the Twilio SID so the caller can repoint
+// lead_events.alert_sid at it — button taps correlate to a lead purely by the SID they
+// were replied on, so without this the manager's tap resolves against whatever lead the
+// MANAGER most recently touched, which is almost never the one being escalated.
+export async function sendEscalation(managerName: string, managerWa: string, agentName: string, leadRef: string, leadName: string, contactPhone: string): Promise<string | null> {
+  if (!LEAD_ESCALATION_SID) return null; // template not approved yet — no-op, never throw
+  try {
+    // Same one-tap opener the agent alert uses, so the manager can message the lead
+    // directly instead of copying a number out of the message.
+    const link = replyLink(managerName, leadName, contactPhone, "", null);
+    const numberLine = link ? `${contactPhone} · Reply: ${link}` : contactPhone;
+    const r: any = await sendTemplate(managerWa, LEAD_ESCALATION_SID, {
+      "1": managerName, "2": agentName, "3": leadRef || "—", "4": leadName, "5": numberLine,
+    });
+    return r?.sid || null;
+  } catch {
+    return null;
+  }
+}
+
+// Put a lead back into its route's round-robin, skipping the agent who ignored it.
+// Returns the newly assigned agent, or null if the route has nobody else — in which
+// case the caller must leave the lead with the manager rather than silently orphaning
+// it. Reuses the same atomic pointer RPC as normal routing so a reassignment can never
+// collide with a live lead being distributed at the same moment.
+export async function reassignFromRoute(
+  db: ReturnType<typeof supabaseAdmin>,
+  routeRef: string,
+  excludeAgentId: string,
+): Promise<{ id: string; name: string; wa_number: string } | null> {
+  const { data: route } = await db
+    .from("lead_routes")
+    .select("ref, agent_ids, distribution")
+    .eq("ref", routeRef)
+    .eq("active", true)
+    .maybeSingle();
+  const ids = ((route?.agent_ids as string[]) || []).filter((id) => id !== excludeAgentId);
+  if (ids.length === 0) return null;
+
+  const { data: agents } = await db
+    .from("agents")
+    .select("id, name, wa_number")
+    .in("id", ids)
+    .eq("active", true)
+    .not("wa_number", "is", null);
+  // Preserve the route's own agent order so round-robin stays stable across runs
+  // instead of following whatever order Postgres happened to return.
+  const ordered = ids
+    .map((id) => (agents || []).find((a: any) => a.id === id))
+    .filter(Boolean) as { id: string; name: string; wa_number: string }[];
+  if (ordered.length === 0) return null;
+
+  const pointer = await atomicRrPointer(db, "next_route_rr_pointer", { p_ref: routeRef });
+  const idx = (((pointer - 1) % ordered.length) + ordered.length) % ordered.length;
+  return ordered[idx];
+}
+
 // Ask an agent for the outcome of a lead they already contacted. Returns the
 // Twilio SID: the caller MUST repoint lead_events.alert_sid at it, because button
 // taps correlate to a lead purely by the SID they were replied on — leave alert_sid

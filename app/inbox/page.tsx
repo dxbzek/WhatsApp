@@ -222,6 +222,9 @@ export default function Inbox() {
     setActiveId(c.id);
     setShowThread(true);
     setMoreOpen(false);
+    // Tell the sidebar badge right away — it lives in the shell and otherwise
+    // only catches up on its next poll.
+    if (c.unread > 0) window.dispatchEvent(new CustomEvent("ere:unread-delta", { detail: -1 }));
     setConvos((p) => p.map((x) => (x.id === c.id ? { ...x, unread: 0 } : x)));
     if (c.live) {
       if (!c.loaded) await loadMsgs(c.id);
@@ -532,6 +535,7 @@ export default function Inbox() {
     }
   }
   async function markUnread(c: UIConv) {
+    if (!c.unread) window.dispatchEvent(new CustomEvent("ere:unread-delta", { detail: 1 }));
     setConvos((p) => p.map((x) => (x.id === c.id ? { ...x, unread: 1 } : x)));
     if (c.live) patchConvo(c.id, { unread: true });
   }

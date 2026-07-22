@@ -139,9 +139,12 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
   }, []);
 
   // Live unread badge, via the gated server route (service role) so the browser
-  // never reads the conversations table with the public anon key. Polls every
-  // 15s instead of Supabase realtime. Stays at 0 (hidden) when the backend isn't
-  // configured or returns nothing — no seed number.
+  // never reads the conversations table with the public anon key (RLS denies
+  // anon, so Supabase realtime isn't an option here). Polls every 5s, and the
+  // inbox dispatches "ere:unread-delta" the moment a thread is opened or marked
+  // unread so the badge moves instantly — the poll stays the source of truth.
+  // Stays at 0 (hidden) when the backend isn't configured or returns nothing —
+  // no seed number.
   useEffect(() => {
     let live = true;
     async function refresh() {
@@ -153,8 +156,13 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
       } catch { /* keep fallback */ }
     }
     refresh();
-    const poll = setInterval(refresh, 15000);
-    return () => { live = false; clearInterval(poll); };
+    const poll = setInterval(refresh, 5000);
+    const onDelta = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      if (typeof d === "number") setUnread((u) => Math.max(0, u + d));
+    };
+    window.addEventListener("ere:unread-delta", onDelta);
+    return () => { live = false; clearInterval(poll); window.removeEventListener("ere:unread-delta", onDelta); };
   }, []);
 
   // Placeholder while /api/senders is in flight or unavailable. Deliberately

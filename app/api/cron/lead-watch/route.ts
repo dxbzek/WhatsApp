@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { pingAgent, sendOutcomeFollowup, sendEscalation } from "@/lib/distribution";
+import { sendOpsAlertOnce, sendDailyDigestOnce } from "@/lib/opsAlert";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -84,7 +85,7 @@ async function runFollowups(db: ReturnType<typeof supabaseAdmin>): Promise<{ ask
     const leadName = r.name && r.name !== e164 ? r.name : "New contact";
 
     if ((r.followup_attempts || 0) < MAX_FOLLOWUP_ASKS) {
-      const sid = await sendOutcomeFollowup(agent.name, agent.wa_number, r.ref || "", leadName, e164);
+      const sid = await sendOutcomeFollowup(agent.name, agent.wa_number, r.ref || "", leadName, e164, r.contacted_at);
       if (!sid) continue; // send failed or template unprovisioned — leave it claimable next run
       // Repoint alert_sid at the follow-up so the agent's tap on THIS message
       // correlates back to THIS lead (see sendOutcomeFollowup).
@@ -152,6 +153,86 @@ async function runEscalations(db: ReturnType<typeof supabaseAdmin>): Promise<num
   return escalated;
 }
 
+// Broker taps in one day at/above this = a list/targeting problem, not noise. 4 broker
+// flags across ALL history as of 22 Jul 2026, so 3 in a single day is a real anomaly.
+const BROKER_SPIKE_24H = 3;
+
+// Fourth pass: surface the failures that used to be silent. alert_delivery/alert_error
+// are stamped by the Twilio status webhook but nothing read them, so an agent alert
+// that bounced left the lead sitting hot with nobody knowing. Same for a lead whose
+// routing found no route/agents. Each row alerts the ops owner exactly once (ops_log).
+async function runOpsWatch(db: ReturnType<typeof supabaseAdmin>): Promise<{ undelivered: number; unrouted: number; brokerSpike: boolean }> {
+  // 7-day lookback: old rows predate this watcher — alerting on a month-old lead
+  // nobody remembers would just be noise on day one.
+  const since7d = new Date(Date.now() - 7 * 86400_000).toISOString();
+  let undelivered = 0, unrouted = 0;
+
+  const { data: undel } = await db
+    .from("lead_events")
+    .select("id, ref, name, wa_phone, assigned_agent, alert_delivery, alert_error")
+    .in("alert_delivery", ["undelivered", "failed"])
+    .gte("created_at", since7d)
+    .limit(20);
+  for (const r of (undel || []) as any[]) {
+    const detail = `Alert to ${r.assigned_agent || "agent"} ${r.alert_delivery}${r.alert_error ? ` (${String(r.alert_error).slice(0, 60)})` : ""}. Re-ping or reassign.`;
+    const record = `Lead ${r.ref || r.id} — ${r.name || r.wa_phone}`;
+    if (await sendOpsAlertOnce(db, "Lead alert not delivered", String(r.id), detail, record)) undelivered++;
+  }
+
+  const { data: unr } = await db
+    .from("lead_events")
+    .select("id, ref, name, wa_phone, routing_status, detail")
+    .in("routing_status", ["no_route", "no_active_agents", "alert_failed", "error"])
+    .gte("created_at", since7d)
+    .limit(20);
+  for (const r of (unr || []) as any[]) {
+    const detail = `${r.routing_status}${r.detail ? ` — ${String(r.detail).slice(0, 60)}` : ""}. Assign manually in the console.`;
+    const record = `Lead ${r.ref || r.id} — ${r.name || r.wa_phone}`;
+    if (await sendOpsAlertOnce(db, "Lead not routed", String(r.id), detail, record)) unrouted++;
+  }
+
+  // Broker spike: keyed on the Dubai date, so at most one alert per day.
+  const since24 = new Date(Date.now() - 86400_000).toISOString();
+  const { count } = await db
+    .from("lead_events")
+    .select("id", { count: "exact", head: true })
+    .eq("qualification", "broker")
+    .gte("qualification_updated_at", since24);
+  let brokerSpike = false;
+  if ((count || 0) >= BROKER_SPIKE_24H) {
+    const dayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" });
+    brokerSpike = await sendOpsAlertOnce(db, "Broker spike", dayKey,
+      `${count} leads flagged Broker in 24h. Check which campaign/list is pulling brokers.`,
+      "lead_events, last 24h");
+  }
+  return { undelivered, unrouted, brokerSpike };
+}
+
+// Fifth pass: one summary per Dubai day, sent by whatever cron pass lands at/after
+// DIGEST_HOUR (the cron stops at 20:xx Dubai, so 18 gives it two hours of passes to
+// get through). ops_log keyed on the Dubai date makes it exactly once.
+const DIGEST_HOUR_DUBAI = 18;
+async function runDailyDigest(db: ReturnType<typeof supabaseAdmin>): Promise<boolean> {
+  const hour = Number(new Date().toLocaleString("en-GB", { hour: "2-digit", hour12: false, timeZone: "Asia/Dubai" }));
+  if (hour < DIGEST_HOUR_DUBAI) return false;
+  const dateKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" });
+  const since = new Date(Date.now() - 86400_000).toISOString();
+
+  const count = async (build: (q: any) => any): Promise<number> => {
+    const { count: n } = await build(db.from("lead_events").select("id", { count: "exact", head: true }));
+    return n || 0;
+  };
+  const newLeads = await count((q) => q.gte("created_at", since));
+  const qualified = await count((q) => q.eq("qualification", "qualified").gte("qualification_updated_at", since));
+  // Stock, not flow: everything CURRENTLY untouched/unresolved, however old — the
+  // digest's job is "what is still waiting", not "what arrived today".
+  const awaitingFirst = await count((q) => q.eq("qualification", "new"));
+  const awaitingOutcome = await count((q) => q.eq("qualification", "contacted"));
+
+  const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Dubai" });
+  return sendDailyDigestOnce(db, dateKey, { date, newLeads, qualified, awaitingFirst, awaitingOutcome });
+}
+
 // Nudge agents sitting on un-actioned leads. Claims assigned-but-unmoved leads
 // older than STALE_HOURS that we haven't nudged yet, pings the owning agent's
 // WhatsApp, and stamps stale_alerted_at so each lead is nudged once. Secured by
@@ -169,6 +250,8 @@ async function run(req: NextRequest) {
   // stale sweep, which returns early when nothing is stale.
   const followedUp = await runFollowups(db).catch(() => ({ asked: 0, escalated: 0 }));
   const escalated = await runEscalations(db).catch(() => 0);
+  const ops = await runOpsWatch(db).catch(() => ({ undelivered: 0, unrouted: 0, brokerSpike: false }));
+  const digest = await runDailyDigest(db).catch(() => false);
 
   const { data: stale, error } = await db
     .from("conversations")
@@ -183,7 +266,7 @@ async function run(req: NextRequest) {
     .order("assigned_at", { ascending: true })
     .limit(CAP);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  if (!stale || stale.length === 0) return NextResponse.json({ ok: true, nudged: 0, followedUp, escalated });
+  if (!stale || stale.length === 0) return NextResponse.json({ ok: true, nudged: 0, followedUp, escalated, ops, digest });
 
   // Resolve the owning agents' WhatsApp numbers in one read.
   const ids = Array.from(new Set(stale.map((c) => c.assigned_agent_id))) as string[];
@@ -203,7 +286,7 @@ async function run(req: NextRequest) {
     await db.from("conversations").update({ stale_alerted_at: new Date().toISOString() }).eq("id", c.id);
     if (ok) nudged++;
   }
-  return NextResponse.json({ ok: true, nudged, scanned: stale.length, followedUp, escalated });
+  return NextResponse.json({ ok: true, nudged, scanned: stale.length, followedUp, escalated, ops, digest });
 }
 
 export async function GET(req: NextRequest) { return run(req); }

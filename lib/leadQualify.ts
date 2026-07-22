@@ -24,8 +24,10 @@ import { reassignFromRoute, pingAgent } from "@/lib/distribution";
 // per-user frequency caps, and a missed-call callback has to reach the person who
 // asked us to call.
 //
-// Env-overridable; while unset the whole no-answer nudge silently no-ops.
-const NO_ANSWER_NUDGE_SID = (process.env.NO_ANSWER_NUDGE_SID || "").trim();
+// Env-overridable. Default = ere_lead_no_answer_nudge_v2, approved UTILITY 22 Jul 2026
+// (v1 HXa6e2cc… was re-categorised MARKETING by Meta — never point at it, marketing
+// caps/opt-outs would suppress a callback the lead asked for).
+const NO_ANSWER_NUDGE_SID = (process.env.NO_ANSWER_NUDGE_SID || "HX143d9f36027cf2d2d6087fe36e25477f").trim();
 
 // Minutes after the missed call before the lead gets the nudge. Short enough to stay
 // contextual ("we just tried you"), long enough that it doesn't collide with an agent

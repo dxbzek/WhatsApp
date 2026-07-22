@@ -24,15 +24,14 @@ const AGENT_LEAD_ALERT_SID = (process.env.AGENT_LEAD_ALERT_SID || "HX7409f1f2a6b
 // Outcome follow-up template (utility subaccount, quick-reply, 4 buttons:
 // Interested / No answer / Not interested / Broker). Sent 24h after an agent taps
 // "Contacted" on the main alert, to convert that holding state into a real outcome.
-// Vars: {{1}} agent name, {{2}} lead ID (lead_ref), {{3}} lead name, {{4}} number.
-// LIVE 21 Jul 2026, approved UTILITY. Must go live together with the v3 alert above:
-// the Contacted button writes a HOLDING state, and this template is the only thing
-// that resolves it. Alert live + this unset would strand every contacted lead.
-// KNOWN WORDING GAP: the body says "contacted yesterday", which is right when the cron
-// fires on schedule (every 30 min, claims rows >24h old) but wrong whenever a send
-// slips — failed send, agent number down, quiet hours. A revised template carrying the
-// real contacted date is in review; swap it in here when it approves.
-const LEAD_OUTCOME_FOLLOWUP_SID = (process.env.LEAD_OUTCOME_FOLLOWUP_SID || "HXe86db093de2c30950ab529526c1da626").trim();
+// Vars (v2 ORDER — the date was inserted at {{2}} and everything after shifts):
+// {{1}} agent name, {{2}} date contacted ("20 Jul"), {{3}} lead ID (lead_ref),
+// {{4}} lead name, {{5}} number.
+// Default = ere_lead_outcome_followup_v2, approved UTILITY 22 Jul 2026, which carries
+// the real contacted date instead of v1's hardcoded "yesterday" (wrong whenever a send
+// slipped past quiet hours or a failed send). v1 rollback = HXe86db093de2c30950ab529526c1da626
+// (4 vars — sendOutcomeFollowup must drop the date again if ever pointed back at it).
+const LEAD_OUTCOME_FOLLOWUP_SID = (process.env.LEAD_OUTCOME_FOLLOWUP_SID || "HX764024fd875ea6e768fa7d750aef7df4").trim();
 
 // Manager escalation template (utility subaccount, quick-reply, 3 buttons: Take this
 // lead / Reassign / Already handled). Sent when the assigned agent has ignored both the
@@ -107,11 +106,17 @@ export async function reassignFromRoute(
 // taps correlate to a lead purely by the SID they were replied on — leave alert_sid
 // on the original alert and the tap would resolve, but only via the fallback
 // "agent's most recent lead" path, which is wrong whenever they hold several leads.
-export async function sendOutcomeFollowup(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string): Promise<string | null> {
+export async function sendOutcomeFollowup(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string, contactedAt?: string | null): Promise<string | null> {
   if (!LEAD_OUTCOME_FOLLOWUP_SID) return null; // template not provisioned yet — no-op, never throw
   try {
+    // "20 Jul" in Dubai time — the template reads "the lead you contacted on {{2}}".
+    // No contacted_at on the row (shouldn't happen for a contacted lead) → "recently",
+    // which still reads as a sentence rather than a naked variable.
+    const dateStr = contactedAt
+      ? new Date(contactedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Dubai" })
+      : "recently";
     const r: any = await sendTemplate(toWa, LEAD_OUTCOME_FOLLOWUP_SID, {
-      "1": agentName, "2": leadRef || "—", "3": leadName, "4": contactPhone,
+      "1": agentName, "2": dateStr, "3": leadRef || "—", "4": leadName, "5": contactPhone,
     });
     return r?.sid || null;
   } catch {
@@ -123,7 +128,11 @@ export async function sendOutcomeFollowup(agentName: string, toWa: string, leadR
 // Recruitment leads are candidates applying to JOIN ERE, not property enquiries, so
 // they get their own recruiter-facing template instead of the sales-pipeline alert.
 // Vars: {{1}} recruiter name, {{2}} candidate name, {{3}} number, {{4}} source.
-const RECRUIT_LEAD_ALERT_SID = "HXd53adb11d39bab9a6a9f72df5f7a9c02";
+// Default = ere_recruit_lead_alert_v3, approved UTILITY 22 Jul 2026. The original
+// ere_recruit_lead_alert (HXd53adb11d39bab9a6a9f72df5f7a9c02) is MARKETING (Meta
+// re-categorised it over one salesy line), so recruiter alerts sent on it inherit
+// marketing frequency caps and opt-outs — never point back at it.
+const RECRUIT_LEAD_ALERT_SID = (process.env.RECRUIT_LEAD_ALERT_SID || "HXe1c7abe2b8ee3c41667ad76aa62d7ce0").trim();
 
 type AlertOutcome = { ok: boolean; sid: string | null; error: string | null };
 

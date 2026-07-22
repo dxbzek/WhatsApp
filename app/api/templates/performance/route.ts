@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { DEAD_NUMBER_CODES } from "@/lib/twilioErrors";
+import { isOptOutText } from "@/lib/optOut";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,18 +40,24 @@ export async function GET() {
       if (!data || data.length < 1000) break;
     }
 
-    // Inbound messages grouped by conversation (for reply detection).
+    // Inbound messages grouped by conversation (for reply detection). Opt-outs
+    // ("Stop promotions" etc, same vocabulary the inbound webhook suppresses on)
+    // are NOT engagement — counting them as replies flattered every template's
+    // reply rate, e.g. marina_valuation_a showed 5 replies of which 2 were Stops.
     const inbound: Record<string, number[]> = {};
     for (let from = 0; ; from += 1000) {
       const { data, error } = await db
         .from("messages")
-        .select("conversation, created_at")
+        .select("conversation, created_at, body")
         .eq("direction", "in")
         .gte("created_at", since)
         .order("created_at", { ascending: true })
         .range(from, from + 999);
       if (error) throw error;
-      for (const m of data as any[]) (inbound[m.conversation] ||= []).push(new Date(m.created_at).getTime());
+      for (const m of data as any[]) {
+        if (isOptOutText(m.body)) continue;
+        (inbound[m.conversation] ||= []).push(new Date(m.created_at).getTime());
+      }
       if (!data || data.length < 1000) break;
     }
 

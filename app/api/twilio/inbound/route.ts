@@ -5,6 +5,7 @@ import { verifyTwilioWebhook } from "@/lib/twilioSignature";
 import { distributeLead } from "@/lib/distribution";
 import { handleAgentReport } from "@/lib/agentReport";
 import { handleLeadQualification, isLeadStatusTap, handleEscalationTap, isEscalationTap } from "@/lib/leadQualify";
+import { OPT_OUT, STANDALONE_OPT_OUT, normalizeReply } from "@/lib/optOut";
 
 const ok200 = () => new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
@@ -138,8 +139,7 @@ export async function POST(req: NextRequest) {
     replied: true, last_inbound_at: new Date().toISOString(),
   }).eq("id", conv!.id);
 
-  // Strip trailing punctuation/whitespace so "Blocked!" / "Not interested." match.
-  const text = body.trim().toLowerCase().replace(/[\s!.?,]+$/, "");
+  const text = normalizeReply(body);
 
   // Button / keyword auto-reply rules (set per-button when creating a template).
   // Fetched once: used both to detect buying intent and to send the matched reply.
@@ -156,14 +156,13 @@ export async function POST(req: NextRequest) {
   // declines this offer. The never-resend guard already stops us re-sending the
   // same template, so a "Not Interested" contact stays reachable for other things.
   // EXACT match only, so "not interested in selling, but buying" is never caught.
-  const OPT_OUT = ["stop", "unsubscribe", "unsub", "cancel", "stop promotions", "opt out", "optout", "remove me", "remove", "blocked", "block", "block me", "do not contact", "dont contact", "leave me alone"];
+  // (List lives in lib/optOut.ts, shared with the template-performance stats.)
   const isOptOut = OPT_OUT.includes(text);
   // #9: a CLEAR opt-out — an exact opt-out phrase, or one used as the FIRST token
   // (e.g. "stop messaging me") — must always suppress and can NEVER be rescued by
   // the buying-intent heuristic below. WhatsApp/Meta treat ignoring a clear "stop"
   // as a serious violation, so an unambiguous opt-out wins outright.
   const firstToken = text.split(/\s+/)[0] || "";
-  const STANDALONE_OPT_OUT = ["stop", "unsubscribe", "unsub", "optout", "remove", "blocked", "block"];
   const isHardOptOut = isOptOut || STANDALONE_OPT_OUT.includes(firstToken);
 
   // Buying-intent detection. Twilio delivers each quick-reply tap as its OWN

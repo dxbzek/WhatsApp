@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Icon, IC, Avatar, useModCombo, Toast } from "@/lib/ui";
 import { type Sender } from "@/lib/fixtures";
 import { formatPhone } from "@/lib/format";
+import { useLive } from "@/lib/useLive";
 
 const NAV = [
   { id: "Dashboard", href: "/", icon: IC.dash },
@@ -140,11 +141,13 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
 
   // Live unread badge, via the gated server route (service role) so the browser
   // never reads the conversations table with the public anon key (RLS denies
-  // anon, so Supabase realtime isn't an option here). Polls every 5s, and the
-  // inbox dispatches "ere:unread-delta" the moment a thread is opened or marked
-  // unread so the badge moves instantly — the poll stays the source of truth.
+  // anon). Realtime reaches us via /api/stream instead, which subscribes with
+  // the service role on the server — see the useLive call below. The interval
+  // here is only a backstop for a dropped stream, and the inbox still dispatches
+  // "ere:unread-delta" so the badge moves the instant a thread is opened.
   // Stays at 0 (hidden) when the backend isn't configured or returns nothing —
   // no seed number.
+  const refreshUnread = useRef<() => void>(() => {});
   useEffect(() => {
     let live = true;
     async function refresh() {
@@ -156,7 +159,8 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
       } catch { /* keep fallback */ }
     }
     refresh();
-    const poll = setInterval(refresh, 5000);
+    refreshUnread.current = refresh;
+    const poll = setInterval(refresh, 60000);
     const onDelta = (e: Event) => {
       const d = (e as CustomEvent).detail;
       if (typeof d === "number") setUnread((u) => Math.max(0, u + d));
@@ -164,6 +168,9 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
     window.addEventListener("ere:unread-delta", onDelta);
     return () => { live = false; clearInterval(poll); window.removeEventListener("ere:unread-delta", onDelta); };
   }, []);
+
+  // Badge moves the moment an inbound message lands, on whatever page you're on.
+  useLive(["conversations", "messages"], () => refreshUnread.current(), 250);
 
   // Placeholder while /api/senders is in flight or unavailable. Deliberately
   // shows no number rather than a plausible-looking fake one.

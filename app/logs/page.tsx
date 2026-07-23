@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon, IC, PageHead, Skeleton } from "@/lib/ui";
 import { Pager } from "@/lib/Pager";
 import { errorCause } from "@/lib/twilioErrors";
+import { useLive } from "@/lib/useLive";
 
 type Row = {
   id: string;
@@ -49,9 +50,15 @@ export default function Logs() {
       setTpl(map);
     }).catch(() => {});
     load();
-    const poll = setInterval(load, 20000); // keep the log live without a manual reload
+    // Backstop only. The SSE feed below drives the log in real time; this catches
+    // the gap if the stream is down or a frame is missed.
+    const poll = setInterval(load, 60000);
     return () => clearInterval(poll);
   }, []); // eslint-disable-line
+
+  // Push updates: every insert/update on messages refetches, so a status flips
+  // here the moment Twilio's callback lands rather than up to 20s later.
+  const liveFeed = useLive(["messages"], load);
 
   const failedCount = (rows || []).filter(isFail).length;
 
@@ -101,8 +108,12 @@ export default function Logs() {
           />
         </div>
         {updatedAt && (
-          <span style={{ fontSize: 11.5, color: "var(--ink-3)", marginLeft: "auto" }}>
-            updated {new Date(updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          <span style={{ fontSize: 11.5, color: "var(--ink-3)", marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+            <span
+              title={liveFeed ? "Live — updates pushed the moment they happen" : "Reconnecting — falling back to a refresh every 60s"}
+              style={{ width: 7, height: 7, borderRadius: "50%", background: liveFeed ? "var(--green)" : "var(--ink-3)" }}
+            />
+            {liveFeed ? "live" : "reconnecting"} · updated {new Date(updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
           </span>
         )}
       </div>

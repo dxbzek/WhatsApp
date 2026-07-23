@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Icon, IC, Avatar, CHECK2, Skeleton, Toast } from "@/lib/ui";
 import { type Tpl } from "@/lib/fixtures";
 import { formatPhone } from "@/lib/format";
+import { useLive } from "@/lib/useLive";
 
 type UIMsg = { id: string; from: "in" | "out"; t: string; at: string; status?: string | null; media?: string | null; contentSid?: string | null };
 type UIConv = {
@@ -173,15 +174,22 @@ export default function Inbox() {
     setConvos((p) => p.map((c) => (c.id === id ? { ...c, loaded: true, messages: msgs } : c)));
   }
 
-  // Live updates: poll the gated server routes every 8s (replaces Supabase
-  // realtime, which needed the browser's anon DB access). Refreshes the open
-  // thread and the conversation list, same as the old postgres_changes handlers.
+  // Live updates come from /api/stream (server-side realtime, pushed over SSE —
+  // the browser still has no direct DB access). This poll is the backstop for a
+  // dropped stream, so it can be far slower than the old 8s.
   useEffect(() => {
     if (!live) return;
-    const poll = setInterval(() => { if (activeId) loadMsgs(activeId); loadConvs(); }, 8000);
+    const poll = setInterval(() => { if (activeId) loadMsgs(activeId); loadConvs(); }, 60000);
     return () => clearInterval(poll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live, activeId]);
+
+  // An inbound message lands in the open thread as it arrives, not up to 8s later.
+  useLive(["messages", "conversations"], () => {
+    if (!live) return;
+    if (activeId) loadMsgs(activeId);
+    loadConvs();
+  }, 250);
 
   // Auto-load messages for whichever conversation is active but not yet loaded.
   // Covers the auto-selected top conversation (loadConvs sets activeId without

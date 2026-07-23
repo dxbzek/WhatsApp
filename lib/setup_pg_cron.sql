@@ -14,11 +14,16 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
--- Every 5 minutes, POST the dispatcher. x-vercel-protection-bypass clears
+-- Every minute, POST the dispatcher. x-vercel-protection-bypass clears
 -- Vercel's edge protection; x-cron-secret is OUR auth inside the route.
+--
+-- Every minute, not every 5: the cadence is only how often we LOOK for due
+-- messages, never how fast they go out — pacing comes from each row's
+-- scheduled_at plus the 60-per-run claim cap. At 5 min a batch could sit idle
+-- for 5 minutes after it was due, which reads as a stalled campaign.
 select cron.schedule(
   'whatsapp-drip-dispatch',
-  '*/5 * * * *',
+  '* * * * *',
   $$
   select net.http_post(
     url     := '<APP_URL>/api/cron/dispatch',

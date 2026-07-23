@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Icon, IC, PageHead, Skeleton, Toast } from "@/lib/ui";
 import { errorCause } from "@/lib/twilioErrors";
+import { useLive } from "@/lib/useLive";
 
 type Campaign = {
   id: string; name: string; template_name: string | null; sender: string | null;
@@ -41,10 +42,17 @@ export default function CampaignHistory() {
   const hasActive = (rows || []).some((c) => c.status === "sending" || c.status === "scheduled");
   useEffect(() => {
     if (!hasActive) return;
-    const poll = setInterval(refreshAll, 20000);
+    // Backstop only — the SSE feed below is what keeps the tracker moving. Still
+    // needed because /api/campaign/refresh reconciles counts from Twilio receipts,
+    // which is a pull no DB change event can trigger.
+    const poll = setInterval(refreshAll, 60000);
     const beat = setInterval(() => setTick((t) => t + 1), 1000);
     return () => { clearInterval(poll); clearInterval(beat); };
   }, [hasActive]); // eslint-disable-line
+
+  // Push updates: a message flipping scheduled -> sent -> delivered, or the
+  // campaign row itself completing, redraws the tracker immediately.
+  const liveFeed = useLive(["messages", "campaigns"], () => { void refreshAll(); });
 
   async function cancel(c: Campaign) {
     if (!confirm(`Cancel the ${c.scheduled} scheduled message(s) still pending in "${c.name}"? Already-sent messages can't be recalled.`)) return;
@@ -66,8 +74,9 @@ export default function CampaignHistory() {
 
       {hasActive && (
         <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--green-ink)", marginBottom: 16 }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--green-dot)", display: "inline-block" }} />
-          Live · auto-updating every 20s{updatedAt ? ` · last ${new Date(updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: liveFeed ? "var(--green-dot)" : "var(--ink-3)", display: "inline-block" }} />
+          {liveFeed ? "Live · updating as it happens" : "Reconnecting · refreshing every 60s"}
+          {updatedAt ? ` · last ${new Date(updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}
         </div>
       )}
 

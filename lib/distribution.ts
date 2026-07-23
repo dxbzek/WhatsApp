@@ -407,6 +407,10 @@ export async function distributeLead(opts: {
     // hand-off, so no WhatsApp alert goes to the agent here (23 Jul 2026). The
     // round-robin still decides WHO owns it — it just owns it in the CRM.
     // Best-effort: a Pipedrive failure must never break the inbound webhook.
+    // The agents are not pinged on this path, but the lead-gen tracker still is:
+    // Zek gets a copy of every lead. Empty target list = nothing is deduped away.
+    await ccTrackers(db, [], opts.conversationId, leadRef, leadName, opts.contactPhone, about, "WhatsApp");
+
     const answers: Record<string, string> = {};
     if ((opts.replyBody || "").trim()) answers["They replied"] = opts.replyBody!.trim().slice(0, 500);
     if ((camp.blurb || "").trim()) answers["Campaign is about"] = camp.blurb!.trim().slice(0, 500);

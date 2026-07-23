@@ -48,13 +48,13 @@ async function ownerFor(agentName?: string | null): Promise<number | null> {
 }
 
 function noteHtml(o: {
-  name: string; e164: string; detail?: string; adsetName?: string; adName?: string;
+  name: string; e164: string; kind?: string; detail?: string; adsetName?: string; adName?: string;
   headline?: string; caption?: string; adUrl?: string; answers?: Record<string, string>;
 }): string {
   // Person first: the name and number are what the caller needs before anything else.
   return [
     `<b>${o.name}</b> — ${o.e164}`,
-    "<b>Meta ad lead</b>",
+    `<b>${o.kind || "Meta ad lead"}</b>`,
     o.detail ? `Campaign: ${o.detail}` : "",
     o.adsetName ? `Ad set: ${o.adsetName}` : "",
     o.adName ? `Ad: ${o.adName}` : "",
@@ -76,6 +76,11 @@ export async function syncMetaLeadToPipedrive(opts: {
   previewUrl?: string;
   assignedAgent?: string | null;
   answers?: Record<string, string>;
+  // Set by non-Meta callers (e.g. a WhatsApp campaign reply) so the deal is
+  // attributed to the right channel instead of masquerading as a Meta ad lead.
+  sourceValue?: string;   // Source field, e.g. "WhatsApp Campaign"
+  kind?: string;          // note heading, e.g. "WhatsApp campaign lead"
+  titlePrefix?: string;   // deal title prefix, e.g. "WhatsApp"
 }): Promise<{ ok: boolean; skipped?: string; dealId?: number; error?: string }> {
   if (!clean(process.env.PIPEDRIVE_API_TOKEN)) return { ok: false, skipped: "pipedrive_unconfigured" };
   const e164 = clean(opts.e164);
@@ -112,13 +117,13 @@ export async function syncMetaLeadToPipedrive(opts: {
     if (!personId) return { ok: false, error: "no person id" };
 
     const deal: any = await pd("POST", "api/v2/deals", {}, {
-      title: `Meta Ad — ${name}`,
+      title: `${clean(opts.titlePrefix) || "Meta Ad"} — ${name}`,
       person_id: personId,
       owner_id: owner,
       pipeline_id: PIPELINE_ID,
       stage_id: STAGE_ID,
       custom_fields: {
-        [F_SOURCE]: SOURCE_VALUE,
+        [F_SOURCE]: clean(opts.sourceValue) || SOURCE_VALUE,
         [F_AD_LINK]: adUrl || "",
         [F_AD_CAPTION]: [headline, caption].filter(Boolean).join(" — "),
       },
@@ -129,7 +134,7 @@ export async function syncMetaLeadToPipedrive(opts: {
     await pd("POST", "v1/notes", {}, {
       deal_id: dealId,
       content: noteHtml({
-        name, e164,
+        name, e164, kind: clean(opts.kind),
         detail: clean(opts.detail), adsetName: clean(opts.adsetName), adName: clean(opts.adName),
         headline, caption, adUrl, answers: opts.answers,
       }),

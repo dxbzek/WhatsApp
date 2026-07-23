@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp, sendTemplate, getContentMedia } from "@/lib/twilio";
 import { ensureLeadRef } from "@/lib/leadRef";
+import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
 
 // Unified agent lead-alert template on the UTILITY subaccount (category UTILITY,
 // so it is exempt from Meta's per-recipient MARKETING throttle that silently drops
@@ -411,6 +412,22 @@ export async function distributeLead(opts: {
     // CC the global lead-gen tracker(s) with a copy of every lead, deduped.
     // This path is always an inbound WhatsApp reply to a campaign.
     await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, about, "WhatsApp");
+
+    // Mirror the lead into Pipedrive as a deal owned by the SAME agent this
+    // campaign's round-robin just picked, so an interested reply becomes a real
+    // pipeline record without anyone re-keying it. Best-effort: a Pipedrive
+    // failure must never break the inbound webhook.
+    try {
+      await syncMetaLeadToPipedrive({
+        name: leadName === "New contact" ? "" : leadName,
+        e164: opts.contactPhone,
+        detail: `WhatsApp campaign: ${camp.name}`,
+        assignedAgent: owner?.name ?? null,
+        sourceValue: "WhatsApp Campaign",
+        kind: "WhatsApp campaign lead",
+        titlePrefix: "WhatsApp",
+      });
+    } catch { /* non-fatal */ }
     return { assigned: results.map((r) => r.name) };
   } catch {
     return null;

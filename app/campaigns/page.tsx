@@ -7,7 +7,7 @@ import { formatPhone } from "@/lib/format";
 import { PageHead } from "@/lib/ui";
 
 type TplButton = { type: string; title: string; url?: string | null; phone?: string | null };
-type Tpl = { sid: string; name: string; status: string; body: string | null; variables: Record<string, string>; media?: string | null; footer?: string | null; buttons?: TplButton[]; lane?: "utility" | "marketing" | null };
+type Tpl = { sid: string; name: string; status: string; body: string | null; variables: Record<string, string>; media?: string | null; footer?: string | null; buttons?: TplButton[]; lane?: "utility" | "marketing" | null; category?: string | null };
 
 const BATCH = 25;
 // Named CRM segments are saved locally (single-user console - no backend needed).
@@ -375,7 +375,17 @@ export default function Campaigns() {
   // customer broadcasts — keep them out of the campaign picker so they can never
   // be blasted to owners by mistake.
   const isInternalTpl = (name?: string) => /lead_alert|lead_briefing/i.test(name || "");
-  const campaignTpls = tpls.filter((t) => !isInternalTpl(t.name));
+  // A campaign is a customer BROADCAST, so only marketing-lane templates whose Meta
+  // category is MARKETING belong here. Utility templates (lead alerts, ops alerts,
+  // enquiry acks, no-answer nudges) are inbound-triggered 1:1 sends and must never
+  // appear in the picker. Category alone is not enough: two utility-lane templates
+  // are mis-categorised MARKETING at Meta, so require BOTH lane and category.
+  // Falls back to the old name-only filter if the marketing lane is unconfigured, so
+  // the picker degrades to "everything sendable" rather than going empty.
+  const broadcastTpls = tpls.filter(
+    (t) => !isInternalTpl(t.name) && t.lane === "marketing" && String(t.category || "").toUpperCase() === "MARKETING",
+  );
+  const campaignTpls = broadcastTpls.length ? broadcastTpls : tpls.filter((t) => !isInternalTpl(t.name));
   const tplVars = tpl ? Object.keys(tpl.variables || {}) : [];
 
   // Structured records from a pasted/uploaded CSV with a header (phone + columns).

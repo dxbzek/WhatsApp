@@ -262,6 +262,7 @@ export async function POST(req: NextRequest) {
         conversationId: conv!.id,
         contactPhone: from,
         contactName: profileName || undefined,
+        replyBody: body || undefined,
       });
     } catch { /* non-fatal */ }
   }

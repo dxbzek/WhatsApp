@@ -345,6 +345,7 @@ export async function distributeLead(opts: {
   conversationId: string;
   contactPhone: string; // +E.164
   contactName?: string;
+  replyBody?: string;   // what the lead actually said — goes on the Pipedrive note
 }): Promise<{ assigned: string[] } | null> {
   try {
     const db = supabaseAdmin();
@@ -402,23 +403,19 @@ export async function distributeLead(opts: {
     // to. Best-effort: a text-only template just yields no link.
     const sentImg = camp.template_sid ? await getContentMedia(camp.template_sid) : null;
     const about = sentImg ? `${baseAbout} · See what we sent: ${sentImg}` : baseAbout;
-    // "" = attach the one-tap reply link with a generic opener (a WhatsApp-campaign
-    // name isn't a clean property to name to the client).
-    const results = await alertAgents(targets, leadRef, leadName, opts.contactPhone, about, "");
-    // Log each successful alert so a later button tap maps back to THIS lead.
-    for (const r of results) {
-      if (r.ok) await logAgentAlert(db, { agentId: r.id, agentWa: r.wa, conversationId: opts.conversationId, alertSid: r.sid });
-    }
-    // CC the global lead-gen tracker(s) with a copy of every lead, deduped.
-    // This path is always an inbound WhatsApp reply to a campaign.
-    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, about, "WhatsApp");
+    // Pipedrive is the system of record for campaign leads: the deal IS the
+    // hand-off, so no WhatsApp alert goes to the agent here (23 Jul 2026). The
+    // round-robin still decides WHO owns it — it just owns it in the CRM.
+    // Best-effort: a Pipedrive failure must never break the inbound webhook.
+    const answers: Record<string, string> = {};
+    if ((opts.replyBody || "").trim()) answers["They replied"] = opts.replyBody!.trim().slice(0, 500);
+    if ((camp.blurb || "").trim()) answers["Campaign is about"] = camp.blurb!.trim().slice(0, 500);
+    if (sentImg) answers["What we sent them"] = sentImg;
+    if (leadRef) answers["Lead ref"] = leadRef;
 
-    // Mirror the lead into Pipedrive as a deal owned by the SAME agent this
-    // campaign's round-robin just picked, so an interested reply becomes a real
-    // pipeline record without anyone re-keying it. Best-effort: a Pipedrive
-    // failure must never break the inbound webhook.
+    let dealId: number | undefined;
     try {
-      await syncMetaLeadToPipedrive({
+      const r = await syncMetaLeadToPipedrive({
         name: leadName === "New contact" ? "" : leadName,
         e164: opts.contactPhone,
         detail: `WhatsApp campaign: ${camp.name}`,
@@ -426,9 +423,14 @@ export async function distributeLead(opts: {
         sourceValue: "WhatsApp Campaign",
         kind: "WhatsApp campaign lead",
         titlePrefix: "WhatsApp",
+        answers,
       });
+      dealId = r.dealId;
     } catch { /* non-fatal */ }
-    return { assigned: results.map((r) => r.name) };
+    if (dealId) {
+      await db.from("conversations").update({ pipedrive_deal_id: String(dealId) }).eq("id", opts.conversationId);
+    }
+    return { assigned: owner ? [owner.name] : [] };
   } catch {
     return null;
   }

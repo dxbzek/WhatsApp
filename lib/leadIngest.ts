@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { distributeMetaLead } from "@/lib/distribution";
 import { syncLeadToCrm } from "@/lib/crmSync";
+import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
 import { resolveAdPreview } from "@/lib/adCreatives";
 
 // Shared ingest for a single Meta Instant-Form lead, regardless of how it arrived
@@ -119,6 +120,17 @@ export async function ingestMetaLead(opts: {
   const isRecruitment = /recruit/i.test(detail) || /recruit/i.test(ref);
   if (!isRecruitment) {
     try { await syncLeadToCrm({ name, e164, email, detail }); } catch { /* non-fatal */ }
+    // ...and into Pipedrive as a real deal owned by the same agent the route picked,
+    // so the sales pipeline sees the lead without anyone re-keying it. Recruitment
+    // applicants stay out: they are not a sales pipeline.
+    try {
+      await syncMetaLeadToPipedrive({
+        name, e164, email, detail,
+        adId, adsetName: (opts.adsetName || "").trim(), adName,
+        previewUrl, assignedAgent: dist.assigned[0] ?? null,
+        answers: answerLine.length ? answers : undefined,
+      });
+    } catch { /* non-fatal */ }
   }
 
   // Append a permanent lead-tracking row (never overwritten, unlike the chat).

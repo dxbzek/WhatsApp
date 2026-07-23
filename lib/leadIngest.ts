@@ -107,9 +107,13 @@ export async function ingestMetaLead(opts: {
   const alertStatus = dist.alertOk ? "sent" : dist.fallbackOk ? "fallback" : "none";
 
   // Denormalise the outcome onto the conversation for at-a-glance inbox context.
+  // assigned_agent is the NAME; assigned_agent_id is the real uuid FK the inbox and the
+  // stale-lead watcher both filter on. Writing only the name left every Meta lead reading
+  // as unassigned in the console (caught 23 Jul 2026) and invisible to lead-watch.
   await db.from("conversations").update({
     source_ref: dist.ref ?? (ref || null),
     assigned_agent: dist.assigned[0] ?? null,
+    ...(dist.ownerId ? { assigned_agent_id: dist.ownerId, assigned_at: new Date().toISOString() } : {}),
     routing_status: dist.status,
   }).eq("id", conv.id);
 

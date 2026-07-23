@@ -446,6 +446,8 @@ export type MetaLeadResult = {
   status: "routed" | "no_route" | "no_active_agents" | "alert_failed" | "error";
   ref: string | null;          // matched route ref, if any
   assigned: string[];          // agent names pinged (empty if unrouted)
+  ownerId: string | null;      // owning agent's uuid — conversations.assigned_agent_id is a
+                               // real FK and the inbox filters on IT, not on the name column
   alertOk: boolean;            // an assigned agent's alert was accepted by Twilio
   fallbackOk: boolean;         // the safety-net owner was notified (only on failure)
   alertSid: string | null;     // Twilio SID of the owner's alert, for delivery reconciliation
@@ -515,7 +517,7 @@ export async function distributeMetaLead(opts: {
     // No matching route -> safety net.
     if (!route) {
       const fallbackOk = await notifyFallback("no_route", leadRef, leadName, opts.contactPhone, context);
-      return { status: "no_route", ref: null, assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
+      return { status: "no_route", ref: null, assigned: [], ownerId: null, alertOk: false, fallbackOk, alertSid: null, alertError: null };
     }
 
     const ids: string[] = (route.agent_ids as string[]) || [];
@@ -523,7 +525,7 @@ export async function distributeMetaLead(opts: {
     // Route exists but nobody active to take it -> safety net.
     if (ordered.length === 0) {
       const fallbackOk = await notifyFallback("no_active_agents", leadRef, leadName, opts.contactPhone, context);
-      return { status: "no_active_agents", ref: String(route.ref), assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
+      return { status: "no_active_agents", ref: String(route.ref), assigned: [], ownerId: null, alertOk: false, fallbackOk, alertSid: null, alertError: null };
     }
 
     // Advance the route pointer ATOMICALLY (keyed by ref) before mapping to an
@@ -535,7 +537,7 @@ export async function distributeMetaLead(opts: {
     const targets = pickTargets(ordered, route.distribution, pointer);
     if (targets.length === 0) {
       const fallbackOk = await notifyFallback("no_active_agents", leadRef, leadName, opts.contactPhone, context);
-      return { status: "no_active_agents", ref: String(route.ref), assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
+      return { status: "no_active_agents", ref: String(route.ref), assigned: [], ownerId: null, alertOk: false, fallbackOk, alertSid: null, alertError: null };
     }
 
     // Give the agent the full context of what the lead is about: the specific
@@ -585,12 +587,12 @@ export async function distributeMetaLead(opts: {
     // Agent(s) chosen but no alert got through -> safety net so it is not silent.
     if (!alertOk) {
       const fallbackOk = await notifyFallback("alert_failed", leadRef, leadName, opts.contactPhone, `${context} (agent: ${assigned.join(", ")})`);
-      return { status: "alert_failed", ref: String(route.ref), assigned, alertOk: false, fallbackOk, alertSid: null, alertError };
+      return { status: "alert_failed", ref: String(route.ref), assigned, ownerId: targets[0]?.id ?? null, alertOk: false, fallbackOk, alertSid: null, alertError };
     }
-    return { status: "routed", ref: String(route.ref), assigned, alertOk: true, fallbackOk: false, alertSid, alertError: null };
+    return { status: "routed", ref: String(route.ref), assigned, ownerId: targets[0]?.id ?? null, alertOk: true, fallbackOk: false, alertSid, alertError: null };
   } catch {
     // Unexpected error -> still try the safety net, never throw into the webhook.
     const fallbackOk = await notifyFallback("error", leadRef, leadName, opts.contactPhone, context).catch(() => false);
-    return { status: "error", ref: null, assigned: [], alertOk: false, fallbackOk, alertSid: null, alertError: null };
+    return { status: "error", ref: null, assigned: [], ownerId: null, alertOk: false, fallbackOk, alertSid: null, alertError: null };
   }
 }

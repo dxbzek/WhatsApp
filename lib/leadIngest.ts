@@ -121,6 +121,9 @@ export async function ingestMetaLead(opts: {
   // they sit alongside owner records. Recruitment applicants are deliberately kept
   // OUT of the CRM (different audience - must never receive owner/seller sends).
   // Best-effort: a CRM hiccup must never fail lead routing.
+  // Recorded on the lead_events row below so a failed Pipedrive create is VISIBLE and
+  // retryable (retryPipedriveBacklog) instead of silently losing the lead.
+  let pdResult: { ok: boolean; dealId?: number; skipped?: string; error?: string } | null = null;
   const isRecruitment = /recruit/i.test(detail) || /recruit/i.test(ref);
   if (!isRecruitment) {
     try { await syncLeadToCrm({ name, e164, email, detail }); } catch { /* non-fatal */ }
@@ -128,13 +131,13 @@ export async function ingestMetaLead(opts: {
     // so the sales pipeline sees the lead without anyone re-keying it. Recruitment
     // applicants stay out: they are not a sales pipeline.
     try {
-      await syncMetaLeadToPipedrive({
+      pdResult = await syncMetaLeadToPipedrive({
         name, e164, email, detail,
         adId, adsetName: (opts.adsetName || "").trim(), adName,
         previewUrl, assignedAgent: dist.assigned[0] ?? null,
         answers: answerLine.length ? answers : undefined,
       });
-    } catch { /* non-fatal */ }
+    } catch (e: any) { pdResult = { ok: false, error: String(e?.message || e).slice(0, 120) }; }
   }
 
   // Append a permanent lead-tracking row (never overwritten, unlike the chat).
@@ -161,6 +164,10 @@ export async function ingestMetaLead(opts: {
     // campaign) without re-querying Meta.
     answers: answerLine.length ? answers : null,
     preview_url: previewUrl || null,
+    pipedrive_deal_id: pdResult?.dealId ?? null,
+    pipedrive_status: isRecruitment ? "skipped_recruitment"
+      : pdResult ? (pdResult.ok ? "created" : (pdResult.skipped || pdResult.error || "failed")) : null,
+    pipedrive_attempts: isRecruitment ? 99 : (pdResult ? 1 : 0),
   });
 
   return { ok: true, conversationId: conv.id, status: dist.status, assigned: dist.assigned, alert: alertStatus };

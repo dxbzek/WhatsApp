@@ -65,6 +65,61 @@ function noteHtml(o: {
   ].filter(Boolean).join("<br>");
 }
 
+// Retry every lead that never made it into Pipedrive. Called from the meta-leads cron
+// (every 2 minutes, round the clock) so a transient failure — a 429 from a bulk import,
+// a timeout, a deploy — costs minutes, not the lead. 23 Jul 2026: a real lead was lost
+// exactly this way and only surfaced because Zek went looking for it.
+//
+// Claims are idempotent: a row is only picked up while pipedrive_deal_id is null, and
+// the id is written the moment the deal exists. MAX_ATTEMPTS stops a permanently broken
+// row (bad phone, deleted field) from being retried forever.
+const MAX_ATTEMPTS = 8;
+const RETRY_WINDOW_DAYS = 7;
+
+export async function retryPipedriveBacklog(limit = 10): Promise<{ retried: number; created: number }> {
+  if (!clean(process.env.PIPEDRIVE_API_TOKEN)) return { retried: 0, created: 0 };
+  const db = supabaseAdmin();
+  const since = new Date(Date.now() - RETRY_WINDOW_DAYS * 86400_000).toISOString();
+
+  const { data: rows } = await db
+    .from("lead_events")
+    .select("id, name, wa_phone, detail, ad_id, adset_name, ad_name, preview_url, assigned_agent, answers, matched_route, pipedrive_attempts")
+    .is("pipedrive_deal_id", null)
+    .gte("created_at", since)
+    .lt("pipedrive_attempts", MAX_ATTEMPTS)
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  if (!rows || rows.length === 0) return { retried: 0, created: 0 };
+
+  let created = 0;
+  for (const r of rows as any[]) {
+    // Recruitment applicants are not a sales pipeline — mark them settled so they do not
+    // sit in the backlog forever being retried.
+    if ((r.matched_route || "") === "Recruitment") {
+      await db.from("lead_events").update({ pipedrive_status: "skipped_recruitment", pipedrive_attempts: MAX_ATTEMPTS }).eq("id", r.id);
+      continue;
+    }
+    const res = await syncMetaLeadToPipedrive({
+      name: r.name === "New contact" ? "" : r.name,
+      e164: "+" + String(r.wa_phone || "").replace("+", ""),
+      detail: r.detail || undefined,
+      adId: r.ad_id || undefined,
+      adsetName: r.adset_name || undefined,
+      adName: r.ad_name || undefined,
+      previewUrl: r.preview_url || undefined,
+      assignedAgent: r.assigned_agent,
+      answers: (r.answers as Record<string, string>) || undefined,
+    });
+    await db.from("lead_events").update({
+      pipedrive_deal_id: res.dealId ?? null,
+      pipedrive_status: res.ok ? "created" : (res.skipped || res.error || "failed"),
+      pipedrive_attempts: (r.pipedrive_attempts || 0) + 1,
+    }).eq("id", r.id);
+    if (res.ok) created++;
+  }
+  return { retried: rows.length, created };
+}
+
 export async function syncMetaLeadToPipedrive(opts: {
   name?: string;
   e164: string;

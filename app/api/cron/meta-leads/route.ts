@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getPageToken, listActiveForms, fetchFormLeads } from "@/lib/metaLeads";
 import { ingestMetaLead } from "@/lib/leadIngest";
+import { retryPipedriveBacklog } from "@/lib/metaLeadPipedrive";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -81,7 +82,12 @@ async function run(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, forms, scanned, fresh, routed, errors });
+  // Sweep any lead whose Pipedrive deal never got created (rate limit, timeout, deploy).
+  // This cron runs every 2 minutes round the clock, so a transient CRM failure costs
+  // minutes rather than losing the lead. Best-effort: never fails the ingest run.
+  const pipedrive = await retryPipedriveBacklog().catch(() => ({ retried: 0, created: 0 }));
+
+  return NextResponse.json({ ok: true, forms, scanned, fresh, routed, pipedrive, errors });
 }
 
 export async function GET(req: NextRequest) { return run(req); }

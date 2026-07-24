@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "./supabase";
+import { crmEnrichForDeal } from "./crm";
 
 // Mirror a Meta ad lead into Pipedrive the moment it arrives: person (matched on
 // PHONE, the only reliable key in this CRM — 13 emails across 77k records), a deal
@@ -18,6 +19,13 @@ const F_SOURCE = "be1b1fe6b64aad751a7a9649876a671db3f03215";     // Source (varc
 const F_AD_LINK = "2792c6f093bf199246857ed30572a12c931f886d";    // Meta Ad Inquiry
 const F_AD_CAPTION = "78341167f6364a09aefeac6652e3db3e38434ae8"; // Ad Caption
 const SOURCE_VALUE = "Meta Ad";
+// CRM-enrichment deal fields (populated from the audience CRM by phone match).
+const F_COMMUNITY = "93034ed33eaaff8c96f76021426615b77590d525";   // Community (enum)
+const F_LOCATION = "20acccdecb7dd7fb70cb10164d72a118ee2dfa87";    // Location (varchar, fallback for unmatched community)
+const F_SUBCOMM = "920091727520dd34a784025992434b0ee5fc1e73";     // Sub Community (varchar)
+const F_UNITNO = "8f6334f0e0480c40762b88cb9297ad3a6d6cbe40";      // Unit Number (varchar)
+const F_NATION = "d5d2f154cff4ad48a51052dd29a51715785eee2a";      // Nationality (varchar)
+const F_TIER = "5dc3f1f8d17c28042afd47b9cc7828a2a770dd79";        // CRM Tier (varchar)
 
 const clean = (v?: string | null) => (v || "").replace(/^﻿/, "").trim();
 
@@ -35,6 +43,22 @@ async function pd(method: string, path: string, params: Record<string, string> =
   const data: any = await res.json().catch(() => ({}));
   if (!res.ok || data?.success === false) throw new Error(`pipedrive ${method} ${path} -> ${res.status}`);
   return data;
+}
+
+// Community is an enum field; map a CRM community NAME to its Pipedrive option id.
+// Cached per process (the option set rarely changes) so the hot path adds no call.
+let _communityOpts: Map<string, number> | null = null;
+async function communityOptionId(label: string): Promise<number | null> {
+  const key = clean(label).toLowerCase();
+  if (!key) return null;
+  if (!_communityOpts) {
+    try {
+      const d: any = await pd("GET", "v1/dealFields", { limit: "500" });
+      const f = (d?.data || []).find((x: any) => x.key === F_COMMUNITY);
+      _communityOpts = new Map(((f?.options) || []).map((o: any) => [String(o.label || "").trim().toLowerCase(), o.id]));
+    } catch { _communityOpts = new Map(); }
+  }
+  return _communityOpts.get(key) ?? null;
 }
 
 // lead_events/distribution carry the agent's NAME; agents.pipedrive_user_id holds the
@@ -145,6 +169,24 @@ export async function syncMetaLeadToPipedrive(opts: {
   try {
     const owner = await ownerFor(opts.assignedAgent);
 
+    // Enrich from the audience CRM (matched by phone). Best-effort: a CRM miss or
+    // error must never block the deal. Property-specific fields + the real name are
+    // only used when the phone resolves to ONE owner (crmEnrichForDeal guards the
+    // switchboard / multi-owner case); nationality is used whenever all matches agree.
+    const enrich = await crmEnrichForDeal(e164).catch(() => null);
+    const displayName = (enrich?.singleOwner && enrich.name) ? enrich.name : name;
+    const crmCf: Record<string, unknown> = {};
+    if (enrich) {
+      if (enrich.nationality) crmCf[F_NATION] = enrich.nationality;
+      if (enrich.subCommunity) crmCf[F_SUBCOMM] = enrich.subCommunity;
+      if (enrich.unitNumber) crmCf[F_UNITNO] = enrich.unitNumber;
+      if (enrich.tier) crmCf[F_TIER] = enrich.tier;
+      if (enrich.community) {
+        const oid = await communityOptionId(enrich.community);
+        if (oid) crmCf[F_COMMUNITY] = oid; else crmCf[F_LOCATION] = enrich.community;
+      }
+    }
+
     // Creative copy is already cached by the alert path (lib/adCreatives), so read
     // it back rather than hitting Meta again.
     let headline = "", caption = "";
@@ -162,7 +204,7 @@ export async function syncMetaLeadToPipedrive(opts: {
     let personId: number | undefined = found?.data?.items?.[0]?.item?.id;
     if (!personId) {
       const created: any = await pd("POST", "api/v2/persons", {}, {
-        name,
+        name: displayName,
         owner_id: owner,
         phones: [{ value: e164, primary: true, label: "mobile" }],
         ...(clean(opts.email) ? { emails: [{ value: clean(opts.email), primary: true, label: "work" }] } : {}),
@@ -172,7 +214,7 @@ export async function syncMetaLeadToPipedrive(opts: {
     if (!personId) return { ok: false, error: "no person id" };
 
     const deal: any = await pd("POST", "api/v2/deals", {}, {
-      title: `${clean(opts.titlePrefix) || "Meta Ad"} — ${name}`,
+      title: `${clean(opts.titlePrefix) || "Meta Ad"} — ${displayName}`,
       person_id: personId,
       owner_id: owner,
       pipeline_id: PIPELINE_ID,
@@ -181,6 +223,7 @@ export async function syncMetaLeadToPipedrive(opts: {
         [F_SOURCE]: clean(opts.sourceValue) || SOURCE_VALUE,
         [F_AD_LINK]: adUrl || "",
         [F_AD_CAPTION]: [headline, caption].filter(Boolean).join(" — "),
+        ...crmCf,
       },
     });
     const dealId: number | undefined = deal?.data?.id;
@@ -189,7 +232,7 @@ export async function syncMetaLeadToPipedrive(opts: {
     await pd("POST", "v1/notes", {}, {
       deal_id: dealId,
       content: noteHtml({
-        name, e164, kind: clean(opts.kind),
+        name: displayName, e164, kind: clean(opts.kind),
         detail: clean(opts.detail), adsetName: clean(opts.adsetName), adName: clean(opts.adName),
         headline, caption, adUrl, answers: opts.answers,
       }),

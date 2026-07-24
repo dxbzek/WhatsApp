@@ -320,6 +320,16 @@ async function ccTrackers(
   } catch { /* tracker CC is best-effort */ }
 }
 
+// Fallback owner pool used when a campaign has NO agent_ids configured: telesales
+// (Joshua, Akombi, Zenon). Guarantees every converting reply still creates a Pipedrive
+// deal owned by a real agent, so no lead is ever untracked because a campaign was
+// launched without a pool (24 Jul 2026: the live valuation broadcast had an empty pool,
+// so distributeLead returned before assigning OR pushing — seller leads vanished).
+// Env-overridable so the roster can change without a deploy.
+const TELESALES_FALLBACK_IDS = (process.env.WHATSAPP_TELESALES_AGENT_IDS ||
+  "ddf13a56-1a8c-4b82-a33a-8944c043d607,edbda43c-bafe-4a0e-b9bc-0f33aba2d494,4689164c-14c5-4704-a5c8-5f5686a65e71")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+
 // Load active agents for the given ids, preserving the configured order.
 async function loadAgents(db: ReturnType<typeof supabaseAdmin>, ids: string[]): Promise<Agent[]> {
   if (ids.length === 0) return [];
@@ -368,10 +378,14 @@ export async function distributeLead(opts: {
       .select("id, name, blurb, agent_ids, distribution, rr_pointer, template_sid")
       .eq("id", lastOut.campaign)
       .maybeSingle();
-    const ids: string[] = (camp?.agent_ids as string[]) || [];
-    if (!camp || ids.length === 0) return null;
+    if (!camp) return null;
+    // Empty pool -> fall back to telesales so the lead is STILL assigned and pushed to
+    // Pipedrive (Zek, 24 Jul: "whatever we receive, even if no one receives it, it must
+    // be on Pipedrive so we can track it").
+    const ids: string[] = (camp.agent_ids as string[]) || [];
+    const pool = ids.length ? ids : TELESALES_FALLBACK_IDS;
 
-    const ordered = await loadAgents(db, ids);
+    const ordered = await loadAgents(db, pool);
     if (ordered.length === 0) return null;
 
     // "all" pings every assigned agent (owner = first). Otherwise round-robin:
@@ -426,7 +440,7 @@ export async function distributeLead(opts: {
         assignedAgent: owner?.name ?? null,
         sourceValue: "WhatsApp Campaign",
         kind: "WhatsApp campaign lead",
-        titlePrefix: "WhatsApp",
+        titlePrefix: "WhatsApp campaign",
         answers,
       });
       dealId = r.dealId;

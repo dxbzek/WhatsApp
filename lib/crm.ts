@@ -142,6 +142,49 @@ export async function crmContactByPhone(wa: string) {
   return (rows && rows[0]) || null;
 }
 
+// Enrich a lead's Pipedrive deal from the audience CRM, matched on the last-9
+// digits of the phone (indexed phone_norm / phone2_norm; a leading-wildcard LIKE
+// on the 9.48M-row contacts table times out, so ONLY eq on the norm keys is safe).
+// Applies the switchboard / multi-owner guard: a phone maps to many contact rows,
+// so property-specific fields (community/sub-community/unit/name) are only trusted
+// when it resolves to ONE owner and is not a switchboard; nationality is safe when
+// every match agrees. See project_pipedrive_duplicate_persons / _campaign_pipedrive_push.
+export type CrmDealEnrich = {
+  name?: string; community?: string; subCommunity?: string; unitNumber?: string;
+  tier?: string; nationality?: string; singleOwner: boolean; switchboard: boolean;
+};
+function titleCaseName(s: string): string {
+  return s.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase());
+}
+export async function crmEnrichForDeal(wa: string): Promise<CrmDealEnrich | null> {
+  const key = lastNine(wa);
+  if (key.length !== 9) return null;
+  let rows: any[];
+  try {
+    rows = await crmGet(
+      `contacts?or=(phone_norm.eq.${key},phone2_norm.eq.${key})` +
+      `&select=name,community,building,unit_number,nationality,tier,phone_is_switchboard,total_transaction_value_aed&limit=40`
+    );
+  } catch { return null; }
+  if (!rows || rows.length === 0) return null;
+  const names = new Set(rows.map((r) => (r.name || "").trim().toLowerCase()).filter(Boolean));
+  const nats = new Set(rows.map((r) => (r.nationality || "").trim()).filter(Boolean));
+  const switchboard = rows.length > 25 || rows.some((r) => r.phone_is_switchboard === true);
+  const singleOwner = names.size <= 1 && !switchboard;
+  const primary = rows.reduce((a, b) =>
+    (Number(b.total_transaction_value_aed) || 0) > (Number(a.total_transaction_value_aed) || 0) ? b : a, rows[0]);
+  const out: CrmDealEnrich = { singleOwner, switchboard };
+  if (nats.size === 1) out.nationality = [...nats][0];        // safe even for shared numbers
+  if (singleOwner) {
+    if ((primary.name || "").trim()) out.name = titleCaseName(primary.name.trim());
+    if ((primary.community || "").trim()) out.community = primary.community.trim();
+    if ((primary.building || "").trim()) out.subCommunity = primary.building.trim();
+    if (primary.unit_number != null && String(primary.unit_number).trim()) out.unitNumber = String(primary.unit_number).trim();
+    if (primary.tier != null && String(primary.tier).trim()) out.tier = String(primary.tier).trim();
+  }
+  return out;
+}
+
 // Approximate count of contactable contacts matching filters. Uses the
 // planner's row estimate (Prefer: count=estimated) so it's fast and never
 // trips the anon statement timeout on the 9.48M-row contacts table.

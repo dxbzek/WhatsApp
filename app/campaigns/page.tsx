@@ -86,13 +86,13 @@ const DRIP_PACES = [
   { id: "fast", label: "Fast", batch: 100, interval: 60, sub: "100 every hour · quickest, safe at the 2,000/day tier" },
 ] as const;
 
-// Daytime send window: 9:00–20:00 Dubai (GMT+4) = 05:00–16:00 UTC. Owners
+// Daytime send window: 9:00–19:00 Dubai (GMT+4) = 05:00–15:00 UTC. Owners
 // shouldn't get a property message at 2am — it kills replies and looks like spam.
 function nextDaytimeUTC(d: Date): Date {
   const x = new Date(d.getTime());
   const h = x.getUTCHours();
-  if (h >= 5 && h < 16) return x;       // already inside the window
-  if (h >= 16) x.setUTCDate(x.getUTCDate() + 1); // after window -> tomorrow morning
+  if (h >= 5 && h < 15) return x;       // already inside the window
+  if (h >= 15) x.setUTCDate(x.getUTCDate() + 1); // after window -> tomorrow morning
   x.setUTCHours(5, 0, 0, 0);            // 05:00 UTC = 09:00 Dubai
   return x;
 }
@@ -138,7 +138,7 @@ export default function Campaigns() {
   const [sendAt, setSendAt] = useState(""); // for "later"
   const [perBatch, setPerBatch] = useState(50); // drip: recipients per batch
   const [intervalMin, setIntervalMin] = useState(120); // drip: minutes between batches
-  const [daytimeOnly, setDaytimeOnly] = useState(true); // drip: pause overnight, send 9am-8pm Dubai
+  const [daytimeOnly, setDaytimeOnly] = useState(true); // drip: pause overnight, send 9am-7pm Dubai
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; sent: number; skipped: number; failed: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -603,7 +603,7 @@ export default function Campaigns() {
     // so the send completes even if you close the tab or navigate away. "Now"
     // queues everyone due immediately (the dispatcher still paces per its cap,
     // which also avoids the 63049 marketing throttle); "drip" spreads across the
-    // day. Both stay inside the 9am-8pm Dubai window. Only "later" (Twilio-native
+    // day. Both stay inside the 9am-7pm Dubai window. Only "later" (Twilio-native
     // scheduling) still uses the inline path below.
     if (mode === "drip" || mode === "now") {
       const isNow = mode === "now";
@@ -662,8 +662,8 @@ export default function Campaigns() {
         const skipNote = ed.skipped ? ` · skipped ${ed.skipped} (blocked or already queued)` : "";
         setDoneMsg(
           isNow
-            ? `Queued ${ed.enqueued} recipient(s) to send now${skipNote}.${uncrmNote} They go out over the next few minutes, paced to stay healthy, inside 9am-8pm Dubai. You can close this tab, sending runs on the server. Track it in the campaign log.`
-            : `Scheduled ${ed.enqueued} recipient(s). They send automatically between now and ${drip?.finishLabel}, inside 9am-8pm Dubai${skipNote}.${uncrmNote} You can close this tab, sending runs on the server. Track it in the campaign log.`
+            ? `Queued ${ed.enqueued} recipient(s) to send now${skipNote}.${uncrmNote} They go out over the next few minutes, paced to stay healthy, inside 9am-7pm Dubai. You can close this tab, sending runs on the server. Track it in the campaign log.`
+            : `Scheduled ${ed.enqueued} recipient(s). They send automatically between now and ${drip?.finishLabel}, inside 9am-7pm Dubai${skipNote}.${uncrmNote} You can close this tab, sending runs on the server. Track it in the campaign log.`
         );
       } catch (e: any) {
         setErr(e.message);
@@ -1131,7 +1131,7 @@ export default function Campaigns() {
 
               <label className="checkrow" style={{ marginTop: 12 }}>
                 <input type="checkbox" checked={daytimeOnly} onChange={(e) => setDaytimeOnly(e.target.checked)} />
-                <span>Only send <b>9am–8pm Dubai</b> — pause overnight, resume next morning. (Better replies, protects quality.)</span>
+                <span>Only send <b>9am–7pm Dubai</b> — pause overnight, resume next morning. (Better replies, protects quality.)</span>
               </label>
 
               <details style={{ marginTop: 12 }}>

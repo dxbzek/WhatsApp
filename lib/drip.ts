@@ -2,14 +2,14 @@
 // queued send_at times are identical to what the UI previews, but computed on
 // the server at enqueue time (the browser no longer drives the loop).
 //
-// Daytime send window: 9:00-20:00 Dubai (GMT+4) = 05:00-16:00 UTC. Owners
+// Daytime send window: 9:00-19:00 Dubai (GMT+4) = 05:00-15:00 UTC. Owners
 // shouldn't get a property message at 2am — it kills replies and looks like
 // spam, and overnight marketing correlates with Meta's per-user throttle.
 function nextDaytimeUTC(d: Date): Date {
   const x = new Date(d.getTime());
   const h = x.getUTCHours();
-  if (h >= 5 && h < 16) return x; // already inside the window
-  if (h >= 16) x.setUTCDate(x.getUTCDate() + 1); // after window -> tomorrow morning
+  if (h >= 5 && h < 15) return x; // already inside the window
+  if (h >= 15) x.setUTCDate(x.getUTCDate() + 1); // after window -> tomorrow morning
   x.setUTCHours(5, 0, 0, 0); // 05:00 UTC = 09:00 Dubai
   return x;
 }

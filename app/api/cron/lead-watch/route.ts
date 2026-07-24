@@ -14,6 +14,15 @@ export const maxDuration = 60;
 const STALE_HOURS = 2;
 const CAP = 40; // most we nudge per run, so a backlog can't blow the 60s wall
 
+// The repeat "still no update" reminder is OFF by default. It re-pings whoever a
+// hot lead is still assigned to, and when WhatsApp ownership drifts from the real
+// owner (e.g. leads redistributed to telesales in Pipedrive but not mirrored on
+// conversations.assigned_agent_id) it spams the OLD owner every cycle — exactly
+// what hit Keeley + Zek on 23 Jul. The FIRST new-lead alert is unaffected: that
+// fires from /api/twilio/inbound, not here. To switch reminders back on once
+// ownership is fixed, set STALE_REMINDERS=on in the env — no redeploy of logic.
+const STALE_REMINDERS_ON = (process.env.STALE_REMINDERS || "").toLowerCase() === "on";
+
 // Hours after an agent taps "Contacted" before we ask them for the outcome.
 // 24h: long enough that a callback or viewing has actually happened, short enough
 // that CPQL reporting isn't lagging days behind. This cron only runs inside Dubai
@@ -252,6 +261,10 @@ async function run(req: NextRequest) {
   const escalated = await runEscalations(db).catch(() => 0);
   const ops = await runOpsWatch(db).catch(() => ({ undelivered: 0, unrouted: 0, brokerSpike: false }));
   const digest = await runDailyDigest(db).catch(() => false);
+
+  // Reminder nag is opt-in. Everything above (follow-ups, escalations, ops watch,
+  // daily digest) still runs — only the stale re-ping is gated.
+  if (!STALE_REMINDERS_ON) return NextResponse.json({ ok: true, nudged: 0, remindersOff: true, followedUp, escalated, ops, digest });
 
   const { data: stale, error } = await db
     .from("conversations")

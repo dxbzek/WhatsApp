@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { distributeMetaLead } from "@/lib/distribution";
 import { syncLeadToCrm } from "@/lib/crmSync";
 import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
+import { dispatchFreshLeadCall } from "@/lib/aiCallerDispatch";
 import { resolveAdPreview } from "@/lib/adCreatives";
 
 // Shared ingest for a single Meta Instant-Form lead, regardless of how it arrived
@@ -138,6 +139,16 @@ export async function ingestMetaLead(opts: {
         answers: answerLine.length ? answers : undefined,
       });
     } catch (e: any) { pdResult = { ok: false, error: String(e?.message || e).slice(0, 120) }; }
+
+    // Fire the AI caller at the fresh lead. OFF by default (AI_CALLER_AUTODIAL);
+    // when disabled it only logs the intent. A dial must never break ingest, so
+    // it is awaited inside its own try and its result is not fatal.
+    try {
+      const dialRes = await dispatchFreshLeadCall({
+        name, e164, detail, source: "Meta Ad", isRecruitment,
+      });
+      if (dialRes.dialed) console.log("[aiCaller] placed", e164, dialRes.conversationId);
+    } catch { /* non-fatal */ }
   }
 
   // Append a permanent lead-tracking row (never overwritten, unlike the chat).

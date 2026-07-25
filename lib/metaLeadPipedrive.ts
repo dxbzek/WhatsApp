@@ -219,10 +219,15 @@ export async function syncMetaLeadToPipedrive(opts: {
       owner_id: owner,
       pipeline_id: PIPELINE_ID,
       stage_id: STAGE_ID,
+      // Pipedrive REJECTS an empty string on a text custom field ("Expected non-empty
+      // 'string' ... use null to clear") and fails the whole deal with a 400. A Meta lead
+      // always carries an ad link and caption; a WEBSITE lead never does, which is why
+      // every website enquiry created a person and then no deal (25 Jul 2026). Omit them.
       custom_fields: {
         [F_SOURCE]: clean(opts.sourceValue) || SOURCE_VALUE,
-        [F_AD_LINK]: adUrl || "",
-        [F_AD_CAPTION]: [headline, caption].filter(Boolean).join(" — "),
+        ...(adUrl ? { [F_AD_LINK]: adUrl } : {}),
+        ...(([headline, caption].filter(Boolean).join(" — ")) ?
+          { [F_AD_CAPTION]: [headline, caption].filter(Boolean).join(" — ") } : {}),
         ...crmCf,
       },
     });

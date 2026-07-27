@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -37,22 +36,22 @@ const V = () => clean(process.env.META_API_VERSION) || "v21.0";
 const SECRET = () => clean(process.env.PIPEDRIVE_WEBHOOK_SECRET);
 const LIVE = () => clean(process.env.CAPI_LIVE) === "1";
 
-const sha = (s: string) => crypto.createHash("sha256").update(s.trim().toLowerCase()).digest("hex");
-
-// Fire one "Qualified Lead" event, matching meta_capi_qualified_pipedrive.py byte-for-byte
-// (action_source website + sentinel URL is what makes it match the native Custom Conversion
-// "Qualified Lead" 1354065416693754; system_generated never matched — see memory).
-async function fireCapi(phoneDigits: string, eventTime: number, leadRef: string) {
+// Fire one CRM lifecycle event, matching meta_capi_qualified_pipedrive.py. These are Instant
+// FORM lead ads, so a qualification attributes ONLY by the Meta leadgen id — Conversions API
+// for CRM: user_data.lead_id (plain int, NOT hashed), action_source system_generated,
+// custom_data.event_source 'crm', no URL. The old website + phone-hash + sentinel-URL payload
+// never attributed to the ad (that was the "why isn't it updating" bug). Event name
+// 'ERE Qualified Lead' is deliberately distinct so the 31 polluted 'Qualified Lead' events
+// (27 Jul mis-fire) can never be counted by the CRM lifecycle mapping. See memory.
+async function fireCapi(leadgenId: string, eventTime: number) {
   const payload = {
     data: [
       {
-        event_name: "Qualified Lead",
+        event_name: "ERE Qualified Lead",
         event_time: eventTime,
-        action_source: "website",
-        event_source_url: "https://erehomes.ae/crm/qualified-lead",
-        event_id: `qualw-${leadRef}`,
-        user_data: { ph: [sha(phoneDigits)] },
-        custom_data: { content_category: "qualified", content_name: "Qualified Lead" },
+        action_source: "system_generated",
+        user_data: { lead_id: Number(leadgenId) },
+        custom_data: { lead_event_source: "ERE CRM", event_source: "crm" },
       },
     ],
   };
@@ -102,7 +101,7 @@ export async function POST(req: NextRequest) {
   const db = supabaseAdmin();
   const { data: rows, error } = await db
     .from("lead_events")
-    .select("id, wa_phone, name, created_at, capi_prequalified_sent_at")
+    .select("id, wa_phone, name, leadgen_id, created_at, capi_prequalified_sent_at")
     .eq("pipedrive_deal_id", dealId)
     .order("created_at", { ascending: true });
   if (error) return NextResponse.json({ ok: false, error: "db" }, { status: 500 });
@@ -112,8 +111,10 @@ export async function POST(req: NextRequest) {
   const le = (rows || []).find((r: any) => !r.capi_prequalified_sent_at);
   if (!le) return NextResponse.json({ ok: true, skipped: "no-pending-lead-event", dealId });
 
-  const phone = String(le.wa_phone || "").replace(/\+/g, "");
-  if (!phone) return NextResponse.json({ ok: true, skipped: "no-phone", dealId, leadEventId: le.id });
+  // CRM attribution needs the leadgen id. Without it the event can't tie back to the ad,
+  // so we skip rather than fire an unattributable event.
+  const leadgenId = String(le.leadgen_id || "").trim();
+  if (!leadgenId) return NextResponse.json({ ok: true, skipped: "no-leadgen-id", dealId, leadEventId: le.id });
 
   // event_time = now: the deal became qualified now, and "now" is always inside Meta's 7-day
   // window (created_at could be older and get rejected). event_id keeps dedup stable.
@@ -121,14 +122,14 @@ export async function POST(req: NextRequest) {
 
   if (!LIVE()) {
     console.log(
-      `[capi-qualified] DRY-RUN (CAPI_LIVE unset) — would fire Qualified Lead: deal=${dealId} stage=${stageId} leadEvent=${le.id} name=${le.name || "?"}`
+      `[capi-qualified] DRY-RUN (CAPI_LIVE unset) — would fire ERE Qualified Lead: deal=${dealId} stage=${stageId} leadEvent=${le.id} leadgen=${leadgenId} name=${le.name || "?"}`
     );
     return NextResponse.json({ ok: true, dryRun: true, dealId, stageId, leadEventId: le.id });
   }
   if (!TOKEN()) return NextResponse.json({ ok: false, error: "no-meta-token" }, { status: 500 });
 
   try {
-    const r = await fireCapi(phone, eventTime, String(le.id));
+    const r = await fireCapi(leadgenId, eventTime);
     if (!r.ok) {
       console.log(`[capi-qualified] FAIL deal=${dealId} leadEvent=${le.id} status=${r.status} received=${r.received}`);
       return NextResponse.json({ ok: false, error: "capi-failed", status: r.status }, { status: 502 });

@@ -6,7 +6,10 @@ import { verifySession, COOKIE } from "@/lib/auth";
 //  - /api/twilio/* : Twilio webhooks (inbound + status) reach us unauthenticated
 //  - /api/cron/*   : the drip dispatcher, poked by pg_cron (self-secured by CRON_SECRET)
 //  - /api/leads/*  : Meta lead-form ingest from Zapier/Make (self-secured by LEAD_INGEST_SECRET)
-const PUBLIC_API = ["/api/auth/", "/api/twilio/", "/api/cron/", "/api/leads/"];
+//  - /api/pipedrive/qualified : Pipedrive stage-change webhook -> Meta CAPI (self-secured by
+//    PIPEDRIVE_WEBHOOK_SECRET). Only this one path, NOT the /api/pipedrive/ push/status routes
+//    which are UI-called and must stay session-gated.
+const PUBLIC_API = ["/api/auth/", "/api/twilio/", "/api/cron/", "/api/leads/", "/api/pipedrive/qualified"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

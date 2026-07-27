@@ -70,6 +70,7 @@ async function run(req: NextRequest) {
         campaignId: lead.campaign_id,
         adsetName: lead.adset_name,
         adName: lead.ad_name,
+        metaLeadId: lead.id, // leadgen id — CRM attribution key for the Qualified Lead CAPI event
         answers: lead.answers, // qualifying answers (rent vs sell, community, …)
       });
       if (res.status === "routed") routed++;

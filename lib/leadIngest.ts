@@ -31,6 +31,7 @@ export async function ingestMetaLead(opts: {
   campaignId?: string;
   adsetName?: string;
   adName?: string;       // exact ad name — more specific than the campaign
+  metaLeadId?: string;   // Meta leadgen id (15-17 digit) — the CRM attribution key for CAPI
   answers?: Record<string, string>; // the form's qualifying answers, label -> value
 }): Promise<IngestResult> {
   const e164 = normalizePhone(opts.phone || "");
@@ -171,6 +172,10 @@ export async function ingestMetaLead(opts: {
     campaign_id: (opts.campaignId || "").trim() || null,
     adset_name: (opts.adsetName || "").trim() || null,
     ad_name: adName || null,
+    // Meta leadgen id — the attribution key for the Qualified Lead CRM CAPI event
+    // (sent as user_data.lead_id). Without it a qualification can't be tied back to
+    // the ad, so the Ads Manager Qualified Lead / CPQL column stays blank.
+    leadgen_id: (opts.metaLeadId || "").trim() || null,
     // Raw qualifying answers, kept for reporting (e.g. rent vs sell split by
     // campaign) without re-querying Meta.
     answers: answerLine.length ? answers : null,

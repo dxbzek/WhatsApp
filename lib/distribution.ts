@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp, sendTemplate, getContentMedia } from "@/lib/twilio";
 import { ensureLeadRef } from "@/lib/leadRef";
 import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
+import { emailLeadAlert } from "@/lib/leadEmail";
 
 // Unified agent lead-alert template on the UTILITY subaccount (category UTILITY,
 // so it is exempt from Meta's per-recipient MARKETING throttle that silently drops
@@ -153,7 +154,7 @@ async function logAgentAlert(db: ReturnType<typeof supabaseAdmin>, opts: {
   } catch { /* logging is best-effort */ }
 }
 
-type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: string | null; active?: boolean };
+type Agent = { id: string; name: string; wa_number: string; pipedrive_user_id?: string | null; active?: boolean; email?: string | null };
 
 // Send one lead-alert to an agent's WhatsApp via the approved UTILITY template.
 // Returns the Twilio SID so a later button tap can be correlated back to this lead
@@ -230,6 +231,14 @@ async function alertRecruiters(targets: Agent[], candidateName: string, contactP
     const r = await sendRecruitAlert(a.name, a.wa_number, candidateName, contactPhone, source);
     results.push({ id: a.id, name: a.name, wa: a.wa_number, ...r });
   }
+  const mail = await emailLeadAlert({
+    channel: "Recruitment",
+    recipients: targets.map((a) => ({ name: a.name, email: a.email })),
+    leadName: candidateName, leadPhone: contactPhone, enquiry: source,
+  });
+  if (!mail.error) {
+    for (const r of results) if (!r.ok) { r.ok = true; r.error = `wa: ${r.error || "failed"}; emailed`; }
+  }
   return results;
 }
 
@@ -241,6 +250,26 @@ async function alertAgents(targets: Agent[], leadRef: string, leadName: string, 
   for (const a of targets) {
     const r = await sendAgentAlert(a.name, a.wa_number, leadRef, leadName, contactPhone, source, replyContext, adUrl);
     results.push({ id: a.id, name: a.name, wa: a.wa_number, ...r });
+  }
+  // Email the same alert to the assigned agent(s), CC marketing@. One mail for the
+  // batch, not one per agent — a "distribution: all" route would otherwise send the
+  // same lead several times over. Since 27 Jul 2026 this is the channel that actually
+  // arrives; WhatsApp above is dead until a WABA comes back.
+  const mail = await emailLeadAlert({
+    channel: "Meta",
+    recipients: targets.map((a) => ({ name: a.name, email: a.email })),
+    leadName, leadPhone: contactPhone, leadRef: leadRef || null,
+    enquiry: source,
+    adUrl: adUrl || null,
+    replyUrl: replyContext !== undefined ? (replyLink(targets[0]?.name || "", leadName, contactPhone, replyContext, adUrl) || null) : null,
+  });
+  // An alert that reached the agent by email is a delivered alert, whatever WhatsApp
+  // did — otherwise every lead now trips the "alert_failed" safety net and the routing
+  // status lies about whether anyone was told.
+  if (!mail.error) {
+    for (const r of results) if (!r.ok) { r.ok = true; r.error = `wa: ${r.error || "failed"}; emailed`; }
+  } else if (results.every((r) => !r.ok)) {
+    for (const r of results) r.error = `${r.error || "wa failed"}; email: ${mail.error}`;
   }
   return results;
 }
@@ -335,7 +364,7 @@ async function loadAgents(db: ReturnType<typeof supabaseAdmin>, ids: string[]): 
   if (ids.length === 0) return [];
   const { data } = await db
     .from("agents")
-    .select("id, name, wa_number, pipedrive_user_id, active")
+    .select("id, name, wa_number, pipedrive_user_id, active, email")
     .in("id", ids)
     .eq("active", true);
   const byId = new Map((data || []).map((a: any) => [a.id, a]));

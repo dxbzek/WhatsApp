@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
 import { normalizePhone } from "@/lib/leadIngest";
+import { emailLeadAlert } from "@/lib/leadEmail";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +26,7 @@ const NOT_A_LEAD = /\b(job|career|vacanc|hiring|recruit|cv|resume|internship|par
 // leads are shared out rather than piling on one person. Falls back to the env owner.
 const POOL_REF = "Website";
 
-async function pickOwner(): Promise<string | null> {
+async function pickOwner(): Promise<{ name: string; email: string | null } | null> {
   const db = supabaseAdmin();
   const { data: route } = await db
     .from("lead_routes").select("agent_ids, rr_pointer").eq("ref", POOL_REF).maybeSingle();
@@ -35,8 +36,9 @@ async function pickOwner(): Promise<string | null> {
   // submissions never land on the same agent.
   const { data: ptr } = await db.rpc("next_route_rr_pointer", { p_ref: POOL_REF });
   const idx = ((((ptr as number) || 1) - 1) % ids.length + ids.length) % ids.length;
-  const { data: agent } = await db.from("agents").select("name").eq("id", ids[idx]).maybeSingle();
-  return (agent?.name as string) || null;
+  const { data: agent } = await db.from("agents").select("name, email").eq("id", ids[idx]).maybeSingle();
+  if (!agent?.name) return null;
+  return { name: agent.name as string, email: (agent.email as string) || null };
 }
 
 export async function POST(req: NextRequest) {
@@ -55,12 +57,28 @@ export async function POST(req: NextRequest) {
   const page = String(b.page || b.path || "").trim();
   const listing = String(b.listing || "").trim();
 
-  // No phone = nothing a caller can act on. Say so honestly rather than creating a deal
-  // nobody can work; the email alert still went out either way.
-  if (!phone) return NextResponse.json({ ok: true, skipped: "no_phone" });
   if (NOT_A_LEAD.test(`${interest} ${message}`)) {
     return NextResponse.json({ ok: true, skipped: "not_a_property_enquiry" });
   }
+
+  // Assign first, then alert, then create the deal. The alert is sent BEFORE the
+  // no-phone gate: a genuine enquiry that left only an email is still a lead a human
+  // should see, even though there is no deal to create from it.
+  const owner = await pickOwner();
+  const mail = await emailLeadAlert({
+    channel: "Website",
+    recipients: owner ? [{ name: owner.name, email: owner.email }] : [],
+    leadName: name || "New enquiry",
+    leadPhone: phone,
+    leadEmail: email || null,
+    enquiry: [interest, listing].filter(Boolean).join(" · ") || null,
+    message: message || null,
+    page: page || null,
+  });
+
+  // No phone = nothing a caller can act on. Say so honestly rather than creating a deal
+  // nobody can work. The alert above already went out.
+  if (!phone) return NextResponse.json({ ok: true, skipped: "no_phone", emailed: mail.sent, emailError: mail.error });
 
   const answers: Record<string, string> = {};
   if (interest) answers["They are"] = interest;
@@ -72,11 +90,11 @@ export async function POST(req: NextRequest) {
   const r = await syncMetaLeadToPipedrive({
     name, e164: phone, email,
     detail: `Website enquiry${page ? ` — ${page}` : ""}`,
-    assignedAgent: await pickOwner(),
+    assignedAgent: owner?.name ?? null,
     sourceValue: "Website",
     kind: "Website lead",
     titlePrefix: "Website",
     answers,
   });
-  return NextResponse.json(r, { status: r.ok ? 200 : 502 });
+  return NextResponse.json({ ...r, emailed: mail.sent, emailError: mail.error }, { status: r.ok ? 200 : 502 });
 }

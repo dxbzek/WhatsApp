@@ -379,6 +379,7 @@ ${sourceLine ? `<p style="margin:20px 0 0;font-size:13px;color:#6b6b6b"><strong 
 <p style="margin:20px 0 0;font-size:13px;color:#6b6b6b;line-height:1.55">
 <strong style="color:#111">Never called</strong> is an open deal in New Lead, No Answer or Contact made with no completed activity on it. Stage alone is not the test: a card can be dragged to No Answer without anyone dialling, so this reads the activity log.<br>
 <strong style="color:#111">1st reply</strong> is the median time from the lead landing to the first completed activity on it${i.speedSampled ? `, across the ${i.speedSampled} of today's leads that have been actioned` : `. Today it cannot be measured: ${i.callsToday || 0} calls were logged, none of them against a lead that arrived today`}.<br>
+<strong style="color:#111">Calls</strong> counts activities completed in Pipedrive today. A rep who dials without logging shows 0 here, so a zero is a CRM-discipline finding, not proof nobody phoned.<br>
 <strong style="color:#111">Forward</strong> means it reached Qualified or beyond today.
 ${i.lostNoReason ? `<br><strong style="color:#111">${i.lostNoReason} of today's ${i.lost || 0} closed lost carry no lost reason</strong>, so nothing can be learned from them.` : ""}
 ${i.newPooled ? `<br>${i.newPooled} more deals were created into the telesales pool today. That is allocation, not enquiries, so it is not in the In column.` : ""}
@@ -404,6 +405,7 @@ Live from Pipedrive. Owners are chased directly by email; this is the summary on
     "",
     ...(sourceLine ? [`Where today's ${i.newLeads} came from: ${sourceLine.replace(/<[^>]+>/g, "")}`, ""] : []),
     `Never called = open in New Lead / No Answer / Contact made with no completed activity.`,
+    `Calls = activities completed in Pipedrive today. A rep who dials without logging shows 0.`,
     `1st = median minutes from the lead landing to the first completed activity.`,
     `Forward = reached Qualified or beyond today.`,
     ...(i.lostNoReason ? [`${i.lostNoReason} of today's ${i.lost || 0} closed lost carry no lost reason.`] : []),

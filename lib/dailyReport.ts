@@ -104,8 +104,17 @@ const median = (xs: number[]): number | null => {
   return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
 };
 
+// Midnight TODAY in Dubai, as a UTC timestamp. The report is headed "End of day, 29 Jul" so
+// every "today" number has to mean the Dubai calendar day. A rolling 24h window straddles two
+// days: on 29 Jul it was counting Zenon's calls from 13:07 on the 28th, which is why the call
+// column disagreed with what the reps had already reported in the telesales WhatsApp group.
+function dubaiDayStart(): number {
+  const d = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" });
+  return Date.parse(`${d}T00:00:00+04:00`);
+}
+
 export async function collectDailyReport(): Promise<DailyReportInput> {
-  const dayAgo = Date.now() - 86400_000;
+  const dayAgo = dubaiDayStart();
 
   // Flow: what arrived and what moved forward in the last 24h. v2 because it is the only
   // version that filters by pipeline, and none of these need done_activities_count.
@@ -164,7 +173,9 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
   // week it is being compared with. Counts the same 7 days back, same pool exclusion, then
   // divides by 7 — a plain average, not a rolling median, because the reader has to be able
   // to reproduce it in their head from the daily numbers.
-  const weekAgo = Date.now() - 7 * 86400_000;
+  // The 7 FULL days before today, so the baseline never includes a part-day of today and
+  // can't drift under the number it is meant to explain.
+  const weekAgo = dayAgo - 7 * 86400_000;
   let weekInbound = 0;
   for (let page = 0, cursor = ""; page < 20; page++) {
     const params: Record<string, string> = {
@@ -176,6 +187,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     for (const deal of (d?.data || []) as any[]) {
       const added = parseUtc(deal.add_time);
       if (added < weekAgo) { done = true; break; }
+      if (added >= dayAgo) continue;   // today is what the baseline is being compared WITH
       if (!POOL_STAGES.has(Number(deal.stage_id))) weekInbound++;
     }
     cursor = d?.additional_data?.next_cursor || "";

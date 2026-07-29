@@ -214,7 +214,7 @@ export async function emailAgentLeadDigest(i: DigestInput): Promise<{ sent: stri
 <p style="margin:0 0 6px;font-size:15px;color:#444">${esc(intro)}</p>
 ${i.leads.map(digestLeadHtml).join("")}
 <p style="margin:18px 0 0;font-size:13px;color:#6b6b6b;border-top:1px solid #e6e6e6;padding-top:14px">
-All of these are already in Pipedrive. Logging the call there is what clears them.</p></div>`;
+All of these are already in Pipedrive. You get this list once per lead, not on repeat.</p></div>`;
 
   const text = [intro, "", ...i.leads.map((l) => {
     const bits = [l.name, l.phone, [l.source, l.detail].filter(Boolean).join(" · "), waitLabel(l.waitingHours) ? `waiting ${waitLabel(l.waitingHours)}` : ""].filter(Boolean);

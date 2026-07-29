@@ -293,23 +293,10 @@ export type DailyReportInput = {
   windowDays?: number;          // how far back "waiting" counts
 };
 
-export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: string[]; error: string | null }> {
-  // marketing@ (this is its ONE daily mail) plus the sales manager, who acts on the
-  // per-agent list. Override with DAILY_REPORT_TO; falls back to LEAD_ALERT_CC's
-  // marketing inbox if that env is ever set to something empty.
-  // Matthew is deliberately NOT here (Zek, 29 Jul 2026: "do not send to Matthew for now").
-  // Put him back by setting DAILY_REPORT_TO rather than editing this default.
-  const to = (process.env.DAILY_REPORT_TO || "marketing@erehomes.ae")
-    .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
-  if (to.length === 0) to.push(...ccList());
-  if (to.length === 0) return { sent: [], error: "no recipient" };
-
-  const host = process.env.LEAD_SMTP_HOST || "smtp.gmail.com";
-  const port = Number(process.env.LEAD_SMTP_PORT || 465);
-  const user = process.env.LEAD_SMTP_USER || "marketing@erehomes.ae";
-  const pass = process.env.LEAD_SMTP_PASS || "";
-  if (!pass) return { sent: [], error: "LEAD_SMTP_PASS not set" };
-
+// Rendering lives on its own so `scripts/send-daily-report-sample.ts --html` can write the
+// EXACT email to a file for review. A separate preview renderer would drift from what the
+// cron actually sends, which is the whole point of a preview.
+export function renderDailyReport(i: DailyReportInput): { html: string; text: string } {
   const win = i.windowDays || 14;
   const age = (h: number | null) => (!h ? "—" : h < 48 ? `${Math.round(h)}h` : `${Math.round(h / 24)}d`);
   const n = (v?: number) => (v ? String(v) : `<span style="color:#c8c8c8">0</span>`);
@@ -444,6 +431,32 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
     ...(i.newPooled ? [`${i.newPooled} more deals were created into the telesales pool today (allocation, not enquiries).`] : []),
     ...(i.olderBacklog ? [`A further ${i.olderBacklog} uncalled leads are older than ${win} days, excluded above.`] : []),
   ].join("\n");
+
+  return { html, text };
+}
+
+export function renderDailyReportHtml(i: DailyReportInput): string {
+  return renderDailyReport(i).html;
+}
+
+export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: string[]; error: string | null }> {
+  // marketing@ (this is its ONE daily mail) plus the sales manager, who acts on the
+  // per-agent list. Override with DAILY_REPORT_TO; falls back to LEAD_ALERT_CC's
+  // marketing inbox if that env is ever set to something empty.
+  // Matthew is deliberately NOT here (Zek, 29 Jul 2026: "do not send to Matthew for now").
+  // Put him back by setting DAILY_REPORT_TO rather than editing this default.
+  const to = (process.env.DAILY_REPORT_TO || "marketing@erehomes.ae")
+    .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+  if (to.length === 0) to.push(...ccList());
+  if (to.length === 0) return { sent: [], error: "no recipient" };
+
+  const host = process.env.LEAD_SMTP_HOST || "smtp.gmail.com";
+  const port = Number(process.env.LEAD_SMTP_PORT || 465);
+  const user = process.env.LEAD_SMTP_USER || "marketing@erehomes.ae";
+  const pass = process.env.LEAD_SMTP_PASS || "";
+  if (!pass) return { sent: [], error: "LEAD_SMTP_PASS not set" };
+
+  const { html, text } = renderDailyReport(i);
 
   try {
     const transport = nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });

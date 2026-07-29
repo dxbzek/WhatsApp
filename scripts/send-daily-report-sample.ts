@@ -12,10 +12,21 @@ import { emailDailyReport } from "../lib/leadEmail";
 
 async function main() {
   const arg = process.argv[2];
-  if (!arg) throw new Error("usage: npx tsx scripts/send-daily-report-sample.ts <email>|--dry");
+  if (!arg) throw new Error("usage: npx tsx scripts/send-daily-report-sample.ts <email>|--dry|--html <path>");
 
   const report = await collectDailyReport();
-  console.log(JSON.stringify(report, null, 2));
+  if (arg !== "--html") console.log(JSON.stringify(report, null, 2));
+
+  // --html writes the exact email body to a file so the layout can be reviewed in a browser
+  // without sending anything. Reuses the production renderer, so the file IS the email.
+  if (arg === "--html") {
+    const out = process.argv[3];
+    if (!out) throw new Error("usage: --html <path>");
+    const { renderDailyReportHtml } = await import("../lib/leadEmail");
+    await (await import("node:fs/promises")).writeFile(out, renderDailyReportHtml(report), "utf8");
+    console.log("wrote", out);
+    return;
+  }
   if (arg === "--dry") return;
 
   process.env.DAILY_REPORT_TO = arg;

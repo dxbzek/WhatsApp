@@ -287,10 +287,19 @@ async function runOpsWatch(db: ReturnType<typeof supabaseAdmin>): Promise<{ unde
 // Fifth pass: one summary per Dubai day, sent by whatever cron pass lands at/after
 // DIGEST_HOUR (the cron stops at 20:xx Dubai, so 18 gives it two hours of passes to
 // get through). ops_log keyed on the Dubai date makes it exactly once.
-const DIGEST_HOUR_DUBAI = 18;
+// 17:30 Dubai, weekdays only (Zek, 29 Jul 2026). Expressed in minutes-of-day because the
+// send time is not on the hour and the cron only wakes every 30 minutes: an hour-only gate
+// would fire the 17:00 pass. Any later pass still sends — the ops_log claim keeps it to one
+// mail a day — so a missed 17:30 tick means a late report, never a lost one.
+const DIGEST_MINUTE_DUBAI = 17 * 60 + 30;
 async function runDailyDigest(db: ReturnType<typeof supabaseAdmin>): Promise<boolean> {
-  const hour = Number(new Date().toLocaleString("en-GB", { hour: "2-digit", hour12: false, timeZone: "Asia/Dubai" }));
-  if (hour < DIGEST_HOUR_DUBAI) return false;
+  const now = new Date();
+  // Dubai has no DST, but read the day and time in the zone anyway rather than offsetting by
+  // hand — a hand-rolled +4 breaks the moment this runs from a differently-configured host.
+  const weekday = now.toLocaleDateString("en-GB", { weekday: "short", timeZone: "Asia/Dubai" });
+  if (weekday === "Sat" || weekday === "Sun") return false;
+  const [h, m] = now.toLocaleTimeString("en-GB", { hour12: false, timeZone: "Asia/Dubai" }).split(":").map(Number);
+  if (h * 60 + m < DIGEST_MINUTE_DUBAI) return false;
   const dateKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" });
 
   // Numbers come from PIPEDRIVE, not this console's tables. `conversations` and

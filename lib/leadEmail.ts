@@ -312,84 +312,111 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
   const age = (h: number | null) => (!h ? "—" : h < 48 ? `${Math.round(h)}h` : `${Math.round(h / 24)}d`);
   const n = (v?: number) => (v ? String(v) : `<span style="color:#c8c8c8">0</span>`);
 
-  // ONE table, one row per rep — the sales-manager view. Two tiers of column: what happened
-  // today (in / forward / lost) and what is stuck (never called, oldest, called-still-open),
-  // so a glance down the "never called" column names who to talk to.
-  const th = (t: string, align = "left", sub = "") =>
-    `<th align="${align}" style="padding:0 0 9px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a8a8a;font-weight:400;border-bottom:1px solid #dcdcdc;vertical-align:bottom">` +
-    `${esc(t)}${sub ? `<div style="font-size:10px;letter-spacing:0;text-transform:none;color:#b0b0b0">${esc(sub)}</div>` : ""}</th>`;
-  const td = (v: string, align = "right", extra = "") =>
-    `<td align="${align}" style="padding:10px 0 10px 10px;font-size:15px;color:#111;border-bottom:1px solid #f0f0f0;${extra}">${v}</td>`;
-
-  // Red only where it means "act on this": leads nobody has called. Everything else stays
-  // neutral so the one colour on the page keeps its meaning.
-  const mins = (m?: number | null) => (m === null || m === undefined ? "—" : m < 90 ? `${m}m` : `${Math.round(m / 60)}h`);
-
-  const agentRows = i.perAgent.map((a) =>
-    `<tr>${td(esc(a.name), "left", "white-space:nowrap")}` +
-    td(n(a.newToday)) +
-    td(n(a.calls)) +
-    td(n(a.notes)) +
-    td(`<span style="font-size:14px;color:#6b6b6b">${esc(mins(a.speedMins))}</span>`) +
-    td(n(a.progressed)) +
-    td(n(a.lost)) +
-    td(a.waiting ? `<strong style="color:#b4462a">${a.waiting}</strong>` : n(0)) +
-    td(`<span style="font-size:14px;color:#6b6b6b">${esc(age(a.oldestHours))}</span>`) +
-    `</tr>`).join("");
-
-  const sum = (k: "newToday" | "progressed" | "lost" | "calledOpen" | "calls" | "notes") =>
-    i.perAgent.reduce((t, a) => t + (a[k] || 0), 0);
-  const totalRow = `<tr>` +
-    `<td style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">Total</td>` +
-    [String(sum("newToday")), String(sum("calls")), String(sum("notes")), mins(i.speedMedianMins),
-      String(sum("progressed")), String(sum("lost")), String(i.awaitingFirst), ""]
-      .map((v) => `<td align="right" style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">${esc(v)}</td>`).join("") +
-    `</tr>`;
-
+  // House style is the ERE Daily Ad Report (01 - Scripts/ere_report_email.py): cream page,
+  // 600px white card, dark header with a gold rule, Georgia stat tiles, dark table head.
+  // Same palette and the same furniture, so the two daily emails read as one family.
+  const DARK = "#1F1C17", GOLD = "#D2B583", INK = "#2B2722", MUTE = "#8A857C", LINE = "#E7E3DB", RED = "#B4462A";
+  const A = "Arial,sans-serif";
+  const mins = (m?: number | null) => (m === null || m === undefined ? "\u2014" : m < 90 ? `${m}m` : `${Math.round(m / 60)}h`);
   const vsWeek = i.weekAvgNew
     ? ` (7-day average ${i.weekAvgNew}${i.newLeads > i.weekAvgNew ? ", above" : i.newLeads < i.weekAvgNew ? ", below" : ""})`
     : "";
-  const sourceLine = (i.sources || []).map((s) => `${esc(s.name)} ${s.count}`).join(" · ");
 
-  // The one line a head of sales reads first: today's leads that nobody has phoned.
-  // Worst-first. "Nothing logged on ANY of today's leads" outranks the per-lead count: on
-  // 29 Jul the team completed 198 calls and not one of them was against a lead that arrived
-  // that day, which the old headline ("15 of 33 have no call logged") completely hid.
+  const stat = (label: string, val: string, gold = false) =>
+    `<td style="padding:14px 10px;text-align:center;border:1px solid ${LINE};background:#FBFAF7;">` +
+    `<div style="font:700 22px/1.1 Georgia,serif;color:${gold ? GOLD : DARK};">${esc(val)}</div>` +
+    `<div style="font:600 11px/1.4 ${A};color:${MUTE};text-transform:uppercase;letter-spacing:.06em;margin-top:5px;">${esc(label)}</div></td>`;
+
+  const hd = (t: string, align = "center", gold = false) =>
+    `<td style="padding:9px 8px;font:700 11px ${A};color:${gold ? GOLD : "#FFF"};text-align:${align};text-transform:uppercase;letter-spacing:.05em;">${esc(t)}</td>`;
+
+  const dim = (v?: number) => (v ? String(v) : `<span style="color:#CFCAC1">0</span>`);
+
+  const agentRows = i.perAgent.map((a, idx) => {
+    const bg = idx % 2 === 0 ? "#FFFFFF" : "#FBFAF7";
+    const cell = (v: string, align = "center", bold = false, color = INK, tint = false) =>
+      `<td style="padding:11px 8px;border-bottom:1px solid ${LINE};font:${bold ? 700 : 400} ${bold ? 14 : 13}px ${A};color:${color};text-align:${align};white-space:nowrap;${tint ? "background:#FBFAF7;" : ""}">${v}</td>`;
+    return `<tr style="background:${bg};">` +
+      `<td style="padding:11px 10px 11px 12px;border-bottom:1px solid ${LINE};font:400 14px ${A};color:${INK};">${esc(a.name)}</td>` +
+      cell(dim(a.newToday), "center", true, DARK) +
+      cell(dim((a.calls || 0) + (a.notes || 0)), "center", true, DARK) +
+      cell(dim(a.progressed), "center", true, DARK, true) +
+      cell(dim(a.lost), "center", false, MUTE) +
+      cell(a.waiting ? String(a.waiting) : dim(0), "center", true, a.waiting ? RED : INK, true) +
+      cell(esc(age(a.oldestHours)), "right", false, MUTE) +
+      `</tr>`;
+  }).join("");
+
+  const sum = (k: "newToday" | "progressed" | "lost" | "calledOpen" | "calls" | "notes") =>
+    i.perAgent.reduce((t, a) => t + (a[k] || 0), 0);
+  const tot = (v: string, tint = false) =>
+    `<td style="padding:11px 8px;font:700 13px ${A};color:${DARK};text-align:center;${tint ? "background:#FBFAF7;" : ""}">${esc(v)}</td>`;
+  const totalRow = `<tr style="border-top:2px solid ${DARK};">` +
+    `<td style="padding:11px 10px 11px 12px;font:700 13px ${A};color:${DARK};">Total</td>` +
+    tot(String(sum("newToday"))) + tot(String(sum("calls") + sum("notes"))) +
+    tot(String(sum("progressed")), true) + tot(String(sum("lost"))) +
+    tot(String(i.awaitingFirst), true) + `<td></td></tr>`;
+
+  const sourceLine = (i.sources || []).map((s) => `${esc(s.name)} ${s.count}`).join(" &middot; ");
+  const worked = (i.callsToday || 0) + (i.notesToday || 0);
+
+  // One sentence, worst true thing first. This line decides whether the rest gets read, so
+  // it never opens with something reassuring that hides a problem.
   const headline = i.newLeads && i.speedSampled === 0
-    ? `None of today's ${i.newLeads} new leads has a completed activity logged yet.`
+    ? `Nothing has been logged yet against any of today's ${i.newLeads} new leads.`
     : i.uncalledToday
-      ? `${i.uncalledToday} of today's ${i.newLeads} new leads still have no call logged.`
+      ? `${i.uncalledToday} of today's ${i.newLeads} new leads have not been touched.`
       : i.newLeads
-        ? `Every one of today's ${i.newLeads} new leads has a call logged.`
-        : `No new enquiries in the last 24 hours.`;
+        ? `Every one of today's ${i.newLeads} new leads has been actioned.`
+        : `No new enquiries today.`;
 
-  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:660px;margin:0 auto;padding:28px 24px;color:#111">
-<p style="margin:0 0 4px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8a8a8a">End of day</p>
-<h1 style="margin:0 0 6px;font-size:24px;font-weight:600">Leads — ${esc(i.date)}</h1>
-<p style="margin:0 0 4px;font-size:15px;color:${i.uncalledToday ? "#b4462a" : "#444"}">${esc(headline)}</p>
-<p style="margin:0 0 22px;font-size:14px;color:#6b6b6b">${i.newLeads} in${esc(vsWeek)} · ${i.callsToday || 0} calls and ${i.notesToday || 0} notes logged · median first response ${esc(i.speedSampled ? mins(i.speedMedianMins) : "not measurable, nothing logged")}</p>
-
-<div style="overflow-x:auto">
-<table style="border-collapse:collapse;width:100%;min-width:560px">
-<tr>${th("Owner")}${th("In", "right", "today")}${th("Calls", "right", "logged")}${th("Notes", "right", "logged")}${th("1st reply", "right", "median")}${th("Forward", "right", "today")}${th("Lost", "right", "today")}${th("Never called", "right", `open, ${win}d`)}${th("Oldest", "right", "of those")}</tr>
-${agentRows || `<tr><td colspan="9" style="padding:14px 0;font-size:15px;color:#444">No activity to report.</td></tr>`}
-${agentRows ? totalRow : ""}
+  const html = `<!doctype html><html><body style="margin:0;padding:0;background:#EFEbE3;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EFEbE3;padding:24px 12px;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background:#FFFFFF;border-radius:10px;overflow:hidden;border:1px solid ${LINE};">
+  <tr><td style="background:${DARK};padding:26px 30px;">
+    <div style="font:700 20px/1 ${A};color:#FFFFFF;letter-spacing:.14em;">ERE <span style="color:${GOLD};">HOMES</span></div>
+    <div style="font:600 12px/1.4 ${A};color:${GOLD};text-transform:uppercase;letter-spacing:.18em;margin-top:8px;">Daily Lead Report</div>
+  </td></tr>
+  <tr><td style="padding:24px 30px 6px;">
+    <div style="font:400 13px ${A};color:${MUTE};">${esc(i.date)} &middot; Asia/Dubai</div>
+    <div style="font:400 15px/1.5 ${A};color:${i.uncalledToday || i.speedSampled === 0 ? RED : INK};margin-top:8px;">${esc(headline)}</div>
+  </td></tr>
+  <tr><td style="padding:12px 30px 4px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:8px 8px;">
+      <tr>${stat("New leads", String(i.newLeads))}${stat("7-day average", i.weekAvgNew ? String(i.weekAvgNew) : "-")}${stat("Calls & notes", String(worked))}</tr>
+      <tr>${stat("Moved forward", String(i.qualified), true)}${stat("Closed lost", String(i.lost || 0))}${stat("Never touched", String(i.awaitingFirst), true)}</tr>
+    </table>
+  </td></tr>
+  <tr><td style="padding:22px 30px 4px;">
+    <div style="font:700 12px ${A};color:${DARK};text-transform:uppercase;letter-spacing:.1em;border-bottom:2px solid ${GOLD};padding-bottom:7px;">By owner</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;border-collapse:collapse;">
+      <tr style="background:${DARK};">
+        <td style="padding:9px 10px 9px 12px;font:700 11px ${A};color:#FFF;text-transform:uppercase;letter-spacing:.05em;">Owner</td>
+        ${hd("New")}${hd("Worked")}${hd("Forward", "center", true)}${hd("Lost")}${hd("Untouched", "center", true)}${hd("Oldest", "right")}</tr>
+      ${agentRows || `<tr><td colspan="7" style="padding:14px 12px;font:400 14px ${A};color:${MUTE};">No activity today.</td></tr>`}
+      ${agentRows ? totalRow : ""}
+    </table>
+  </td></tr>
+  ${sourceLine ? `<tr><td style="padding:22px 30px 4px;">
+    <div style="font:700 12px ${A};color:${DARK};text-transform:uppercase;letter-spacing:.1em;border-bottom:2px solid ${GOLD};padding-bottom:7px;">Where they came from</div>
+    <div style="font:400 14px/1.7 ${A};color:${INK};margin-top:10px;">${sourceLine}</div>
+  </td></tr>` : ""}
+  <tr><td style="padding:20px 30px 8px;">
+    <div style="font:400 12px/1.7 ${A};color:${MUTE};">
+      <strong style="color:${INK};">Worked</strong> = calls plus notes logged today. Some reps log a call, others write a note, so both count.<br>
+      <strong style="color:${INK};">Untouched</strong> = open leads from the last ${win} days with nothing logged on them at all.
+      ${i.newPooled ? `<br>${i.newPooled} deals went into the telesales pool today. That is allocation, not new enquiries.` : ""}
+      ${i.lostNoReason ? `<br>${i.lostNoReason} of today's ${i.lost || 0} closed lost have no lost reason recorded.` : ""}
+      ${i.olderBacklog ? `<br>${i.olderBacklog} untouched leads are older than ${win} days and sit outside this report.` : ""}
+    </div>
+  </td></tr>
+  <tr><td style="padding:18px 30px 28px;border-top:1px solid ${LINE};">
+    <div style="font:400 11px/1.5 ${A};color:${MUTE};">Live from Pipedrive, every day at 18:00 Dubai.<br>ERE Homes Real Estate</div>
+  </td></tr>
 </table>
-</div>
-
-${sourceLine ? `<p style="margin:20px 0 0;font-size:13px;color:#6b6b6b"><strong style="color:#111">Where today's ${i.newLeads} came from</strong><br>${sourceLine}</p>` : ""}
-
-<p style="margin:20px 0 0;font-size:13px;color:#6b6b6b;line-height:1.55">
-<strong style="color:#111">Never called</strong> is an open deal in New Lead, No Answer or Contact made with no completed activity on it. Stage alone is not the test: a card can be dragged to No Answer without anyone dialling, so this reads the activity log.<br>
-<strong style="color:#111">1st reply</strong> is the median time from the lead landing to the first completed activity on it${i.speedSampled ? `, across the ${i.speedSampled} of today's leads that have been actioned` : `. Today it cannot be measured: ${i.callsToday || 0} calls were logged, none of them against a lead that arrived today`}.<br>
-<strong style="color:#111">Calls and Notes</strong> are both counted because the team does not log the same way: some reps complete a call activity, others write a note on the deal. A rep can show 0 calls and still have worked all day. Both columns at 0 is the finding worth acting on.<br>
-<strong style="color:#111">Forward</strong> means it reached Qualified or beyond today.
-${i.lostNoReason ? `<br><strong style="color:#111">${i.lostNoReason} of today's ${i.lost || 0} closed lost carry no lost reason</strong>, so nothing can be learned from them.` : ""}
-${i.newPooled ? `<br>${i.newPooled} more deals were created into the telesales pool today. That is allocation, not enquiries, so it is not in the In column.` : ""}
-${i.olderBacklog ? `<br>A further ${i.olderBacklog} uncalled leads are older than ${win} days, mostly legacy telesales rows. Excluded so the daily numbers stay actionable.` : ""}
-</p>
-<p style="margin:16px 0 0;font-size:12px;color:#8a8a8a;border-top:1px solid #e6e6e6;padding-top:12px">
-Live from Pipedrive. Owners are chased directly by email; this is the summary only.</p></div>`;
+</td></tr></table>
+</body></html>`;
 
   const pad = (s: string, w: number) => s.length >= w ? s.slice(0, w) : s + " ".repeat(w - s.length);
   const lpad = (s: string, w: number) => s.length >= w ? s : " ".repeat(w - s.length) + s;

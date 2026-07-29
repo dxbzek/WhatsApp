@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { pingAgent, sendOutcomeFollowup, sendEscalation } from "@/lib/distribution";
+import { sendOutcomeFollowup, sendEscalation } from "@/lib/distribution";
 import { sendOpsAlertOnce, sendDailyDigestOnce } from "@/lib/opsAlert";
+import { emailAgentLeadDigest, type DigestLead } from "@/lib/leadEmail";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +14,42 @@ export const maxDuration = 60;
 // a nudge to self-report.
 const STALE_HOURS = 2;
 const CAP = 40; // most we nudge per run, so a backlog can't blow the 60s wall
+
+// Recruitment leads are agent APPLICANTS, not property enquiries. They have no sales
+// pipeline, so lead_stage is never set on them and every one nudges, then escalates,
+// forever. The console board already hides this route (HIDDEN_ROUTE in
+// app/api/conversations/route.ts); the watcher did not, which is why Fadilah — who owns
+// the Recruitment route alone — had 68 applicants generating nudges and 24 escalations
+// to her manager on 29 Jul. Excluded here on the same route ref.
+const HIDDEN_ROUTE = "Recruitment";
+
+// Turn a conversation row into the detail block an agent can act on. The old per-lead
+// mail printed name/phone/owner/ref only, which never said what the lead wanted.
+function toDigestLead(c: any): DigestLead {
+  const e164 = "+" + String(c.wa_phone || "").replace("+", "");
+  return {
+    name: c.name && c.name !== e164 ? c.name : "New contact",
+    phone: e164,
+    ref: c.lead_ref || null,
+    source: c.source === "meta_lead_form" ? "Meta" : c.source || null,
+    detail: c.source_detail || c.source_ref || null,
+    message: c.last_body || null,
+    waitingHours: c.assigned_at ? Math.max(1, Math.round((Date.now() - new Date(c.assigned_at).getTime()) / 3600_000)) : null,
+    dealId: c.pipedrive_deal_id || null,
+  };
+}
+
+function groupBy<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
+  const m = new Map<string, T[]>();
+  for (const r of rows) {
+    const k = key(r);
+    if (!m.has(k)) m.set(k, []);
+    m.get(k)!.push(r);
+  }
+  return m;
+}
+
+const SELECT_CONVO = "id, name, wa_phone, assigned_agent_id, assigned_at, lead_ref, source, source_ref, source_detail, last_body, pipedrive_deal_id";
 
 // The repeat "still no update" reminder is OFF by default. It re-pings whoever a
 // hot lead is still assigned to, and when WhatsApp ownership drifts from the real
@@ -60,7 +97,7 @@ async function agentsByName(db: ReturnType<typeof supabaseAdmin>, names: string[
 
 async function managersById(db: ReturnType<typeof supabaseAdmin>, ids: string[]) {
   if (ids.length === 0) return new Map();
-  const { data } = await db.from("agents").select("id, name, wa_number").in("id", ids);
+  const { data } = await db.from("agents").select("id, name, wa_number, email").in("id", ids);
   return new Map((data || []).map((a: any) => [a.id, a]));
 }
 
@@ -138,7 +175,7 @@ async function runEscalations(db: ReturnType<typeof supabaseAdmin>): Promise<num
 
   const { data: rows } = await db
     .from("conversations")
-    .select("id, name, wa_phone, assigned_agent_id, lead_ref")
+    .select(SELECT_CONVO)
     .not("assigned_agent_id", "is", null)
     .is("lead_stage", null)
     .is("escalated_at", null)
@@ -146,6 +183,7 @@ async function runEscalations(db: ReturnType<typeof supabaseAdmin>): Promise<num
     .eq("is_internal", false)
     .eq("lead_status", "hot")
     .not("status", "in", "(blocked,invalid)")
+    .or(`source_ref.is.null,source_ref.neq.${HIDDEN_ROUTE}`)
     .lt("stale_alerted_at", due)
     .order("stale_alerted_at", { ascending: true })
     .limit(CAP);
@@ -158,17 +196,34 @@ async function runEscalations(db: ReturnType<typeof supabaseAdmin>): Promise<num
   const byId = new Map((agents || []).map((a: any) => [a.id, a]));
   const managers = await managersById(db, Array.from(new Set((agents || []).map((a: any) => a.manager_id).filter(Boolean))) as string[]);
 
+  // ONE mail per (agent, manager) pair listing every lead that agent has sat on, not one
+  // per lead. A manager with 24 of someone's stuck leads used to get 24 separate mails.
   let escalated = 0;
-  for (const c of rows as any[]) {
-    const agent = byId.get(c.assigned_agent_id);
+  for (const [agentId, group] of groupBy(rows as any[], (c) => String(c.assigned_agent_id))) {
+    const agent = byId.get(agentId);
     const manager = agent?.manager_id ? managers.get(agent.manager_id) : null;
-    if (!agent || !manager?.wa_number) continue; // unmapped manager: leave claimable, never drop
-    const e164 = "+" + String(c.wa_phone || "").replace("+", "");
-    const leadName = c.name && c.name !== e164 ? c.name : "New contact";
-    const esc = await sendEscalation(manager.name, manager.wa_number, agent.name, c.lead_ref || "", leadName, e164);
-    if (!esc.sid && !esc.emailed) continue; // neither channel reached them — retry next run
-    await db.from("conversations").update({ escalated_at: new Date().toISOString() }).eq("id", c.id);
-    escalated++;
+    if (!agent || !manager) continue; // unmapped manager: leave claimable, never drop
+    const mail = await emailAgentLeadDigest({
+      kind: "escalation",
+      to: [manager.email].filter(Boolean) as string[],
+      agentName: agent.name,
+      managerName: manager.name,
+      leads: group.map(toDigestLead),
+    });
+    // WhatsApp is dead (Meta disabled the portfolio 27 Jul), so the template send is a
+    // no-op today and email is the channel that arrives — but keep firing it so the day a
+    // lane comes back the manager gets both. One send for the batch, not one per lead.
+    let waSid: string | null = null;
+    if (manager.wa_number) {
+      const first = toDigestLead(group[0]);
+      const label = group.length > 1 ? `${first.name} +${group.length - 1} more` : first.name;
+      const esc = await sendEscalation(manager.name, manager.wa_number, agent.name, first.ref || "", label, first.phone, { email: false });
+      waSid = esc.sid;
+    }
+    if (mail.error !== null && !waSid) continue; // neither channel reached them — retry next run
+    const now = new Date().toISOString();
+    await db.from("conversations").update({ escalated_at: now }).in("id", group.map((c) => c.id));
+    escalated += group.length;
   }
   return escalated;
 }
@@ -279,12 +334,13 @@ async function run(req: NextRequest) {
 
   const { data: stale, error } = await db
     .from("conversations")
-    .select("id, name, wa_phone, assigned_agent_id, assigned_at, lead_ref")
+    .select(SELECT_CONVO)
     .not("assigned_agent_id", "is", null)
     .is("lead_stage", null)
     .eq("is_internal", false)
     .eq("lead_status", "hot")
     .not("status", "in", "(blocked,invalid)")
+    .or(`source_ref.is.null,source_ref.neq.${HIDDEN_ROUTE}`)
     .is("stale_alerted_at", null)
     .lt("assigned_at", cutoff)
     .order("assigned_at", { ascending: true })
@@ -292,23 +348,31 @@ async function run(req: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!stale || stale.length === 0) return NextResponse.json({ ok: true, nudged: 0, followedUp, escalated, ops, digest });
 
-  // Resolve the owning agents' WhatsApp numbers in one read.
-  const ids = Array.from(new Set(stale.map((c) => c.assigned_agent_id))) as string[];
-  const { data: agents } = await db.from("agents").select("id, name, wa_number").in("id", ids);
+  // Resolve the owning agents' mailboxes in one read.
+  const ids = Array.from(new Set(stale.map((c: any) => c.assigned_agent_id))) as string[];
+  const { data: agents } = await db.from("agents").select("id, name, wa_number, email").in("id", ids);
   const byId = new Map((agents || []).map((a: any) => [a.id, a]));
 
+  // ONE digest per agent per run — "4 leads waiting on you" with each lead's source,
+  // what it came from, how long it has sat and one-tap actions. The old loop sent an
+  // individual mail per lead and CC'd marketing@ on every one, which is how a 231-lead
+  // backlog turned into ~180 mails in Zek's inbox in an afternoon (29 Jul 2026).
+  // No ops CC here either: the 18:00 daily digest already reports the same backlog.
   let nudged = 0;
-  for (const c of stale) {
-    const agent = byId.get(c.assigned_agent_id as string);
-    if (!agent?.wa_number) continue;
-    const hrs = c.assigned_at ? Math.max(1, Math.round((Date.now() - new Date(c.assigned_at).getTime()) / 3600_000)) : STALE_HOURS;
-    const leadName = c.name && c.name !== ("+" + c.wa_phone) ? c.name : "New contact";
-    const about = `Reminder — assigned to you ~${hrs}h ago, still no update. Reach out now, then tap a status button below.`;
-    const ok = await pingAgent(agent.name, agent.wa_number, (c as any).lead_ref || "", leadName, "+" + c.wa_phone, about);
+  for (const [agentId, group] of groupBy(stale as any[], (c) => String(c.assigned_agent_id))) {
+    const agent = byId.get(agentId);
+    if (!agent) continue;
+    const mail = await emailAgentLeadDigest({
+      kind: "stale",
+      to: [agent.email].filter(Boolean) as string[],
+      cc: false,
+      agentName: agent.name,
+      leads: group.map(toDigestLead),
+    });
     // Stamp regardless so we don't re-nudge in a tight loop; if the send truly
     // failed the lead still surfaces as stale on the board.
-    await db.from("conversations").update({ stale_alerted_at: new Date().toISOString() }).eq("id", c.id);
-    if (ok) nudged++;
+    await db.from("conversations").update({ stale_alerted_at: new Date().toISOString() }).in("id", group.map((c) => c.id));
+    if (mail.error === null) nudged += group.length;
   }
   return NextResponse.json({ ok: true, nudged, scanned: stale.length, followedUp, escalated, ops, digest });
 }

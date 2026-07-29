@@ -66,7 +66,10 @@ async function mailboxesFor(names: string[]): Promise<string[]> {
 // lead_events.alert_sid at it — button taps correlate to a lead purely by the SID they
 // were replied on, so without this the manager's tap resolves against whatever lead the
 // MANAGER most recently touched, which is almost never the one being escalated.
-export async function sendEscalation(managerName: string, managerWa: string, agentName: string, leadRef: string, leadName: string, contactPhone: string): Promise<NudgeOutcome> {
+// `opts.email: false` sends the WhatsApp template only — used by the batched
+// lead-watch escalation, which mails ONE digest for all of an agent's stuck leads and
+// must not also fire a per-lead mail on top of it.
+export async function sendEscalation(managerName: string, managerWa: string, agentName: string, leadRef: string, leadName: string, contactPhone: string, opts?: { email?: boolean }): Promise<NudgeOutcome> {
   let sid: string | null = null;
   if (LEAD_ESCALATION_SID) {
     try {
@@ -82,6 +85,7 @@ export async function sendEscalation(managerName: string, managerWa: string, age
       sid = null;
     }
   }
+  if (opts?.email === false) return { sid, emailed: false, error: null };
   const mail = await emailAgentNudge({
     kind: "escalation",
     to: await mailboxesFor([managerName]),

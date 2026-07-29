@@ -129,6 +129,114 @@ export type NudgeInput = {
   managerName?: string | null;  // escalation only
 };
 
+// ---------------------------------------------------------------------------
+// Batched nudges: ONE email per agent per sweep, not one per lead.
+//
+// 29 Jul 2026: flipping STALE_REMINDERS on swept a 231-lead backlog and sent an
+// individual email for every one, each CC'd to marketing@ — ~180 mails into Zek's
+// inbox in an afternoon, and the per-lead card carried only name/phone/owner/ref,
+// so none of them said what the lead actually wanted. Batching fixes both: an agent
+// gets one "4 leads waiting on you" mail listing every lead with its source, what
+// it came from, how long it has sat, and one-tap WhatsApp/call links.
+export type DigestLead = {
+  name: string;
+  phone: string;
+  ref?: string | null;
+  source?: string | null;       // Meta / Website / WhatsApp
+  detail?: string | null;       // campaign, listing or route it came from
+  message?: string | null;      // last thing the lead said
+  waitingHours?: number | null;
+  dealId?: string | null;       // Pipedrive deal, when the lead has one
+};
+
+export type DigestInput = {
+  kind: "stale" | "escalation";
+  to: string[];
+  cc?: boolean;                 // copy the ops CC list (escalations only, by default)
+  agentName: string;            // whose leads these are
+  managerName?: string | null;  // escalation only
+  leads: DigestLead[];
+};
+
+function waitLabel(h?: number | null): string {
+  if (!h || h < 1) return "";
+  if (h < 48) return `${Math.round(h)}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+// One lead per block: headline row (name · waiting), then only the facts that exist,
+// then the two actions. Blank fields are dropped rather than printed as "—".
+function digestLeadHtml(l: DigestLead): string {
+  const digits = (l.phone || "").replace(/[^0-9]/g, "");
+  const meta = [l.source, l.detail].filter(Boolean).join(" · ");
+  const wait = waitLabel(l.waitingHours);
+  const line = (label: string, value: string) =>
+    `<div style="font-size:13px;color:#6b6b6b;margin-top:2px">${esc(label)} ${esc(value)}</div>`;
+  const link = (href: string, label: string) =>
+    `<a href="${esc(href)}" style="font-size:13px;color:#111;text-decoration:underline;margin-right:14px">${esc(label)}</a>`;
+  return `<div style="padding:14px 0;border-top:1px solid #ececec">
+<div style="font-size:16px;color:#111;font-weight:600">${esc(l.name)}${wait ? `<span style="font-weight:400;color:#8a8a8a;font-size:13px"> · waiting ${esc(wait)}</span>` : ""}</div>
+${l.phone ? line("", l.phone) : ""}
+${meta ? line("", meta) : ""}
+${l.message ? line("Said:", String(l.message).slice(0, 140)) : ""}
+${l.ref ? line("Ref", l.ref) : ""}
+<div style="margin-top:8px">${[
+    digits.length >= 8 ? link(`https://wa.me/${digits}`, "WhatsApp") : "",
+    l.phone ? link(`tel:${l.phone}`, "Call") : "",
+    l.dealId ? link(`https://erehomesrealestatebrokers.pipedrive.com/deal/${l.dealId}`, "Open in Pipedrive") : "",
+  ].filter(Boolean).join("")}</div>
+</div>`;
+}
+
+export async function emailAgentLeadDigest(i: DigestInput): Promise<{ sent: string[]; error: string | null }> {
+  if (i.leads.length === 0) return { sent: [], error: "no leads" };
+  const cc = i.cc === false ? [] : ccList().filter((a) => !i.to.includes(a));
+  if (i.to.length === 0 && cc.length === 0) return { sent: [], error: "no recipient has an email address" };
+
+  const host = process.env.LEAD_SMTP_HOST || "smtp.gmail.com";
+  const port = Number(process.env.LEAD_SMTP_PORT || 465);
+  const user = process.env.LEAD_SMTP_USER || "marketing@erehomes.ae";
+  const pass = process.env.LEAD_SMTP_PASS || "";
+  if (!pass) return { sent: [], error: "LEAD_SMTP_PASS not set" };
+
+  const n = i.leads.length;
+  const plural = n === 1 ? "lead" : "leads";
+  const subject = i.kind === "stale"
+    ? `${n} ${plural} waiting on you`
+    : `${i.agentName} — ${n} ${plural} with no update`;
+  const intro = i.kind === "stale"
+    ? `These were assigned to you and still have no update logged. Call them, then log the outcome in Pipedrive.`
+    : `${i.agentName} was asked for an outcome on these and has not answered. Reassign them or work them yourself.`;
+
+  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px">
+<p style="margin:0 0 4px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a">${i.kind === "stale" ? "Not actioned yet" : "Escalation"}</p>
+<h1 style="margin:0 0 12px;font-size:21px;font-weight:600;color:#111">${esc(String(n))} ${plural} waiting${i.kind === "escalation" ? ` on ${esc(i.agentName)}` : ""}</h1>
+<p style="margin:0 0 6px;font-size:15px;color:#444">${esc(intro)}</p>
+${i.leads.map(digestLeadHtml).join("")}
+<p style="margin:18px 0 0;font-size:13px;color:#6b6b6b;border-top:1px solid #e6e6e6;padding-top:14px">
+All of these are already in Pipedrive. Logging the call there is what clears them.</p></div>`;
+
+  const text = [intro, "", ...i.leads.map((l) => {
+    const bits = [l.name, l.phone, [l.source, l.detail].filter(Boolean).join(" · "), waitLabel(l.waitingHours) ? `waiting ${waitLabel(l.waitingHours)}` : ""].filter(Boolean);
+    return `- ${bits.join(" | ")}`;
+  })].join("\n");
+
+  try {
+    const transport = nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });
+    await transport.sendMail({
+      from: `ERE Homes Leads <${user}>`,
+      to: i.to.length ? i.to : cc,
+      cc: i.to.length && cc.length ? cc : undefined,
+      subject,
+      text,
+      html,
+    });
+    return { sent: i.to.length ? i.to : cc, error: null };
+  } catch (e: any) {
+    return { sent: [], error: String(e?.message || e).slice(0, 200) };
+  }
+}
+
 export async function emailAgentNudge(i: NudgeInput): Promise<{ sent: string[]; error: string | null }> {
   const cc = ccList().filter((a) => !i.to.includes(a));
   if (i.to.length === 0 && cc.length === 0) return { sent: [], error: "no recipient has an email address" };

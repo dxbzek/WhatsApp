@@ -268,7 +268,8 @@ export type DailyReportInput = {
   awaitingOutcome: number;      // open, inside the window, called at least once, still not moved on
   uncalledToday?: number;       // of today's new leads, how many still have no call logged
   weekAvgNew?: number;          // new enquiries per day, averaged over the last 7 days
-  callsToday?: number;          // completed call activities, whole team, last 24h
+  callsToday?: number;          // completed call activities, whole team, today
+  notesToday?: number;          // notes added, whole team, today
   activitiesToday?: number;     // all completed activities, last 24h
   speedMedianMins?: number | null;  // median minutes from lead created to first activity
   speedSampled?: number;        // how many of today's leads that median is based on
@@ -285,6 +286,7 @@ export type DailyReportInput = {
     lost?: number;
     calls?: number;
     otherActivities?: number;
+    notes?: number;
     speedMins?: number | null;
   }[];
   olderBacklog?: number;        // uncalled leads older than the window (legacy telesales)
@@ -327,6 +329,7 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
     `<tr>${td(esc(a.name), "left", "white-space:nowrap")}` +
     td(n(a.newToday)) +
     td(n(a.calls)) +
+    td(n(a.notes)) +
     td(`<span style="font-size:14px;color:#6b6b6b">${esc(mins(a.speedMins))}</span>`) +
     td(n(a.progressed)) +
     td(n(a.lost)) +
@@ -334,12 +337,12 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
     td(`<span style="font-size:14px;color:#6b6b6b">${esc(age(a.oldestHours))}</span>`) +
     `</tr>`).join("");
 
-  const sum = (k: "newToday" | "progressed" | "lost" | "calledOpen" | "calls") =>
+  const sum = (k: "newToday" | "progressed" | "lost" | "calledOpen" | "calls" | "notes") =>
     i.perAgent.reduce((t, a) => t + (a[k] || 0), 0);
   const totalRow = `<tr>` +
     `<td style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">Total</td>` +
-    [String(sum("newToday")), String(sum("calls")), mins(i.speedMedianMins), String(sum("progressed")),
-      String(sum("lost")), String(i.awaitingFirst), ""]
+    [String(sum("newToday")), String(sum("calls")), String(sum("notes")), mins(i.speedMedianMins),
+      String(sum("progressed")), String(sum("lost")), String(i.awaitingFirst), ""]
       .map((v) => `<td align="right" style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">${esc(v)}</td>`).join("") +
     `</tr>`;
 
@@ -364,12 +367,12 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
 <p style="margin:0 0 4px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8a8a8a">End of day</p>
 <h1 style="margin:0 0 6px;font-size:24px;font-weight:600">Leads — ${esc(i.date)}</h1>
 <p style="margin:0 0 4px;font-size:15px;color:${i.uncalledToday ? "#b4462a" : "#444"}">${esc(headline)}</p>
-<p style="margin:0 0 22px;font-size:14px;color:#6b6b6b">${i.newLeads} in${esc(vsWeek)} · ${i.callsToday || 0} calls logged · median first response ${esc(i.speedSampled ? mins(i.speedMedianMins) : "not measurable, nothing logged")}</p>
+<p style="margin:0 0 22px;font-size:14px;color:#6b6b6b">${i.newLeads} in${esc(vsWeek)} · ${i.callsToday || 0} calls and ${i.notesToday || 0} notes logged · median first response ${esc(i.speedSampled ? mins(i.speedMedianMins) : "not measurable, nothing logged")}</p>
 
 <div style="overflow-x:auto">
 <table style="border-collapse:collapse;width:100%;min-width:560px">
-<tr>${th("Owner")}${th("In", "right", "today")}${th("Calls", "right", "today")}${th("1st reply", "right", "median")}${th("Forward", "right", "today")}${th("Lost", "right", "today")}${th("Never called", "right", `open, ${win}d`)}${th("Oldest", "right", "of those")}</tr>
-${agentRows || `<tr><td colspan="8" style="padding:14px 0;font-size:15px;color:#444">No activity to report.</td></tr>`}
+<tr>${th("Owner")}${th("In", "right", "today")}${th("Calls", "right", "logged")}${th("Notes", "right", "logged")}${th("1st reply", "right", "median")}${th("Forward", "right", "today")}${th("Lost", "right", "today")}${th("Never called", "right", `open, ${win}d`)}${th("Oldest", "right", "of those")}</tr>
+${agentRows || `<tr><td colspan="9" style="padding:14px 0;font-size:15px;color:#444">No activity to report.</td></tr>`}
 ${agentRows ? totalRow : ""}
 </table>
 </div>
@@ -379,7 +382,7 @@ ${sourceLine ? `<p style="margin:20px 0 0;font-size:13px;color:#6b6b6b"><strong 
 <p style="margin:20px 0 0;font-size:13px;color:#6b6b6b;line-height:1.55">
 <strong style="color:#111">Never called</strong> is an open deal in New Lead, No Answer or Contact made with no completed activity on it. Stage alone is not the test: a card can be dragged to No Answer without anyone dialling, so this reads the activity log.<br>
 <strong style="color:#111">1st reply</strong> is the median time from the lead landing to the first completed activity on it${i.speedSampled ? `, across the ${i.speedSampled} of today's leads that have been actioned` : `. Today it cannot be measured: ${i.callsToday || 0} calls were logged, none of them against a lead that arrived today`}.<br>
-<strong style="color:#111">Calls</strong> counts activities completed in Pipedrive today. A rep who dials without logging shows 0 here, so a zero is a CRM-discipline finding, not proof nobody phoned.<br>
+<strong style="color:#111">Calls and Notes</strong> are both counted because the team does not log the same way: some reps complete a call activity, others write a note on the deal. A rep can show 0 calls and still have worked all day. Both columns at 0 is the finding worth acting on.<br>
 <strong style="color:#111">Forward</strong> means it reached Qualified or beyond today.
 ${i.lostNoReason ? `<br><strong style="color:#111">${i.lostNoReason} of today's ${i.lost || 0} closed lost carry no lost reason</strong>, so nothing can be learned from them.` : ""}
 ${i.newPooled ? `<br>${i.newPooled} more deals were created into the telesales pool today. That is allocation, not enquiries, so it is not in the In column.` : ""}
@@ -392,7 +395,7 @@ Live from Pipedrive. Owners are chased directly by email; this is the summary on
   const lpad = (s: string, w: number) => s.length >= w ? s : " ".repeat(w - s.length) + s;
   const text = [
     `Leads — ${i.date} (live from Pipedrive)`, "", headline,
-    `${i.newLeads} in${vsWeek} · ${i.callsToday || 0} calls logged · median first response ${i.speedSampled ? mins(i.speedMedianMins) : "not measurable, nothing logged"}`, "",
+    `${i.newLeads} in${vsWeek} · ${i.callsToday || 0} calls and ${i.notesToday || 0} notes logged · median first response ${i.speedSampled ? mins(i.speedMedianMins) : "not measurable, nothing logged"}`, "",
     `${pad("Owner", 20)}${lpad("In", 4)}${lpad("Calls", 7)}${lpad("1st", 6)}${lpad("Fwd", 5)}${lpad("Lost", 6)}${lpad("Uncalled", 10)}${lpad("Oldest", 8)}`,
     ...(i.perAgent.length
       ? i.perAgent.map((a) => pad(a.name, 20) + lpad(String(a.newToday || 0), 4) + lpad(String(a.calls || 0), 7) +
@@ -405,7 +408,7 @@ Live from Pipedrive. Owners are chased directly by email; this is the summary on
     "",
     ...(sourceLine ? [`Where today's ${i.newLeads} came from: ${sourceLine.replace(/<[^>]+>/g, "")}`, ""] : []),
     `Never called = open in New Lead / No Answer / Contact made with no completed activity.`,
-    `Calls = activities completed in Pipedrive today. A rep who dials without logging shows 0.`,
+    `Calls and Notes are both counted: some reps log a call activity, others write a note. Both at 0 is the finding.`,
     `1st = median minutes from the lead landing to the first completed activity.`,
     `Forward = reached Qualified or beyond today.`,
     ...(i.lostNoReason ? [`${i.lostNoReason} of today's ${i.lost || 0} closed lost carry no lost reason.`] : []),

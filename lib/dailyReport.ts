@@ -97,6 +97,26 @@ async function doneActivities(): Promise<{ userId: number; type: string; dealId:
   return out;
 }
 
+// Notes added since `since`, all users. Reps do NOT all work the same way: on 29 Jul 2026
+// Zenon logged 142 call activities and 2 notes, while Joshua logged 43 notes and ZERO
+// activities and Akombi 15 notes and zero. Counting activities alone reported two of the
+// three telesales reps as having done nothing all day, which was simply false.
+async function notesSince(since: number): Promise<{ userId: number; dealId: number | null; at: number }[]> {
+  const out: { userId: number; dealId: number | null; at: number }[] = [];
+  for (let start = 0; start < 2000; start += 100) {
+    const d: any = await pd("v1/notes", { limit: "100", start: String(start), sort: "add_time DESC" });
+    const batch: any[] = d?.data || [];
+    let done = false;
+    for (const x of batch) {
+      const at = parseUtc(x.add_time);
+      if (at < since) { done = true; break; }
+      out.push({ userId: Number(x.user_id) || 0, dealId: x.deal_id ? Number(x.deal_id) : null, at });
+    }
+    if (done || !d?.additional_data?.pagination?.more_items_in_collection) break;
+  }
+  return out;
+}
+
 const median = (xs: number[]): number | null => {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -199,12 +219,15 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
   // with 40 uncalled leads and 30 calls logged has a volume problem; the same rep with 2
   // calls has a different one entirely, and the stage columns cannot tell them apart.
   const todayActs = (await doneActivities()).filter((a) => a.doneAt >= dayAgo);
-  const ownerCalls = new Map<number, { calls: number; other: number }>();
-  for (const a of todayActs) {
-    const cur = ownerCalls.get(a.userId) || { calls: 0, other: 0 };
-    if (a.type === "call") cur.calls++; else cur.other++;
-    ownerCalls.set(a.userId, cur);
-  }
+  const todayNotes = await notesSince(dayAgo);
+  const ownerCalls = new Map<number, { calls: number; other: number; notes: number }>();
+  const bump = (id: number, k: "calls" | "other" | "notes") => {
+    const cur = ownerCalls.get(id) || { calls: 0, other: 0, notes: 0 };
+    cur[k]++;
+    ownerCalls.set(id, cur);
+  };
+  for (const a of todayActs) bump(a.userId, a.type === "call" ? "calls" : "other");
+  for (const nt of todayNotes) bump(nt.userId, "notes");
 
   // Speed to first call, the metric that actually predicts conversion: earliest completed
   // activity on each of today's new deals, minus when the deal was created. Only deals that
@@ -215,13 +238,26 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
   // activity's DUE date, not when it was completed, so a call logged today against a task
   // due next week is simply absent from that window — which is why the first attempt at this
   // returned a median of null while 198 calls had been logged the same day.
+  // A NOTE counts as a response too — for two of the three telesales reps it is the only
+  // thing they log, so measuring activities alone would report their first response as
+  // "never" on every lead they worked.
+  const firstNote = new Map<number, number>();
+  for (const nt of todayNotes) {
+    if (!nt.dealId) continue;
+    const cur = firstNote.get(nt.dealId);
+    if (cur === undefined || nt.at < cur) firstNote.set(nt.dealId, nt.at);
+  }
   const speedAll: number[] = [];
   const speedByOwner = new Map<number, number[]>();
   for (const d of newDeals.slice(0, 40)) {
     const a: any = await pd(`v1/deals/${d.id}/activities`, { done: "1", limit: "50" });
     const times = ((a?.data || []) as any[])
       .map((x) => parseUtc(x.marked_as_done_time))
-      .filter((t) => t && t >= d.addedAt);
+      .concat(firstNote.get(d.id) ? [firstNote.get(d.id) as number] : [])
+      // A response has to be at least a minute after the deal appeared. The lead-sync writes
+      // its own note on the deal at creation time, and counting that gives a first response
+      // of 0m for every lead nobody has actually touched.
+      .filter((t) => t && t >= d.addedAt + 60_000);
     if (!times.length) continue;
     const m = Math.round((Math.min(...times) - d.addedAt) / 60_000);
     speedAll.push(m);
@@ -250,11 +286,11 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     id: number; name: string;
     newToday: number; uncalled: number; uncalledToday: number;
     calledOpen: number; progressed: number; lost: number; oldestHours: number | null;
-    calls: number; otherActivities: number; speedMins: number | null;
+    calls: number; otherActivities: number; notes: number; speedMins: number | null;
   };
   const rows = new Map<number, Row>();
   const row = (id: number, name?: string): Row => {
-    const r = rows.get(id) || { id, name: name || "", newToday: 0, uncalled: 0, uncalledToday: 0, calledOpen: 0, progressed: 0, lost: 0, oldestHours: null, calls: 0, otherActivities: 0, speedMins: null };
+    const r = rows.get(id) || { id, name: name || "", newToday: 0, uncalled: 0, uncalledToday: 0, calledOpen: 0, progressed: 0, lost: 0, oldestHours: null, calls: 0, otherActivities: 0, notes: 0, speedMins: null };
     if (name && !r.name) r.name = name;
     rows.set(id, r);
     return r;
@@ -281,7 +317,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
   }
   for (const [id, c] of ownerCalls) {
     const r = row(id);
-    r.calls = c.calls; r.otherActivities = c.other;
+    r.calls = c.calls; r.otherActivities = c.other; r.notes = c.notes;
   }
   for (const [id, xs] of speedByOwner) row(id).speedMins = median(xs);
 
@@ -298,7 +334,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
   // Worst first: never-called count is the number a head of sales acts on, then today's
   // volume as the tiebreak.
   const perAgent = [...rows.values()]
-    .filter((r) => r.uncalled || r.calledOpen || r.newToday || r.progressed || r.lost || r.calls)
+    .filter((r) => r.uncalled || r.calledOpen || r.newToday || r.progressed || r.lost || r.calls || r.notes)
     .sort((a, b) => b.uncalled - a.uncalled || b.newToday - a.newToday)
     .map((r) => ({
       name: r.name || "Unassigned",
@@ -311,6 +347,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
       oldestHours: r.oldestHours,
       calls: r.calls,
       otherActivities: r.otherActivities,
+      notes: r.notes,
       speedMins: r.speedMins,
     }));
 
@@ -322,6 +359,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     olderBacklog, windowDays: MAX_AGE_DAYS,
     weekAvgNew,
     callsToday: todayActs.filter((a) => a.type === "call").length,
+    notesToday: todayNotes.length,
     activitiesToday: todayActs.length,
     speedMedianMins: median(speedAll),
     speedSampled: speedAll.length,

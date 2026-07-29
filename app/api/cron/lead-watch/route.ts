@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendOutcomeFollowup, sendEscalation } from "@/lib/distribution";
 import { sendOpsAlertOnce, sendDailyDigestOnce } from "@/lib/opsAlert";
-import { emailAgentLeadDigest, type DigestLead } from "@/lib/leadEmail";
+import { emailAgentLeadDigest, emailDailyReport, type DigestLead } from "@/lib/leadEmail";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -304,8 +304,49 @@ async function runDailyDigest(db: ReturnType<typeof supabaseAdmin>): Promise<boo
   const awaitingFirst = await count((q) => q.eq("qualification", "new"));
   const awaitingOutcome = await count((q) => q.eq("qualification", "contacted"));
 
+  // Who is sitting on what, worst first. Archived and suppressed rows excluded, and
+  // Recruitment with them — this must agree with the board, not with the raw table.
+  const { data: waiting } = await db
+    .from("conversations")
+    .select("assigned_agent_id, assigned_at")
+    .not("assigned_agent_id", "is", null)
+    .is("lead_stage", null)
+    .eq("is_internal", false)
+    .eq("lead_status", "hot")
+    .not("status", "in", "(blocked,invalid,archived)")
+    .or(`source_ref.is.null,source_ref.neq.${HIDDEN_ROUTE}`)
+    .limit(2000);
+  const ids = Array.from(new Set((waiting || []).map((c: any) => c.assigned_agent_id))) as string[];
+  const { data: ags } = ids.length
+    ? await db.from("agents").select("id, name").in("id", ids)
+    : { data: [] as any[] };
+  const nameById = new Map((ags || []).map((a: any) => [a.id, a.name]));
+  const perAgent = [...groupBy((waiting || []) as any[], (c) => String(c.assigned_agent_id))]
+    .map(([id, rows]) => ({
+      name: nameById.get(id) || "Unassigned",
+      waiting: rows.length,
+      oldestHours: rows.reduce((max: number | null, r: any) => {
+        if (!r.assigned_at) return max;
+        const h = (Date.now() - new Date(r.assigned_at).getTime()) / 3600_000;
+        return max === null || h > max ? h : max;
+      }, null as number | null),
+    }))
+    .sort((a, b) => b.waiting - a.waiting);
+
   const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Dubai" });
-  return sendDailyDigestOnce(db, dateKey, { date, newLeads, qualified, awaitingFirst, awaitingOutcome });
+  // The email report needs its OWN once-per-day claim. sendDailyDigestOnce releases its
+  // claim whenever the WhatsApp send fails — which it always does now — so hanging the
+  // email off that would re-send this report every 30 minutes: the exact spam being fixed.
+  const claim = await db.from("ops_log").insert({ type: "daily_report_email", key: dateKey });
+  let mailed = false;
+  if (!claim.error) {
+    const mail = await emailDailyReport({ date, newLeads, qualified, awaitingFirst, awaitingOutcome, perAgent });
+    mailed = mail.error === null;
+    // Release the claim so the next pass retries rather than skipping the day silently.
+    if (!mailed) await db.from("ops_log").delete().eq("type", "daily_report_email").eq("key", dateKey);
+  }
+  const wa = await sendDailyDigestOnce(db, dateKey, { date, newLeads, qualified, awaitingFirst, awaitingOutcome });
+  return mailed || wa;
 }
 
 // Nudge agents sitting on un-actioned leads. Claims assigned-but-unmoved leads

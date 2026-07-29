@@ -251,6 +251,70 @@ All of these are already in Pipedrive. You get this list once per lead, not on r
   }
 }
 
+// ---------------------------------------------------------------------------
+// End-of-day report to the marketing inbox.
+//
+// 29 Jul 2026: nudges stopped CCing marketing@ (they belong to the agent and their
+// manager), so this is what marketing@ gets INSTEAD — one mail at 18:00 Dubai with
+// the day's numbers and who is sitting on what. The old daily digest was WhatsApp-only
+// and has therefore reached nobody since Meta disabled the portfolio on 27 Jul.
+export type DailyReportInput = {
+  date: string;                 // "29 Jul 2026"
+  newLeads: number;             // arrived in the last 24h
+  qualified: number;            // marked qualified in the last 24h
+  awaitingFirst: number;        // stock: never contacted
+  awaitingOutcome: number;      // stock: contacted, no outcome logged
+  perAgent: { name: string; waiting: number; oldestHours: number | null }[];
+};
+
+export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: string[]; error: string | null }> {
+  const to = ccList();          // the marketing inbox — this report is its ONE daily mail
+  if (to.length === 0) return { sent: [], error: "no recipient" };
+
+  const host = process.env.LEAD_SMTP_HOST || "smtp.gmail.com";
+  const port = Number(process.env.LEAD_SMTP_PORT || 465);
+  const user = process.env.LEAD_SMTP_USER || "marketing@erehomes.ae";
+  const pass = process.env.LEAD_SMTP_PASS || "";
+  if (!pass) return { sent: [], error: "LEAD_SMTP_PASS not set" };
+
+  const stat = (label: string, value: number) =>
+    `<td style="padding:0 22px 0 0;vertical-align:top"><div style="font-size:26px;font-weight:600;color:#111">${value}</div>` +
+    `<div style="font-size:12px;color:#8a8a8a;text-transform:uppercase;letter-spacing:.06em">${esc(label)}</div></td>`;
+
+  // Sorted worst-first by the caller. An empty list is a REAL answer — say "nobody is
+  // sitting on anything" rather than printing an empty table.
+  const agentRows = i.perAgent.map((a) =>
+    `<tr><td style="padding:7px 16px 7px 0;font-size:15px;color:#111">${esc(a.name)}</td>` +
+    `<td style="padding:7px 16px 7px 0;font-size:15px;color:#111">${a.waiting}</td>` +
+    `<td style="padding:7px 0;font-size:13px;color:#6b6b6b">${a.oldestHours ? (a.oldestHours < 48 ? `oldest ${Math.round(a.oldestHours)}h` : `oldest ${Math.round(a.oldestHours / 24)}d`) : ""}</td></tr>`).join("");
+
+  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px">
+<p style="margin:0 0 4px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a">End of day</p>
+<h1 style="margin:0 0 20px;font-size:22px;font-weight:600;color:#111">Leads — ${esc(i.date)}</h1>
+<table style="border-collapse:collapse;margin-bottom:24px"><tr>
+${stat("new today", i.newLeads)}${stat("qualified", i.qualified)}${stat("not contacted", i.awaitingFirst)}${stat("no outcome", i.awaitingOutcome)}
+</tr></table>
+<p style="margin:0 0 6px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:#8a8a8a">Waiting, by agent</p>
+${agentRows
+      ? `<table style="border-collapse:collapse;width:100%">${agentRows}</table>`
+      : `<p style="margin:0;font-size:15px;color:#444">Nobody is sitting on an unactioned lead.</p>`}
+<p style="margin:20px 0 0;font-size:13px;color:#6b6b6b;border-top:1px solid #e6e6e6;padding-top:14px">
+Agents are chased directly; this is the summary only.</p></div>`;
+
+  const text = [`Leads — ${i.date}`, "",
+    `New today: ${i.newLeads}`, `Qualified: ${i.qualified}`,
+    `Not contacted: ${i.awaitingFirst}`, `No outcome: ${i.awaitingOutcome}`, "", "Waiting, by agent:",
+    ...(i.perAgent.length ? i.perAgent.map((a) => `- ${a.name}: ${a.waiting}`) : ["- nobody"])].join("\n");
+
+  try {
+    const transport = nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });
+    await transport.sendMail({ from: `ERE Homes Leads <${user}>`, to, subject: `Leads — ${i.date}`, text, html });
+    return { sent: to, error: null };
+  } catch (e: any) {
+    return { sent: [], error: String(e?.message || e).slice(0, 200) };
+  }
+}
+
 export async function emailAgentNudge(i: NudgeInput): Promise<{ sent: string[]; error: string | null }> {
   const cc = nudgeCcList().filter((a) => !i.to.includes(a));
   if (i.to.length === 0 && cc.length === 0) return { sent: [], error: "no recipient has an email address" };

@@ -45,8 +45,11 @@ export type LeadEmailResult = {
 };
 
 function ccList(): string[] {
+  // Commas, semicolons or newlines — Vercel's env editor is a textarea, so one address
+  // per line is how these actually get typed. Comma-only splitting silently produces a
+  // single malformed recipient and the mail reaches nobody.
   return (process.env.LEAD_ALERT_CC || "marketing@erehomes.ae")
-    .split(",").map((s) => s.trim()).filter(Boolean);
+    .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
 }
 
 function esc(s: string): string {

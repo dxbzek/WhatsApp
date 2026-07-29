@@ -40,8 +40,11 @@ async function run(req: NextRequest) {
 
     if (dry) return NextResponse.json({ ok: true, dryRun: true, scanned, stale: rows.length, rows });
 
+    // Split on commas, semicolons OR whitespace. Vercel's env editor is a textarea and
+    // one address per line is the natural way to type it — comma-only splitting turns
+    // three addresses into one malformed recipient and the send silently reaches nobody.
     const to = (process.env.CHASE_LIST_TO || process.env.LEAD_ALERT_CC || "marketing@erehomes.ae")
-      .split(",").map((s) => s.trim()).filter(Boolean);
+      .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
     const res = await sendChaseList(rows, to);
     return NextResponse.json({ ok: res.error === null, scanned, stale: rows.length, emailed: res.sent, error: res.error });
   } catch (e: any) {

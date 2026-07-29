@@ -21,7 +21,13 @@ const CAP = 40; // most we nudge per run, so a backlog can't blow the 60s wall
 // what hit Keeley + Zek on 23 Jul. The FIRST new-lead alert is unaffected: that
 // fires from /api/twilio/inbound, not here. To switch reminders back on once
 // ownership is fixed, set STALE_REMINDERS=on in the env — no redeploy of logic.
-const STALE_REMINDERS_ON = (process.env.STALE_REMINDERS || "").toLowerCase() === "on";
+// 29 Jul 2026: default flipped to ON. The reason it was off — reminders spamming the
+// OLD owner when WhatsApp ownership drifted from Pipedrive — was a routing bug, and
+// routing has since been fixed (telesales round-robin, Zenon restored to all 7 routes).
+// Nudges now also go by EMAIL, which is addressed to the agent's own mailbox rather
+// than whatever number a conversation happens to be assigned to, so a drift can no
+// longer send a stranger's lead to the wrong phone. Set STALE_REMINDERS=off to disable.
+const STALE_REMINDERS_ON = (process.env.STALE_REMINDERS || "on").toLowerCase() !== "off";
 
 // Hours after an agent taps "Contacted" before we ask them for the outcome.
 // 24h: long enough that a callback or viewing has actually happened, short enough
@@ -94,14 +100,16 @@ async function runFollowups(db: ReturnType<typeof supabaseAdmin>): Promise<{ ask
     const leadName = r.name && r.name !== e164 ? r.name : "New contact";
 
     if ((r.followup_attempts || 0) < MAX_FOLLOWUP_ASKS) {
-      const sid = await sendOutcomeFollowup(agent.name, agent.wa_number, r.ref || "", leadName, e164, r.contacted_at);
-      if (!sid) continue; // send failed or template unprovisioned — leave it claimable next run
-      // Repoint alert_sid at the follow-up so the agent's tap on THIS message
-      // correlates back to THIS lead (see sendOutcomeFollowup).
+      const out = await sendOutcomeFollowup(agent.name, agent.wa_number, r.ref || "", leadName, e164, r.contacted_at);
+      // Nothing reached the agent by either channel — leave it claimable next run.
+      if (!out.sid && !out.emailed) continue;
+      // Repoint alert_sid ONLY on a real Twilio send: taps correlate to a lead purely
+      // by the SID they were replied on, and an email has no tap to correlate. Writing
+      // a placeholder here would break that lookup for every later reply.
       await db.from("lead_events").update({
         followup_sent_at: new Date().toISOString(),
         followup_attempts: (r.followup_attempts || 0) + 1,
-        alert_sid: sid,
+        ...(out.sid ? { alert_sid: out.sid } : {}),
       }).eq("id", r.id);
       asked++;
       continue;
@@ -110,9 +118,12 @@ async function runFollowups(db: ReturnType<typeof supabaseAdmin>): Promise<{ ask
     // Asked twice, still no outcome — hand it to the manager.
     const manager = byId.get(agent.manager_id);
     if (!manager?.wa_number) continue; // no manager mapped: leave claimable, never drop
-    const sid = await sendEscalation(manager.name, manager.wa_number, agent.name, r.ref || "", leadName, e164);
-    if (!sid) continue; // escalation template not approved yet — try again next run
-    await db.from("lead_events").update({ escalated_at: new Date().toISOString(), alert_sid: sid }).eq("id", r.id);
+    const esc = await sendEscalation(manager.name, manager.wa_number, agent.name, r.ref || "", leadName, e164);
+    if (!esc.sid && !esc.emailed) continue; // neither channel reached them — retry next run
+    await db.from("lead_events").update({
+      escalated_at: new Date().toISOString(),
+      ...(esc.sid ? { alert_sid: esc.sid } : {}),
+    }).eq("id", r.id);
     escalated++;
   }
   return { asked, escalated };
@@ -154,8 +165,8 @@ async function runEscalations(db: ReturnType<typeof supabaseAdmin>): Promise<num
     if (!agent || !manager?.wa_number) continue; // unmapped manager: leave claimable, never drop
     const e164 = "+" + String(c.wa_phone || "").replace("+", "");
     const leadName = c.name && c.name !== e164 ? c.name : "New contact";
-    const sid = await sendEscalation(manager.name, manager.wa_number, agent.name, c.lead_ref || "", leadName, e164);
-    if (!sid) continue; // template not approved yet — try again next run
+    const esc = await sendEscalation(manager.name, manager.wa_number, agent.name, c.lead_ref || "", leadName, e164);
+    if (!esc.sid && !esc.emailed) continue; // neither channel reached them — retry next run
     await db.from("conversations").update({ escalated_at: new Date().toISOString() }).eq("id", c.id);
     escalated++;
   }

@@ -105,6 +105,94 @@ Assigned to ${esc(to.join(", ") || "nobody yet")}. Already in Pipedrive — log 
 </div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Agent nudges: "you contacted this lead, what happened?" and the manager
+// escalation when they don't answer.
+//
+// Both used to be WhatsApp-only, so both have been DEAD since Meta disabled the
+// portfolio on 27 Jul 2026 — and worse than dead: lead-watch bails on a null SID
+// (`if (!sid) continue`), so every due lead was re-checked forever and nobody was
+// ever chased. This gives them the same email path the first alert already has.
+export type NudgeKind = "stale" | "outcome" | "escalation";
+
+export type NudgeInput = {
+  kind: NudgeKind;
+  to: string[];                 // resolved mailboxes
+  agentName: string;            // who owns the lead
+  leadName: string;
+  leadPhone: string;
+  leadRef?: string | null;
+  contactedAt?: string | null;  // outcome nudge only
+  managerName?: string | null;  // escalation only
+};
+
+export async function emailAgentNudge(i: NudgeInput): Promise<{ sent: string[]; error: string | null }> {
+  const cc = ccList().filter((a) => !i.to.includes(a));
+  if (i.to.length === 0 && cc.length === 0) return { sent: [], error: "no recipient has an email address" };
+
+  const host = process.env.LEAD_SMTP_HOST || "smtp.gmail.com";
+  const port = Number(process.env.LEAD_SMTP_PORT || 465);
+  const user = process.env.LEAD_SMTP_USER || "marketing@erehomes.ae";
+  const pass = process.env.LEAD_SMTP_PASS || "";
+  if (!pass) return { sent: [], error: "LEAD_SMTP_PASS not set" };
+
+  const when = i.contactedAt
+    ? new Date(i.contactedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Dubai" })
+    : "recently";
+  const digits = (i.leadPhone || "").replace(/[^0-9]/g, "");
+
+  const subject = i.kind === "stale"
+    ? `${i.leadName} is still waiting`
+    : i.kind === "outcome"
+      ? `What happened with ${i.leadName}?`
+      : `${i.agentName} has not updated ${i.leadName}`;
+  const lead = i.kind === "stale"
+    ? `${i.leadName} was assigned to you and there is still no update logged.`
+    : i.kind === "outcome"
+      ? `You contacted ${i.leadName} on ${when} and the outcome is still not logged.`
+      : `${i.agentName} was asked twice for an outcome on ${i.leadName} and has not answered.`;
+  const ask = i.kind === "escalation"
+    ? "Reassign it or work it yourself. It is still sitting unresolved."
+    : "Log the call in Pipedrive and move the stage, or close it with a lost reason.";
+
+  const rowsHtml = ([
+    ["Lead", i.leadName],
+    ["Phone", i.leadPhone],
+    ["Owner", i.agentName],
+    ["Ref", i.leadRef || ""],
+  ] as [string, string][])
+    .filter(([, v]) => String(v).trim() !== "")
+    .map(([k, v]) =>
+      `<tr><td style="padding:6px 16px 6px 0;color:#6b6b6b;font-size:13px;white-space:nowrap">${esc(k)}</td>` +
+      `<td style="padding:6px 0;color:#111;font-size:15px">${esc(v)}</td></tr>`).join("");
+
+  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+<p style="margin:0 0 4px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a">${i.kind === "stale" ? "Not actioned yet" : i.kind === "outcome" ? "Outcome needed" : "Escalation"}</p>
+<h1 style="margin:0 0 14px;font-size:21px;font-weight:600;color:#111">${esc(i.leadName)}</h1>
+<p style="margin:0 0 18px;font-size:15px;color:#444">${esc(lead)}</p>
+<table style="border-collapse:collapse;width:100%;margin-bottom:18px">${rowsHtml}</table>
+${digits.length >= 8 ? `<div style="margin-bottom:18px"><a href="https://wa.me/${digits}" style="display:inline-block;padding:11px 20px;margin-right:8px;background:#111;color:#fff;text-decoration:none;border-radius:4px;font-size:14px">WhatsApp them</a><a href="tel:${esc(i.leadPhone)}" style="display:inline-block;padding:11px 20px;background:#111;color:#fff;text-decoration:none;border-radius:4px;font-size:14px">Call</a></div>` : ""}
+<p style="margin:0;font-size:13px;color:#6b6b6b;border-top:1px solid #e6e6e6;padding-top:14px">${esc(ask)}</p></div>`;
+
+  const text = [lead, "", `Lead: ${i.leadName}`, `Phone: ${i.leadPhone}`, `Owner: ${i.agentName}`,
+    i.leadRef ? `Ref: ${i.leadRef}` : "", "", ask].filter(Boolean).join("\n");
+
+  try {
+    const transport = nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });
+    await transport.sendMail({
+      from: `ERE Homes Leads <${user}>`,
+      to: i.to.length ? i.to : cc,
+      cc: i.to.length ? cc : undefined,
+      subject,
+      text,
+      html,
+    });
+    return { sent: i.to.length ? i.to : cc, error: null };
+  } catch (e: any) {
+    return { sent: [], error: String(e?.message || e).slice(0, 200) };
+  }
+}
+
 export async function emailLeadAlert(i: LeadEmailInput): Promise<LeadEmailResult> {
   const to = i.recipients.map((r) => (r.email || "").trim()).filter(Boolean);
   const skipped = i.recipients.filter((r) => !(r.email || "").trim()).map((r) => r.name);

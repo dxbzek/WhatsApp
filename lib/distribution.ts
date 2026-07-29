@@ -2,7 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsApp, sendTemplate, getContentMedia } from "@/lib/twilio";
 import { ensureLeadRef } from "@/lib/leadRef";
 import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
-import { emailLeadAlert } from "@/lib/leadEmail";
+import { emailLeadAlert, emailAgentNudge } from "@/lib/leadEmail";
 
 // Unified agent lead-alert template on the UTILITY subaccount (category UTILITY,
 // so it is exempt from Meta's per-recipient MARKETING throttle that silently drops
@@ -46,24 +46,48 @@ const LEAD_OUTCOME_FOLLOWUP_SID = (process.env.LEAD_OUTCOME_FOLLOWUP_SID || "HX7
 // Unset until the template clears Meta — sendEscalation no-ops rather than throwing.
 const LEAD_ESCALATION_SID = (process.env.LEAD_ESCALATION_SID || "").trim();
 
+// A nudge can now land by WhatsApp, by email, or both. `sid` is non-null ONLY for a
+// real Twilio send — the caller repoints lead_events.alert_sid at it so a button tap
+// correlates to this lead. `emailed` alone means the agent was told but there is no
+// tap to correlate, so alert_sid must be left alone.
+export type NudgeOutcome = { sid: string | null; emailed: boolean; error: string | null };
+
+// agents.email, resolved by NAME because that is what lead_events.assigned_agent
+// carries (it reads like an FK and is not one). Missing mailbox → dropped, and the
+// nudge falls back to the CC (marketing@) rather than silently going nowhere.
+async function mailboxesFor(names: string[]): Promise<string[]> {
+  const clean = names.filter(Boolean);
+  if (clean.length === 0) return [];
+  const { data } = await supabaseAdmin().from("agents").select("name, email").in("name", clean);
+  return (data || []).map((a: any) => (a.email || "").trim()).filter(Boolean);
+}
+
 // Hand a stuck lead to a manager. Returns the Twilio SID so the caller can repoint
 // lead_events.alert_sid at it — button taps correlate to a lead purely by the SID they
 // were replied on, so without this the manager's tap resolves against whatever lead the
 // MANAGER most recently touched, which is almost never the one being escalated.
-export async function sendEscalation(managerName: string, managerWa: string, agentName: string, leadRef: string, leadName: string, contactPhone: string): Promise<string | null> {
-  if (!LEAD_ESCALATION_SID) return null; // template not approved yet — no-op, never throw
-  try {
-    // Same one-tap opener the agent alert uses, so the manager can message the lead
-    // directly instead of copying a number out of the message.
-    const link = replyLink(managerName, leadName, contactPhone, "", null);
-    const numberLine = link ? `${contactPhone} · Reply: ${link}` : contactPhone;
-    const r: any = await sendTemplate(managerWa, LEAD_ESCALATION_SID, {
-      "1": managerName, "2": agentName, "3": leadRef || "—", "4": leadName, "5": numberLine,
-    });
-    return r?.sid || null;
-  } catch {
-    return null;
+export async function sendEscalation(managerName: string, managerWa: string, agentName: string, leadRef: string, leadName: string, contactPhone: string): Promise<NudgeOutcome> {
+  let sid: string | null = null;
+  if (LEAD_ESCALATION_SID) {
+    try {
+      // Same one-tap opener the agent alert uses, so the manager can message the lead
+      // directly instead of copying a number out of the message.
+      const link = replyLink(managerName, leadName, contactPhone, "", null);
+      const numberLine = link ? `${contactPhone} · Reply: ${link}` : contactPhone;
+      const r: any = await sendTemplate(managerWa, LEAD_ESCALATION_SID, {
+        "1": managerName, "2": agentName, "3": leadRef || "—", "4": leadName, "5": numberLine,
+      });
+      sid = r?.sid || null;
+    } catch {
+      sid = null;
+    }
   }
+  const mail = await emailAgentNudge({
+    kind: "escalation",
+    to: await mailboxesFor([managerName]),
+    agentName, managerName, leadName, leadPhone: contactPhone, leadRef,
+  });
+  return { sid, emailed: mail.error === null, error: mail.error };
 }
 
 // Put a lead back into its route's round-robin, skipping the agent who ignored it.
@@ -108,22 +132,30 @@ export async function reassignFromRoute(
 // taps correlate to a lead purely by the SID they were replied on — leave alert_sid
 // on the original alert and the tap would resolve, but only via the fallback
 // "agent's most recent lead" path, which is wrong whenever they hold several leads.
-export async function sendOutcomeFollowup(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string, contactedAt?: string | null): Promise<string | null> {
-  if (!LEAD_OUTCOME_FOLLOWUP_SID) return null; // template not provisioned yet — no-op, never throw
-  try {
-    // "20 Jul" in Dubai time — the template reads "the lead you contacted on {{2}}".
-    // No contacted_at on the row (shouldn't happen for a contacted lead) → "recently",
-    // which still reads as a sentence rather than a naked variable.
-    const dateStr = contactedAt
-      ? new Date(contactedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Dubai" })
-      : "recently";
-    const r: any = await sendTemplate(toWa, LEAD_OUTCOME_FOLLOWUP_SID, {
-      "1": agentName, "2": dateStr, "3": leadRef || "—", "4": leadName, "5": contactPhone,
-    });
-    return r?.sid || null;
-  } catch {
-    return null;
+export async function sendOutcomeFollowup(agentName: string, toWa: string, leadRef: string, leadName: string, contactPhone: string, contactedAt?: string | null): Promise<NudgeOutcome> {
+  let sid: string | null = null;
+  if (LEAD_OUTCOME_FOLLOWUP_SID) {
+    try {
+      // "20 Jul" in Dubai time — the template reads "the lead you contacted on {{2}}".
+      // No contacted_at on the row (shouldn't happen for a contacted lead) → "recently",
+      // which still reads as a sentence rather than a naked variable.
+      const dateStr = contactedAt
+        ? new Date(contactedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Dubai" })
+        : "recently";
+      const r: any = await sendTemplate(toWa, LEAD_OUTCOME_FOLLOWUP_SID, {
+        "1": agentName, "2": dateStr, "3": leadRef || "—", "4": leadName, "5": contactPhone,
+      });
+      sid = r?.sid || null;
+    } catch {
+      sid = null;
+    }
   }
+  const mail = await emailAgentNudge({
+    kind: "outcome",
+    to: await mailboxesFor([agentName]),
+    agentName, leadName, leadPhone: contactPhone, leadRef, contactedAt,
+  });
+  return { sid, emailed: mail.error === null, error: mail.error };
 }
 
 // Dedicated recruitment alert (utility subaccount, text-only, NO status buttons).
@@ -207,7 +239,16 @@ async function sendAgentAlert(agentName: string, toWa: string, leadRef: string, 
 // watcher). Reuses the approved UTILITY alert template.
 export async function pingAgent(agentName: string, wa_number: string, leadRef: string, leadName: string, contactPhone: string, source: string): Promise<boolean> {
   // Stale-lead reminder to the assigned agent — include the one-tap reply link ("").
-  return (await sendAgentAlert(agentName, wa_number, leadRef, leadName, contactPhone, source, "")).ok;
+  const wa = await sendAgentAlert(agentName, wa_number, leadRef, leadName, contactPhone, source, "");
+  // WhatsApp has been dead since 27 Jul 2026, so this reminder reached nobody and the
+  // caller's `ok` check quietly turned the whole stale sweep into a no-op. Email is the
+  // channel that actually arrives; either one counts as the agent having been told.
+  const mail = await emailAgentNudge({
+    kind: "stale",
+    to: await mailboxesFor([agentName]),
+    agentName, leadName, leadPhone: contactPhone, leadRef,
+  });
+  return wa.ok || mail.error === null;
 }
 
 // Send one recruitment alert to a recruiter's WhatsApp via the approved recruit

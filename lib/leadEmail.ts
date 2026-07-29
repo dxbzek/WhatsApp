@@ -259,7 +259,8 @@ All of these are already in Pipedrive. You get this list once per lead, not on r
 // the day's numbers and who is sitting on what. The old daily digest was WhatsApp-only
 // and has therefore reached nobody since Meta disabled the portfolio on 27 Jul.
 export type DailyReportInput = {
-  date: string;                 // "29 Jul 2026"
+  date: string;                 // "29 Jul 2026", or "27 - 29 Jul 2026" for a range
+  days?: number;                // how many days the period covers (1 = a single day)
   newLeads: number;             // real enquiries that arrived in the last 24h
   newPooled?: number;           // deals created into the telesales pool/batch, NOT enquiries
   qualified: number;            // moved to Qualified or beyond in the last 24h
@@ -352,12 +353,12 @@ export function renderDailyReport(i: DailyReportInput): { html: string; text: st
   // One sentence, worst true thing first. This line decides whether the rest gets read, so
   // it never opens with something reassuring that hides a problem.
   const headline = i.newLeads && i.speedSampled === 0
-    ? `Nothing has been logged yet against any of today's ${i.newLeads} new leads.`
+    ? `Nothing has been logged yet against any of the ${i.newLeads} new leads in this period.`
     : i.uncalledToday
-      ? `${i.uncalledToday} of today's ${i.newLeads} new leads have not been touched.`
+      ? `${i.uncalledToday} of the ${i.newLeads} new leads in this period have not been touched.`
       : i.newLeads
-        ? `Every one of today's ${i.newLeads} new leads has been actioned.`
-        : `No new enquiries today.`;
+        ? `Every one of the ${i.newLeads} new leads in this period has been actioned.`
+        : `No new enquiries in this period.`;
 
   const html = `<!doctype html><html><body style="margin:0;padding:0;background:#EFEbE3;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EFEbE3;padding:24px 12px;">
@@ -365,7 +366,7 @@ export function renderDailyReport(i: DailyReportInput): { html: string; text: st
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background:#FFFFFF;border-radius:10px;overflow:hidden;border:1px solid ${LINE};">
   <tr><td style="background:${DARK};padding:26px 30px;">
     <div style="font:700 20px/1 ${A};color:#FFFFFF;letter-spacing:.14em;">ERE <span style="color:${GOLD};">HOMES</span></div>
-    <div style="font:600 12px/1.4 ${A};color:${GOLD};text-transform:uppercase;letter-spacing:.18em;margin-top:8px;">Daily Lead Report</div>
+    <div style="font:600 12px/1.4 ${A};color:${GOLD};text-transform:uppercase;letter-spacing:.18em;margin-top:8px;">${(i.days || 1) > 1 ? "Lead Report" : "Daily Lead Report"}</div>
   </td></tr>
   <tr><td style="padding:24px 30px 6px;">
     <div style="font:400 13px ${A};color:${MUTE};">${esc(i.date)} &middot; Asia/Dubai</div>
@@ -373,7 +374,7 @@ export function renderDailyReport(i: DailyReportInput): { html: string; text: st
   </td></tr>
   <tr><td style="padding:12px 30px 4px;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:8px 8px;">
-      <tr>${stat("New leads", String(i.newLeads))}${stat("7-day average", i.weekAvgNew ? String(i.weekAvgNew) : "-")}${stat("Calls & notes", String(worked))}</tr>
+      <tr>${stat("New leads", String(i.newLeads))}${stat((i.days || 1) > 1 ? "Per day" : "7-day average", (i.days || 1) > 1 ? String(Math.round(i.newLeads / (i.days || 1))) : (i.weekAvgNew ? String(i.weekAvgNew) : "-"))}${stat("Calls & notes", String(worked))}</tr>
       <tr>${stat("Moved forward", String(i.qualified), true)}${stat("Closed lost", String(i.lost || 0))}${stat("Never touched", String(i.awaitingFirst), true)}</tr>
     </table>
   </td></tr>
@@ -393,10 +394,10 @@ export function renderDailyReport(i: DailyReportInput): { html: string; text: st
   </td></tr>` : ""}
   <tr><td style="padding:20px 30px 8px;">
     <div style="font:400 12px/1.7 ${A};color:${MUTE};">
-      <strong style="color:${INK};">Worked</strong> = calls plus notes logged today. Some reps log a call, others write a note, so both count.<br>
+      <strong style="color:${INK};">Worked</strong> = calls plus notes logged in this period. Some reps log a call, others write a note, so both count.<br>
       <strong style="color:${INK};">Untouched</strong> = open leads from the last ${win} days with nothing logged on them at all.
-      ${i.newPooled ? `<br>${i.newPooled} deals went into the telesales pool today. That is allocation, not new enquiries.` : ""}
-      ${i.lostNoReason ? `<br>${i.lostNoReason} of today's ${i.lost || 0} closed lost have no lost reason recorded.` : ""}
+      ${i.newPooled ? `<br>${i.newPooled} deals went into the telesales pool in this period. That is allocation, not new enquiries.` : ""}
+      ${i.lostNoReason ? `<br>${i.lostNoReason} of the ${i.lost || 0} closed lost have no lost reason recorded.` : ""}
       ${i.olderBacklog ? `<br>${i.olderBacklog} untouched leads are older than ${win} days and sit outside this report.` : ""}
     </div>
   </td></tr>

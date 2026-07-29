@@ -14,7 +14,21 @@ async function main() {
   const arg = process.argv[2];
   if (!arg) throw new Error("usage: npx tsx scripts/send-daily-report-sample.ts <email>|--dry|--html <path>");
 
-  const report = await collectDailyReport();
+  // Optional Dubai date range: --from 2026-07-27 --to 2026-07-29 (both inclusive).
+  const flag = (k: string) => {
+    const idx = process.argv.indexOf(k);
+    return idx > -1 ? process.argv[idx + 1] : "";
+  };
+  const fromArg = flag("--from"), toArg = flag("--to");
+  const range = fromArg
+    ? {
+      from: Date.parse(`${fromArg}T00:00:00+04:00`),
+      // --to is INCLUSIVE, so the window runs to midnight at the END of that day.
+      to: Date.parse(`${toArg || fromArg}T00:00:00+04:00`) + 86400_000,
+    }
+    : {};
+
+  const report = await collectDailyReport(range);
   if (arg !== "--html") console.log(JSON.stringify(report, null, 2));
 
   // --html writes the exact email body to a file so the layout can be reviewed in a browser

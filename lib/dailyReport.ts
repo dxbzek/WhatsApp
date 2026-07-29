@@ -77,10 +77,12 @@ function sourceOf(title: string): string {
 // Completed activities in the last 24h, all users. `GET /activities` is scoped to the
 // TOKEN'S OWN USER unless user_id=0 is passed, which silently returns just my own calls
 // and would read as "the team made 3 calls today".
-async function doneActivities(): Promise<{ userId: number; type: string; dealId: number | null; doneAt: number }[]> {
+async function doneActivities(from: number, to: number): Promise<{ userId: number; type: string; dealId: number | null; doneAt: number }[]> {
   const day = 86400_000;
-  const d1 = new Date(Date.now() - 2 * day).toISOString().slice(0, 10);
-  const d2 = new Date(Date.now() + day).toISOString().slice(0, 10);
+  // Widened by a day on each side: this endpoint filters on the activity's DUE date, which
+  // is not the date it was completed, so a tight window silently drops completed work.
+  const d1 = new Date(from - 2 * day).toISOString().slice(0, 10);
+  const d2 = new Date(to + day).toISOString().slice(0, 10);
   const out: { userId: number; type: string; dealId: number | null; doneAt: number }[] = [];
   for (let start = 0; start < 3000; start += 100) {
     const d: any = await pd("v1/activities", { user_id: "0", done: "1", start_date: d1, end_date: d2, limit: "100", start: String(start) });
@@ -133,8 +135,15 @@ function dubaiDayStart(): number {
   return Date.parse(`${d}T00:00:00+04:00`);
 }
 
-export async function collectDailyReport(): Promise<DailyReportInput> {
-  const dayAgo = dubaiDayStart();
+// `from`/`to` are Dubai-day boundaries as UTC ms. Defaults to today, so the cron calls this
+// with no arguments; a range is used for catch-ups and for reviewing a period ("27-29 Jul").
+// The STOCK figures (untouched, oldest, backlog) are always as of NOW — a lead untouched
+// today cannot be reported as untouched "as of the 27th" without rewriting history.
+export type ReportRange = { from?: number; to?: number };
+
+export async function collectDailyReport(range: ReportRange = {}): Promise<DailyReportInput> {
+  const dayAgo = range.from ?? dubaiDayStart();
+  const until = range.to ?? Date.now();
 
   // Flow: what arrived and what moved forward in the last 24h. v2 because it is the only
   // version that filters by pipeline, and none of these need done_activities_count.
@@ -170,7 +179,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
       const stage = Number(deal.stage_id);
       const owner = Number(deal.owner_id) || 0;
       const added = parseUtc(deal.add_time);
-      if (added >= dayAgo) {
+      if (added >= dayAgo && added < until) {
         if (POOL_STAGES.has(stage)) newPooled++;
         else {
           newInbound++;
@@ -180,7 +189,8 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
           newDeals.push({ id: Number(deal.id), owner, addedAt: added });
         }
       }
-      if (parseUtc(deal.stage_change_time) >= dayAgo) {
+      const moved = parseUtc(deal.stage_change_time);
+      if (moved >= dayAgo && moved < until) {
         if (PROGRESSED_STAGES.has(stage)) { progressed++; bumpFlow(owner, "progressed"); }
         else if (stage === STAGE_CLOSED_LOST) { lost++; bumpFlow(owner, "lost"); lostReasons.push(deal.lost_reason || null); }
       }
@@ -207,7 +217,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     for (const deal of (d?.data || []) as any[]) {
       const added = parseUtc(deal.add_time);
       if (added < weekAgo) { done = true; break; }
-      if (added >= dayAgo) continue;   // today is what the baseline is being compared WITH
+      if (added >= dayAgo) continue;   // the reported period is what the baseline explains
       if (!POOL_STAGES.has(Number(deal.stage_id))) weekInbound++;
     }
     cursor = d?.additional_data?.next_cursor || "";
@@ -218,8 +228,8 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
   // Effort: what the team actually DID today, not just what the pipeline looks like. A rep
   // with 40 uncalled leads and 30 calls logged has a volume problem; the same rep with 2
   // calls has a different one entirely, and the stage columns cannot tell them apart.
-  const todayActs = (await doneActivities()).filter((a) => a.doneAt >= dayAgo);
-  const todayNotes = await notesSince(dayAgo);
+  const todayActs = (await doneActivities(dayAgo, until)).filter((a) => a.doneAt >= dayAgo && a.doneAt < until);
+  const todayNotes = (await notesSince(dayAgo)).filter((nt) => nt.at < until);
   const ownerCalls = new Map<number, { calls: number; other: number; notes: number }>();
   const bump = (id: number, k: "calls" | "other" | "notes") => {
     const cur = ownerCalls.get(id) || { calls: 0, other: 0, notes: 0 };
@@ -303,7 +313,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     if (t) {
       const h = (Date.now() - t) / 3600_000;
       if (r.oldestHours === null || h > r.oldestHours) r.oldestHours = h;
-      if (t >= dayAgo) r.uncalledToday++;
+      if (t >= dayAgo && t < until) r.uncalledToday++;
     }
   }
   for (const d of deals) {
@@ -351,9 +361,15 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
       speedMins: r.speedMins,
     }));
 
-  const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Dubai" });
+  const fmt = (ms: number, withYear = true) =>
+    new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}), timeZone: "Asia/Dubai" });
+  // One day reads "29 Jul 2026"; a range reads "27 - 29 Jul 2026". `until` is exclusive, so
+  // step back a second before formatting or a range ending at midnight names the wrong day.
+  const lastDay = until - 1000;
+  const date = fmt(dayAgo, false) === fmt(lastDay, false) ? fmt(lastDay) : `${fmt(dayAgo, false)} - ${fmt(lastDay)}`;
+  const days = Math.max(1, Math.round((until - dayAgo) / 86400_000));
   return {
-    date, newLeads: newInbound, newPooled, qualified: progressed, lost,
+    date, days, newLeads: newInbound, newPooled, qualified: progressed, lost,
     awaitingFirst: notContacted.length, awaitingOutcome, perAgent,
     uncalledToday: perAgent.reduce((n, r) => n + r.uncalledToday, 0),
     olderBacklog, windowDays: MAX_AGE_DAYS,

@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendOutcomeFollowup, sendEscalation } from "@/lib/distribution";
 import { sendOpsAlertOnce, sendDailyDigestOnce } from "@/lib/opsAlert";
 import { emailAgentLeadDigest, emailDailyReport, type DigestLead } from "@/lib/leadEmail";
+import { collectDailyReport } from "@/lib/dailyReport";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -291,61 +292,25 @@ async function runDailyDigest(db: ReturnType<typeof supabaseAdmin>): Promise<boo
   const hour = Number(new Date().toLocaleString("en-GB", { hour: "2-digit", hour12: false, timeZone: "Asia/Dubai" }));
   if (hour < DIGEST_HOUR_DUBAI) return false;
   const dateKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" });
-  const since = new Date(Date.now() - 86400_000).toISOString();
 
-  const count = async (build: (q: any) => any): Promise<number> => {
-    const { count: n } = await build(db.from("lead_events").select("id", { count: "exact", head: true }));
-    return n || 0;
-  };
-  const newLeads = await count((q) => q.gte("created_at", since));
-  const qualified = await count((q) => q.eq("qualification", "qualified").gte("qualification_updated_at", since));
-  // Stock, not flow: everything CURRENTLY untouched/unresolved, however old — the
-  // digest's job is "what is still waiting", not "what arrived today".
-  const awaitingFirst = await count((q) => q.eq("qualification", "new"));
-  const awaitingOutcome = await count((q) => q.eq("qualification", "contacted"));
+  // Numbers come from PIPEDRIVE, not this console's tables. `conversations` and
+  // `lead_events` stopped receiving a single row at 27 Jul 2026 11:08 UTC when Meta
+  // disabled the WhatsApp portfolio, so a Supabase-sourced report read "0 new today"
+  // on a day Pipedrive took 10+ leads. See lib/dailyReport.ts.
+  const report = await collectDailyReport();
 
-  // Who is sitting on what, worst first. Archived and suppressed rows excluded, and
-  // Recruitment with them — this must agree with the board, not with the raw table.
-  const { data: waiting } = await db
-    .from("conversations")
-    .select("assigned_agent_id, assigned_at")
-    .not("assigned_agent_id", "is", null)
-    .is("lead_stage", null)
-    .eq("is_internal", false)
-    .eq("lead_status", "hot")
-    .not("status", "in", "(blocked,invalid,archived)")
-    .or(`source_ref.is.null,source_ref.neq.${HIDDEN_ROUTE}`)
-    .limit(2000);
-  const ids = Array.from(new Set((waiting || []).map((c: any) => c.assigned_agent_id))) as string[];
-  const { data: ags } = ids.length
-    ? await db.from("agents").select("id, name").in("id", ids)
-    : { data: [] as any[] };
-  const nameById = new Map((ags || []).map((a: any) => [a.id, a.name]));
-  const perAgent = [...groupBy((waiting || []) as any[], (c) => String(c.assigned_agent_id))]
-    .map(([id, rows]) => ({
-      name: nameById.get(id) || "Unassigned",
-      waiting: rows.length,
-      oldestHours: rows.reduce((max: number | null, r: any) => {
-        if (!r.assigned_at) return max;
-        const h = (Date.now() - new Date(r.assigned_at).getTime()) / 3600_000;
-        return max === null || h > max ? h : max;
-      }, null as number | null),
-    }))
-    .sort((a, b) => b.waiting - a.waiting);
-
-  const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Dubai" });
   // The email report needs its OWN once-per-day claim. sendDailyDigestOnce releases its
   // claim whenever the WhatsApp send fails — which it always does now — so hanging the
   // email off that would re-send this report every 30 minutes: the exact spam being fixed.
   const claim = await db.from("ops_log").insert({ type: "daily_report_email", key: dateKey });
   let mailed = false;
   if (!claim.error) {
-    const mail = await emailDailyReport({ date, newLeads, qualified, awaitingFirst, awaitingOutcome, perAgent });
+    const mail = await emailDailyReport(report);
     mailed = mail.error === null;
     // Release the claim so the next pass retries rather than skipping the day silently.
     if (!mailed) await db.from("ops_log").delete().eq("type", "daily_report_email").eq("key", dateKey);
   }
-  const wa = await sendDailyDigestOnce(db, dateKey, { date, newLeads, qualified, awaitingFirst, awaitingOutcome });
+  const wa = await sendDailyDigestOnce(db, dateKey, report);
   return mailed || wa;
 }
 

@@ -263,8 +263,10 @@ export type DailyReportInput = {
   newLeads: number;             // arrived in the last 24h
   qualified: number;            // marked qualified in the last 24h
   awaitingFirst: number;        // stock: never contacted
-  awaitingOutcome: number;      // stock: contacted, no outcome logged
+  awaitingOutcome: number;      // stock: called at least once, still not moved on
   perAgent: { name: string; waiting: number; oldestHours: number | null }[];
+  olderBacklog?: number;        // uncalled leads older than the window (legacy telesales)
+  windowDays?: number;          // how far back "waiting" counts
 };
 
 export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: string[]; error: string | null }> {
@@ -303,13 +305,17 @@ ${stat("new today", i.newLeads)}${stat("qualified", i.qualified)}${stat("not con
 ${agentRows
       ? `<table style="border-collapse:collapse;width:100%">${agentRows}</table>`
       : `<p style="margin:0;font-size:15px;color:#444">Nobody is sitting on an unactioned lead.</p>`}
+${i.olderBacklog
+      ? `<p style="margin:14px 0 0;font-size:13px;color:#8a8a8a">Plus ${i.olderBacklog} uncalled leads older than ${i.windowDays || 14} days, mostly legacy telesales. Not counted above.</p>`
+      : ""}
 <p style="margin:20px 0 0;font-size:13px;color:#6b6b6b;border-top:1px solid #e6e6e6;padding-top:14px">
-Agents are chased directly; this is the summary only.</p></div>`;
+From Pipedrive. "Not contacted" means no completed activity on the deal. Agents are chased directly; this is the summary only.</p></div>`;
 
   const text = [`Leads — ${i.date}`, "",
     `New today: ${i.newLeads}`, `Qualified: ${i.qualified}`,
     `Not contacted: ${i.awaitingFirst}`, `No outcome: ${i.awaitingOutcome}`, "", "Waiting, by agent:",
-    ...(i.perAgent.length ? i.perAgent.map((a) => `- ${a.name}: ${a.waiting}`) : ["- nobody"])].join("\n");
+    ...(i.perAgent.length ? i.perAgent.map((a) => `- ${a.name}: ${a.waiting}`) : ["- nobody"]),
+    ...(i.olderBacklog ? ["", `Plus ${i.olderBacklog} uncalled leads older than ${i.windowDays || 14} days.`] : [])].join("\n");
 
   try {
     const transport = nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });

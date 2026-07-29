@@ -34,7 +34,7 @@ export type ChaseRow = {
 
 const clean = (v?: string | null) => (v || "").replace(/^﻿/, "").trim();
 
-async function pd(path: string, params: Record<string, string> = {}) {
+export async function pd(path: string, params: Record<string, string> = {}) {
   const token = clean(process.env.PIPEDRIVE_API_TOKEN);
   if (!token) throw new Error("pipedrive token missing");
   // Token via URLSearchParams, never interpolated — nothing thrown here can leak it.

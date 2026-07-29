@@ -17,9 +17,9 @@ import nodemailer from "nodemailer";
 //   LEAD_SMTP_USER  marketing@erehomes.ae
 //   LEAD_SMTP_PASS  Google App Password (Sensitive)
 //   LEAD_ALERT_CC   copied on NEW-lead alerts (default marketing@erehomes.ae)
-//   DAILY_REPORT_TO end-of-day report recipients (default marketing@ + matthew@)
+//   DAILY_REPORT_TO end-of-day report recipients (default marketing@ only)
 //   NUDGE_ALERT_CC  copied on NUDGES: stale digest, outcome ask, escalation
-//                   (default matthew@erehomes.ae — the sales manager, NOT marketing@)
+//                   (default EMPTY — nobody is copied)
 //
 // With LEAD_SMTP_PASS unset this module sends NOTHING and says so in its return value. It
 // never pretends to have sent, and it never throws into a lead webhook: a failed alert must
@@ -59,11 +59,11 @@ function ccList(): string[] {
 // question from who gets copied on a NEW lead, which is what LEAD_ALERT_CC answers.
 // Carrying LEAD_ALERT_CC onto every chase put a copy of every agent's nudge into
 // marketing@, the inbox Zek reads: ~180 mails on 29 Jul 2026. So this has its OWN env
-// var. Chasing agents is the sales manager's job, so the default here is MATTHEW, not
-// marketing@ — set NUDGE_ALERT_CC in Vercel to change or clear it (same
-// comma/semicolon/newline splitting as LEAD_ALERT_CC; set it to " " for nobody).
+// var, and it defaults to NOBODY: chasing is the sales manager's job, and Zek asked on
+// 29 Jul 2026 not to copy Matthew for now. Set NUDGE_ALERT_CC in Vercel to copy someone
+// (same comma/semicolon/newline splitting as LEAD_ALERT_CC).
 function nudgeCcList(): string[] {
-  return (process.env.NUDGE_ALERT_CC || "matthew@erehomes.ae")
+  return (process.env.NUDGE_ALERT_CC || "")
     .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
 }
 
@@ -297,7 +297,9 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
   // marketing@ (this is its ONE daily mail) plus the sales manager, who acts on the
   // per-agent list. Override with DAILY_REPORT_TO; falls back to LEAD_ALERT_CC's
   // marketing inbox if that env is ever set to something empty.
-  const to = (process.env.DAILY_REPORT_TO || "marketing@erehomes.ae, matthew@erehomes.ae")
+  // Matthew is deliberately NOT here (Zek, 29 Jul 2026: "do not send to Matthew for now").
+  // Put him back by setting DAILY_REPORT_TO rather than editing this default.
+  const to = (process.env.DAILY_REPORT_TO || "marketing@erehomes.ae")
     .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
   if (to.length === 0) to.push(...ccList());
   if (to.length === 0) return { sent: [], error: "no recipient" };

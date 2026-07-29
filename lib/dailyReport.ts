@@ -59,6 +59,51 @@ async function openWaitingDeals(): Promise<Deal[]> {
   return out;
 }
 
+// Where today's enquiries came from. Classified off the deal TITLE because that is what
+// every creator writes consistently: `origin` is "API" or "Marketplace" depending on which
+// Make scenario fired, so it separates nothing. Verified against a full day of live titles
+// on 29 Jul 2026 — the "Whatsapp - Listing - lead-X" shape is Property Finder (those deals
+// carry a propertyfinder.ae lead URL), NOT WhatsApp.
+function sourceOf(title: string): string {
+  const t = (title || "").toLowerCase();
+  if (t.startsWith("bayut")) return "Bayut";
+  if (t.startsWith("whatsapp - listing")) return "Property Finder";
+  if (t.includes("ai caller")) return "AI Caller";
+  if (t.includes("facebook") || t.includes("instagram")) return "Meta";
+  if (t.includes("website") || t.includes("erehomes.ae")) return "Website";
+  return "Other";
+}
+
+// Completed activities in the last 24h, all users. `GET /activities` is scoped to the
+// TOKEN'S OWN USER unless user_id=0 is passed, which silently returns just my own calls
+// and would read as "the team made 3 calls today".
+async function doneActivities(): Promise<{ userId: number; type: string; dealId: number | null; doneAt: number }[]> {
+  const day = 86400_000;
+  const d1 = new Date(Date.now() - 2 * day).toISOString().slice(0, 10);
+  const d2 = new Date(Date.now() + day).toISOString().slice(0, 10);
+  const out: { userId: number; type: string; dealId: number | null; doneAt: number }[] = [];
+  for (let start = 0; start < 3000; start += 100) {
+    const d: any = await pd("v1/activities", { user_id: "0", done: "1", start_date: d1, end_date: d2, limit: "100", start: String(start) });
+    for (const a of (d?.data || []) as any[]) {
+      out.push({
+        userId: Number(a.user_id) || 0,
+        type: String(a.type || ""),
+        dealId: a.deal_id ? Number(a.deal_id) : null,
+        doneAt: parseUtc(a.marked_as_done_time || a.update_time),
+      });
+    }
+    if (!d?.additional_data?.pagination?.more_items_in_collection) break;
+  }
+  return out;
+}
+
+const median = (xs: number[]): number | null => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+};
+
 export async function collectDailyReport(): Promise<DailyReportInput> {
   const dayAgo = Date.now() - 86400_000;
 
@@ -81,6 +126,9 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     cur[k]++;
     ownerFlow.set(id, cur);
   };
+  const bySource = new Map<string, number>();
+  const lostReasons: (string | null)[] = [];
+  const newDeals: { id: number; owner: number; addedAt: number }[] = [];
   for (let page = 0, cursor = ""; page < 10; page++) {
     const params: Record<string, string> = {
       pipeline_id: String(PIPELINE_LEADS), limit: "100", sort_by: "update_time", sort_direction: "desc",
@@ -92,17 +140,80 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     for (const deal of batch) {
       const stage = Number(deal.stage_id);
       const owner = Number(deal.owner_id) || 0;
-      if (parseUtc(deal.add_time) >= dayAgo) {
+      const added = parseUtc(deal.add_time);
+      if (added >= dayAgo) {
         if (POOL_STAGES.has(stage)) newPooled++;
-        else { newInbound++; bumpFlow(owner, "newToday"); }
+        else {
+          newInbound++;
+          bumpFlow(owner, "newToday");
+          const src = sourceOf(deal.title);
+          bySource.set(src, (bySource.get(src) || 0) + 1);
+          newDeals.push({ id: Number(deal.id), owner, addedAt: added });
+        }
       }
       if (parseUtc(deal.stage_change_time) >= dayAgo) {
         if (PROGRESSED_STAGES.has(stage)) { progressed++; bumpFlow(owner, "progressed"); }
-        else if (stage === STAGE_CLOSED_LOST) { lost++; bumpFlow(owner, "lost"); }
+        else if (stage === STAGE_CLOSED_LOST) { lost++; bumpFlow(owner, "lost"); lostReasons.push(deal.lost_reason || null); }
       }
     }
     cursor = d?.additional_data?.next_cursor || "";
     if (!cursor) break;
+  }
+
+  // Baseline. A number on its own is unreadable: "33 new" only means something next to the
+  // week it is being compared with. Counts the same 7 days back, same pool exclusion, then
+  // divides by 7 — a plain average, not a rolling median, because the reader has to be able
+  // to reproduce it in their head from the daily numbers.
+  const weekAgo = Date.now() - 7 * 86400_000;
+  let weekInbound = 0;
+  for (let page = 0, cursor = ""; page < 20; page++) {
+    const params: Record<string, string> = {
+      pipeline_id: String(PIPELINE_LEADS), limit: "100", sort_by: "add_time", sort_direction: "desc",
+    };
+    if (cursor) params.cursor = cursor;
+    const d: any = await pd("api/v2/deals", params);
+    let done = false;
+    for (const deal of (d?.data || []) as any[]) {
+      const added = parseUtc(deal.add_time);
+      if (added < weekAgo) { done = true; break; }
+      if (!POOL_STAGES.has(Number(deal.stage_id))) weekInbound++;
+    }
+    cursor = d?.additional_data?.next_cursor || "";
+    if (done || !cursor) break;
+  }
+  const weekAvgNew = Math.round(weekInbound / 7);
+
+  // Effort: what the team actually DID today, not just what the pipeline looks like. A rep
+  // with 40 uncalled leads and 30 calls logged has a volume problem; the same rep with 2
+  // calls has a different one entirely, and the stage columns cannot tell them apart.
+  const todayActs = (await doneActivities()).filter((a) => a.doneAt >= dayAgo);
+  const ownerCalls = new Map<number, { calls: number; other: number }>();
+  for (const a of todayActs) {
+    const cur = ownerCalls.get(a.userId) || { calls: 0, other: 0 };
+    if (a.type === "call") cur.calls++; else cur.other++;
+    ownerCalls.set(a.userId, cur);
+  }
+
+  // Speed to first call, the metric that actually predicts conversion: earliest completed
+  // activity on each of today's new deals, minus when the deal was created. Only deals that
+  // HAVE been actioned count — treating an untouched lead as an infinite wait would make the
+  // median meaningless, and "never called" already counts those separately.
+  //
+  // Read per deal, NOT from the bulk activity list. `GET /activities` filters on the
+  // activity's DUE date, not when it was completed, so a call logged today against a task
+  // due next week is simply absent from that window — which is why the first attempt at this
+  // returned a median of null while 198 calls had been logged the same day.
+  const speedAll: number[] = [];
+  const speedByOwner = new Map<number, number[]>();
+  for (const d of newDeals.slice(0, 40)) {
+    const a: any = await pd(`v1/deals/${d.id}/activities`, { done: "1", limit: "50" });
+    const times = ((a?.data || []) as any[])
+      .map((x) => parseUtc(x.marked_as_done_time))
+      .filter((t) => t && t >= d.addedAt);
+    if (!times.length) continue;
+    const m = Math.round((Math.min(...times) - d.addedAt) / 60_000);
+    speedAll.push(m);
+    speedByOwner.set(d.owner, [...(speedByOwner.get(d.owner) || []), m]);
   }
 
   // Stock: who is sitting on what, right now. done_activities_count is the honest signal —
@@ -127,10 +238,11 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     id: number; name: string;
     newToday: number; uncalled: number; uncalledToday: number;
     calledOpen: number; progressed: number; lost: number; oldestHours: number | null;
+    calls: number; otherActivities: number; speedMins: number | null;
   };
   const rows = new Map<number, Row>();
   const row = (id: number, name?: string): Row => {
-    const r = rows.get(id) || { id, name: name || "", newToday: 0, uncalled: 0, uncalledToday: 0, calledOpen: 0, progressed: 0, lost: 0, oldestHours: null };
+    const r = rows.get(id) || { id, name: name || "", newToday: 0, uncalled: 0, uncalledToday: 0, calledOpen: 0, progressed: 0, lost: 0, oldestHours: null, calls: 0, otherActivities: 0, speedMins: null };
     if (name && !r.name) r.name = name;
     rows.set(id, r);
     return r;
@@ -155,6 +267,11 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     const r = row(id);
     r.newToday = f.newToday; r.progressed = f.progressed; r.lost = f.lost;
   }
+  for (const [id, c] of ownerCalls) {
+    const r = row(id);
+    r.calls = c.calls; r.otherActivities = c.other;
+  }
+  for (const [id, xs] of speedByOwner) row(id).speedMins = median(xs);
 
   // Names only exist on the v1 rows, so anyone who ONLY appears in the flow pass (took a new
   // lead today and has nothing sitting) has no name yet. One /users read fills those in
@@ -169,7 +286,7 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
   // Worst first: never-called count is the number a head of sales acts on, then today's
   // volume as the tiebreak.
   const perAgent = [...rows.values()]
-    .filter((r) => r.uncalled || r.calledOpen || r.newToday || r.progressed || r.lost)
+    .filter((r) => r.uncalled || r.calledOpen || r.newToday || r.progressed || r.lost || r.calls)
     .sort((a, b) => b.uncalled - a.uncalled || b.newToday - a.newToday)
     .map((r) => ({
       name: r.name || "Unassigned",
@@ -180,6 +297,9 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
       progressed: r.progressed,
       lost: r.lost,
       oldestHours: r.oldestHours,
+      calls: r.calls,
+      otherActivities: r.otherActivities,
+      speedMins: r.speedMins,
     }));
 
   const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Dubai" });
@@ -188,5 +308,12 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     awaitingFirst: notContacted.length, awaitingOutcome, perAgent,
     uncalledToday: perAgent.reduce((n, r) => n + r.uncalledToday, 0),
     olderBacklog, windowDays: MAX_AGE_DAYS,
+    weekAvgNew,
+    callsToday: todayActs.filter((a) => a.type === "call").length,
+    activitiesToday: todayActs.length,
+    speedMedianMins: median(speedAll),
+    speedSampled: speedAll.length,
+    sources: [...bySource].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count })),
+    lostNoReason: lostReasons.filter((r) => !String(r || "").trim()).length,
   };
 }

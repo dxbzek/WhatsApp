@@ -267,6 +267,13 @@ export type DailyReportInput = {
   awaitingFirst: number;        // open, inside the window, nobody has completed an activity
   awaitingOutcome: number;      // open, inside the window, called at least once, still not moved on
   uncalledToday?: number;       // of today's new leads, how many still have no call logged
+  weekAvgNew?: number;          // new enquiries per day, averaged over the last 7 days
+  callsToday?: number;          // completed call activities, whole team, last 24h
+  activitiesToday?: number;     // all completed activities, last 24h
+  speedMedianMins?: number | null;  // median minutes from lead created to first activity
+  speedSampled?: number;        // how many of today's leads that median is based on
+  sources?: { name: string; count: number }[];
+  lostNoReason?: number;        // of today's Closed Lost, how many carry no reason
   perAgent: {
     name: string;
     waiting: number;            // open, never called, inside the window
@@ -276,6 +283,9 @@ export type DailyReportInput = {
     calledOpen?: number;
     progressed?: number;
     lost?: number;
+    calls?: number;
+    otherActivities?: number;
+    speedMins?: number | null;
   }[];
   olderBacklog?: number;        // uncalled leads older than the window (legacy telesales)
   windowDays?: number;          // how far back "waiting" counts
@@ -311,47 +321,66 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
 
   // Red only where it means "act on this": leads nobody has called. Everything else stays
   // neutral so the one colour on the page keeps its meaning.
+  const mins = (m?: number | null) => (m === null || m === undefined ? "—" : m < 90 ? `${m}m` : `${Math.round(m / 60)}h`);
+
   const agentRows = i.perAgent.map((a) =>
     `<tr>${td(esc(a.name), "left", "white-space:nowrap")}` +
     td(n(a.newToday)) +
+    td(n(a.calls)) +
+    td(`<span style="font-size:14px;color:#6b6b6b">${esc(mins(a.speedMins))}</span>`) +
     td(n(a.progressed)) +
     td(n(a.lost)) +
     td(a.waiting ? `<strong style="color:#b4462a">${a.waiting}</strong>` : n(0)) +
     td(`<span style="font-size:14px;color:#6b6b6b">${esc(age(a.oldestHours))}</span>`) +
-    td(n(a.calledOpen)) +
     `</tr>`).join("");
 
-  const sum = (k: "newToday" | "progressed" | "lost" | "calledOpen") =>
+  const sum = (k: "newToday" | "progressed" | "lost" | "calledOpen" | "calls") =>
     i.perAgent.reduce((t, a) => t + (a[k] || 0), 0);
   const totalRow = `<tr>` +
     `<td style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">Total</td>` +
-    [sum("newToday"), sum("progressed"), sum("lost"), i.awaitingFirst, "", sum("calledOpen")]
-      .map((v) => `<td align="right" style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">${v}</td>`).join("") +
+    [String(sum("newToday")), String(sum("calls")), mins(i.speedMedianMins), String(sum("progressed")),
+      String(sum("lost")), String(i.awaitingFirst), ""]
+      .map((v) => `<td align="right" style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">${esc(v)}</td>`).join("") +
     `</tr>`;
 
+  const vsWeek = i.weekAvgNew
+    ? ` (7-day average ${i.weekAvgNew}${i.newLeads > i.weekAvgNew ? ", above" : i.newLeads < i.weekAvgNew ? ", below" : ""})`
+    : "";
+  const sourceLine = (i.sources || []).map((s) => `${esc(s.name)} ${s.count}`).join(" · ");
+
   // The one line a head of sales reads first: today's leads that nobody has phoned.
-  const headline = i.uncalledToday
-    ? `${i.uncalledToday} of today's ${i.newLeads} new leads still have no call logged.`
-    : i.newLeads
-      ? `Every one of today's ${i.newLeads} new leads has a call logged.`
-      : `No new enquiries in the last 24 hours.`;
+  // Worst-first. "Nothing logged on ANY of today's leads" outranks the per-lead count: on
+  // 29 Jul the team completed 198 calls and not one of them was against a lead that arrived
+  // that day, which the old headline ("15 of 33 have no call logged") completely hid.
+  const headline = i.newLeads && i.speedSampled === 0
+    ? `None of today's ${i.newLeads} new leads has a completed activity logged yet.`
+    : i.uncalledToday
+      ? `${i.uncalledToday} of today's ${i.newLeads} new leads still have no call logged.`
+      : i.newLeads
+        ? `Every one of today's ${i.newLeads} new leads has a call logged.`
+        : `No new enquiries in the last 24 hours.`;
 
   const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:660px;margin:0 auto;padding:28px 24px;color:#111">
 <p style="margin:0 0 4px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8a8a8a">End of day</p>
 <h1 style="margin:0 0 6px;font-size:24px;font-weight:600">Leads — ${esc(i.date)}</h1>
-<p style="margin:0 0 22px;font-size:15px;color:${i.uncalledToday ? "#b4462a" : "#444"}">${esc(headline)}</p>
+<p style="margin:0 0 4px;font-size:15px;color:${i.uncalledToday ? "#b4462a" : "#444"}">${esc(headline)}</p>
+<p style="margin:0 0 22px;font-size:14px;color:#6b6b6b">${i.newLeads} in${esc(vsWeek)} · ${i.callsToday || 0} calls logged · median first response ${esc(i.speedSampled ? mins(i.speedMedianMins) : "not measurable, nothing logged")}</p>
 
 <div style="overflow-x:auto">
-<table style="border-collapse:collapse;width:100%;min-width:520px">
-<tr>${th("Owner")}${th("In", "right", "today")}${th("Forward", "right", "today")}${th("Lost", "right", "today")}${th("Never called", "right", `open, ${win}d`)}${th("Oldest", "right", "of those")}${th("Called, open", "right", `${win}d`)}</tr>
-${agentRows || `<tr><td colspan="7" style="padding:14px 0;font-size:15px;color:#444">No activity to report.</td></tr>`}
+<table style="border-collapse:collapse;width:100%;min-width:560px">
+<tr>${th("Owner")}${th("In", "right", "today")}${th("Calls", "right", "today")}${th("1st reply", "right", "median")}${th("Forward", "right", "today")}${th("Lost", "right", "today")}${th("Never called", "right", `open, ${win}d`)}${th("Oldest", "right", "of those")}</tr>
+${agentRows || `<tr><td colspan="8" style="padding:14px 0;font-size:15px;color:#444">No activity to report.</td></tr>`}
 ${agentRows ? totalRow : ""}
 </table>
 </div>
 
-<p style="margin:22px 0 0;font-size:13px;color:#6b6b6b;line-height:1.55">
+${sourceLine ? `<p style="margin:20px 0 0;font-size:13px;color:#6b6b6b"><strong style="color:#111">Where today's ${i.newLeads} came from</strong><br>${sourceLine}</p>` : ""}
+
+<p style="margin:20px 0 0;font-size:13px;color:#6b6b6b;line-height:1.55">
 <strong style="color:#111">Never called</strong> is an open deal in New Lead, No Answer or Contact made with no completed activity on it. Stage alone is not the test: a card can be dragged to No Answer without anyone dialling, so this reads the activity log.<br>
+<strong style="color:#111">1st reply</strong> is the median time from the lead landing to the first completed activity on it${i.speedSampled ? `, across the ${i.speedSampled} of today's leads that have been actioned` : `. Today it cannot be measured: ${i.callsToday || 0} calls were logged, none of them against a lead that arrived today`}.<br>
 <strong style="color:#111">Forward</strong> means it reached Qualified or beyond today.
+${i.lostNoReason ? `<br><strong style="color:#111">${i.lostNoReason} of today's ${i.lost || 0} closed lost carry no lost reason</strong>, so nothing can be learned from them.` : ""}
 ${i.newPooled ? `<br>${i.newPooled} more deals were created into the telesales pool today. That is allocation, not enquiries, so it is not in the In column.` : ""}
 ${i.olderBacklog ? `<br>A further ${i.olderBacklog} uncalled leads are older than ${win} days, mostly legacy telesales rows. Excluded so the daily numbers stay actionable.` : ""}
 </p>
@@ -361,17 +390,23 @@ Live from Pipedrive. Owners are chased directly by email; this is the summary on
   const pad = (s: string, w: number) => s.length >= w ? s.slice(0, w) : s + " ".repeat(w - s.length);
   const lpad = (s: string, w: number) => s.length >= w ? s : " ".repeat(w - s.length) + s;
   const text = [
-    `Leads — ${i.date} (live from Pipedrive)`, "", headline, "",
-    `${pad("Owner", 20)}${lpad("In", 4)}${lpad("Fwd", 5)}${lpad("Lost", 6)}${lpad("Uncalled", 10)}${lpad("Oldest", 8)}${lpad("Open", 6)}`,
+    `Leads — ${i.date} (live from Pipedrive)`, "", headline,
+    `${i.newLeads} in${vsWeek} · ${i.callsToday || 0} calls logged · median first response ${i.speedSampled ? mins(i.speedMedianMins) : "not measurable, nothing logged"}`, "",
+    `${pad("Owner", 20)}${lpad("In", 4)}${lpad("Calls", 7)}${lpad("1st", 6)}${lpad("Fwd", 5)}${lpad("Lost", 6)}${lpad("Uncalled", 10)}${lpad("Oldest", 8)}`,
     ...(i.perAgent.length
-      ? i.perAgent.map((a) => pad(a.name, 20) + lpad(String(a.newToday || 0), 4) + lpad(String(a.progressed || 0), 5) +
-        lpad(String(a.lost || 0), 6) + lpad(String(a.waiting), 10) + lpad(age(a.oldestHours), 8) + lpad(String(a.calledOpen || 0), 6))
+      ? i.perAgent.map((a) => pad(a.name, 20) + lpad(String(a.newToday || 0), 4) + lpad(String(a.calls || 0), 7) +
+        lpad(mins(a.speedMins), 6) + lpad(String(a.progressed || 0), 5) + lpad(String(a.lost || 0), 6) +
+        lpad(String(a.waiting), 10) + lpad(age(a.oldestHours), 8))
       : ["  no activity to report"]),
-    pad("Total", 20) + lpad(String(sum("newToday")), 4) + lpad(String(sum("progressed")), 5) +
-      lpad(String(sum("lost")), 6) + lpad(String(i.awaitingFirst), 10) + lpad("", 8) + lpad(String(sum("calledOpen")), 6),
+    pad("Total", 20) + lpad(String(sum("newToday")), 4) + lpad(String(sum("calls")), 7) +
+      lpad(mins(i.speedMedianMins), 6) + lpad(String(sum("progressed")), 5) +
+      lpad(String(sum("lost")), 6) + lpad(String(i.awaitingFirst), 10),
     "",
+    ...(sourceLine ? [`Where today's ${i.newLeads} came from: ${sourceLine.replace(/<[^>]+>/g, "")}`, ""] : []),
     `Never called = open in New Lead / No Answer / Contact made with no completed activity.`,
+    `1st = median minutes from the lead landing to the first completed activity.`,
     `Forward = reached Qualified or beyond today.`,
+    ...(i.lostNoReason ? [`${i.lostNoReason} of today's ${i.lost || 0} closed lost carry no lost reason.`] : []),
     ...(i.newPooled ? [`${i.newPooled} more deals were created into the telesales pool today (allocation, not enquiries).`] : []),
     ...(i.olderBacklog ? [`A further ${i.olderBacklog} uncalled leads are older than ${win} days, excluded above.`] : []),
   ].join("\n");

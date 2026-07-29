@@ -59,8 +59,7 @@ function ccList(): string[] {
 // question from who gets copied on a NEW lead, which is what LEAD_ALERT_CC answers.
 // Carrying LEAD_ALERT_CC onto every chase put a copy of every agent's nudge into
 // marketing@, the inbox Zek reads: ~180 mails on 29 Jul 2026. So this has its OWN env
-// var and defaults to EMPTY — nudges go to the agent or their manager and nobody else.
-// Chasing agents is the sales manager's job, so the default here is MATTHEW, not
+// var. Chasing agents is the sales manager's job, so the default here is MATTHEW, not
 // marketing@ — set NUDGE_ALERT_CC in Vercel to change or clear it (same
 // comma/semicolon/newline splitting as LEAD_ALERT_CC; set it to " " for nobody).
 function nudgeCcList(): string[] {

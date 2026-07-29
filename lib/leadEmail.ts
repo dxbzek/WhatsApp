@@ -266,7 +266,17 @@ export type DailyReportInput = {
   lost?: number;                // moved to Closed Lost in the last 24h
   awaitingFirst: number;        // open, inside the window, nobody has completed an activity
   awaitingOutcome: number;      // open, inside the window, called at least once, still not moved on
-  perAgent: { name: string; waiting: number; oldestHours: number | null }[];
+  uncalledToday?: number;       // of today's new leads, how many still have no call logged
+  perAgent: {
+    name: string;
+    waiting: number;            // open, never called, inside the window
+    oldestHours: number | null;
+    newToday?: number;
+    uncalledToday?: number;
+    calledOpen?: number;
+    progressed?: number;
+    lost?: number;
+  }[];
   olderBacklog?: number;        // uncalled leads older than the window (legacy telesales)
   windowDays?: number;          // how far back "waiting" counts
 };
@@ -288,77 +298,82 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
 
   const win = i.windowDays || 14;
   const age = (h: number | null) => (!h ? "—" : h < 48 ? `${Math.round(h)}h` : `${Math.round(h / 24)}d`);
+  const n = (v?: number) => (v ? String(v) : `<span style="color:#c8c8c8">0</span>`);
 
-  // A number on its own is not a report. Each figure carries the sentence that says what it
-  // counts, because the first version ("60 NEW TODAY / 18 QUALIFIED") read as a scoreboard
-  // nobody could act on: 27 of that 60 were telesales-pool rows, not enquiries, and neither
-  // "not contacted" nor "no outcome" said what separated them.
-  const stat = (value: number, label: string, note: string, tone = "#111") =>
-    `<td style="padding:0 26px 0 0;vertical-align:top">
-<div style="font-size:30px;line-height:1.1;font-weight:600;color:${tone}">${value}</div>
-<div style="font-size:13px;color:#111;margin-top:4px">${esc(label)}</div>
-<div style="font-size:12px;color:#8a8a8a;margin-top:1px">${esc(note)}</div></td>`;
+  // ONE table, one row per rep — the sales-manager view. Two tiers of column: what happened
+  // today (in / forward / lost) and what is stuck (never called, oldest, called-still-open),
+  // so a glance down the "never called" column names who to talk to.
+  const th = (t: string, align = "left", sub = "") =>
+    `<th align="${align}" style="padding:0 0 9px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a8a8a;font-weight:400;border-bottom:1px solid #dcdcdc;vertical-align:bottom">` +
+    `${esc(t)}${sub ? `<div style="font-size:10px;letter-spacing:0;text-transform:none;color:#b0b0b0">${esc(sub)}</div>` : ""}</th>`;
+  const td = (v: string, align = "right", extra = "") =>
+    `<td align="${align}" style="padding:10px 0 10px 10px;font-size:15px;color:#111;border-bottom:1px solid #f0f0f0;${extra}">${v}</td>`;
 
-  const sectionLabel = (t: string) =>
-    `<p style="margin:0 0 10px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8a8a8a">${esc(t)}</p>`;
-
-  // Sorted worst-first by the caller. An empty list is a REAL answer — say "nobody is
-  // sitting on anything" rather than printing an empty table.
-  const th = (t: string, align = "left") =>
-    `<th align="${align}" style="padding:0 0 8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a;font-weight:400;border-bottom:1px solid #e6e6e6">${esc(t)}</th>`;
+  // Red only where it means "act on this": leads nobody has called. Everything else stays
+  // neutral so the one colour on the page keeps its meaning.
   const agentRows = i.perAgent.map((a) =>
-    `<tr><td style="padding:9px 0;font-size:15px;color:#111;border-bottom:1px solid #f2f2f2">${esc(a.name)}</td>` +
-    `<td align="right" style="padding:9px 0;font-size:15px;color:#111;border-bottom:1px solid #f2f2f2">${a.waiting}</td>` +
-    `<td align="right" style="padding:9px 0;font-size:14px;color:#6b6b6b;border-bottom:1px solid #f2f2f2">${esc(age(a.oldestHours))}</td></tr>`).join("");
+    `<tr>${td(esc(a.name), "left", "white-space:nowrap")}` +
+    td(n(a.newToday)) +
+    td(n(a.progressed)) +
+    td(n(a.lost)) +
+    td(a.waiting ? `<strong style="color:#b4462a">${a.waiting}</strong>` : n(0)) +
+    td(`<span style="font-size:14px;color:#6b6b6b">${esc(age(a.oldestHours))}</span>`) +
+    td(n(a.calledOpen)) +
+    `</tr>`).join("");
 
-  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:620px;margin:0 auto;padding:28px 24px;color:#111">
+  const sum = (k: "newToday" | "progressed" | "lost" | "calledOpen") =>
+    i.perAgent.reduce((t, a) => t + (a[k] || 0), 0);
+  const totalRow = `<tr>` +
+    `<td style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">Total</td>` +
+    [sum("newToday"), sum("progressed"), sum("lost"), i.awaitingFirst, "", sum("calledOpen")]
+      .map((v) => `<td align="right" style="padding:10px 0 0 10px;font-size:14px;color:#6b6b6b">${v}</td>`).join("") +
+    `</tr>`;
+
+  // The one line a head of sales reads first: today's leads that nobody has phoned.
+  const headline = i.uncalledToday
+    ? `${i.uncalledToday} of today's ${i.newLeads} new leads still have no call logged.`
+    : i.newLeads
+      ? `Every one of today's ${i.newLeads} new leads has a call logged.`
+      : `No new enquiries in the last 24 hours.`;
+
+  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:660px;margin:0 auto;padding:28px 24px;color:#111">
 <p style="margin:0 0 4px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8a8a8a">End of day</p>
-<h1 style="margin:0 0 2px;font-size:24px;font-weight:600">Leads — ${esc(i.date)}</h1>
-<p style="margin:0 0 26px;font-size:14px;color:#6b6b6b">Everything below is live from Pipedrive, last 24 hours and the last ${win} days.</p>
+<h1 style="margin:0 0 6px;font-size:24px;font-weight:600">Leads — ${esc(i.date)}</h1>
+<p style="margin:0 0 22px;font-size:15px;color:${i.uncalledToday ? "#b4462a" : "#444"}">${esc(headline)}</p>
 
-${sectionLabel("What came in and what moved")}
-<table style="border-collapse:collapse;margin:0 0 8px"><tr>
-${stat(i.newLeads, "new enquiries", "last 24h")}
-${stat(i.qualified, "moved forward", "reached Qualified or beyond")}
-${stat(i.lost || 0, "closed lost", "last 24h")}
-</tr></table>
-${i.newPooled
-      ? `<p style="margin:0 0 26px;font-size:13px;color:#8a8a8a">${i.newPooled} more deals were created into the telesales pool today. Those are allocation, not enquiries, so they are not counted as new.</p>`
-      : `<div style="height:18px"></div>`}
+<div style="overflow-x:auto">
+<table style="border-collapse:collapse;width:100%;min-width:520px">
+<tr>${th("Owner")}${th("In", "right", "today")}${th("Forward", "right", "today")}${th("Lost", "right", "today")}${th("Never called", "right", `open, ${win}d`)}${th("Oldest", "right", "of those")}${th("Called, open", "right", `${win}d`)}</tr>
+${agentRows || `<tr><td colspan="7" style="padding:14px 0;font-size:15px;color:#444">No activity to report.</td></tr>`}
+${agentRows ? totalRow : ""}
+</table>
+</div>
 
-${sectionLabel(`Sitting open, last ${win} days`)}
-<table style="border-collapse:collapse;margin:0 0 8px"><tr>
-${stat(i.awaitingFirst, "never called", "no completed activity on the deal", i.awaitingFirst > 0 ? "#b4462a" : "#111")}
-${stat(i.awaitingOutcome, "called, still open", "at least one activity, no stage change")}
-</tr></table>
-<p style="margin:0 0 26px;font-size:13px;color:#8a8a8a">Both count open deals in New Lead, No Answer and Contact made. Stage alone is not the test: a card can be dragged to No Answer without anyone dialling, so this reads the activity log.</p>
+<p style="margin:22px 0 0;font-size:13px;color:#6b6b6b;line-height:1.55">
+<strong style="color:#111">Never called</strong> is an open deal in New Lead, No Answer or Contact made with no completed activity on it. Stage alone is not the test: a card can be dragged to No Answer without anyone dialling, so this reads the activity log.<br>
+<strong style="color:#111">Forward</strong> means it reached Qualified or beyond today.
+${i.newPooled ? `<br>${i.newPooled} more deals were created into the telesales pool today. That is allocation, not enquiries, so it is not in the In column.` : ""}
+${i.olderBacklog ? `<br>A further ${i.olderBacklog} uncalled leads are older than ${win} days, mostly legacy telesales rows. Excluded so the daily numbers stay actionable.` : ""}
+</p>
+<p style="margin:16px 0 0;font-size:12px;color:#8a8a8a;border-top:1px solid #e6e6e6;padding-top:12px">
+Live from Pipedrive. Owners are chased directly by email; this is the summary only.</p></div>`;
 
-${sectionLabel("Never called, by owner")}
-${agentRows
-      ? `<table style="border-collapse:collapse;width:100%">
-<tr>${th("Owner")}${th("Leads", "right")}${th("Oldest", "right")}</tr>${agentRows}</table>`
-      : `<p style="margin:0;font-size:15px;color:#444">Nobody is sitting on an uncalled lead.</p>`}
-${i.olderBacklog
-      ? `<p style="margin:14px 0 0;font-size:13px;color:#8a8a8a">A further ${i.olderBacklog} uncalled leads are older than ${win} days, mostly legacy telesales rows. They are excluded above so the daily numbers stay actionable.</p>`
-      : ""}
-<p style="margin:26px 0 0;font-size:13px;color:#6b6b6b;border-top:1px solid #e6e6e6;padding-top:14px">
-Owners are chased directly by email. This is the summary only.</p></div>`;
-
+  const pad = (s: string, w: number) => s.length >= w ? s.slice(0, w) : s + " ".repeat(w - s.length);
+  const lpad = (s: string, w: number) => s.length >= w ? s : " ".repeat(w - s.length) + s;
   const text = [
-    `Leads — ${i.date} (from Pipedrive)`, "",
-    "WHAT CAME IN AND WHAT MOVED (last 24h)",
-    `  ${i.newLeads} new enquiries`,
-    `  ${i.qualified} moved forward (Qualified or beyond)`,
-    `  ${i.lost || 0} closed lost`,
-    ...(i.newPooled ? [`  (${i.newPooled} more created into the telesales pool — allocation, not enquiries)`] : []),
-    "", `SITTING OPEN (last ${win} days, New Lead / No Answer / Contact made)`,
-    `  ${i.awaitingFirst} never called — no completed activity on the deal`,
-    `  ${i.awaitingOutcome} called at least once, still no stage change`,
-    "", "NEVER CALLED, BY OWNER",
+    `Leads — ${i.date} (live from Pipedrive)`, "", headline, "",
+    `${pad("Owner", 20)}${lpad("In", 4)}${lpad("Fwd", 5)}${lpad("Lost", 6)}${lpad("Uncalled", 10)}${lpad("Oldest", 8)}${lpad("Open", 6)}`,
     ...(i.perAgent.length
-      ? i.perAgent.map((a) => `  ${a.name}: ${a.waiting} (oldest ${age(a.oldestHours)})`)
-      : ["  nobody"]),
-    ...(i.olderBacklog ? ["", `A further ${i.olderBacklog} uncalled leads are older than ${win} days, excluded above.`] : []),
+      ? i.perAgent.map((a) => pad(a.name, 20) + lpad(String(a.newToday || 0), 4) + lpad(String(a.progressed || 0), 5) +
+        lpad(String(a.lost || 0), 6) + lpad(String(a.waiting), 10) + lpad(age(a.oldestHours), 8) + lpad(String(a.calledOpen || 0), 6))
+      : ["  no activity to report"]),
+    pad("Total", 20) + lpad(String(sum("newToday")), 4) + lpad(String(sum("progressed")), 5) +
+      lpad(String(sum("lost")), 6) + lpad(String(i.awaitingFirst), 10) + lpad("", 8) + lpad(String(sum("calledOpen")), 6),
+    "",
+    `Never called = open in New Lead / No Answer / Contact made with no completed activity.`,
+    `Forward = reached Qualified or beyond today.`,
+    ...(i.newPooled ? [`${i.newPooled} more deals were created into the telesales pool today (allocation, not enquiries).`] : []),
+    ...(i.olderBacklog ? [`A further ${i.olderBacklog} uncalled leads are older than ${win} days, excluded above.`] : []),
   ].join("\n");
 
   try {

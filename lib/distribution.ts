@@ -52,6 +52,12 @@ const LEAD_ESCALATION_SID = (process.env.LEAD_ESCALATION_SID || "").trim();
 // tap to correlate, so alert_sid must be left alone.
 export type NudgeOutcome = { sid: string | null; emailed: boolean; error: string | null };
 
+// Routes we still MATCH (so the lead is labelled and never hits the no-route alarm)
+// but no longer WORK: the conversation is archived on arrival and nobody is alerted.
+// "Recruitment" added 29 Jul 2026 — ERE is not hiring agents, and 115 applicants sitting
+// in the hot-lead sweep were generating nudges and manager escalations forever.
+const ARCHIVED_ROUTES = new Set<string>(["Recruitment"]);
+
 // agents.email, resolved by NAME because that is what lead_events.assigned_agent
 // carries (it reads like an FK and is not one). Missing mailbox → dropped, and the
 // nudge falls back to the CC (marketing@) rather than silently going nowhere.
@@ -606,6 +612,24 @@ export async function distributeMetaLead(opts: {
     if (!route) {
       const fallbackOk = await notifyFallback("no_route", leadRef, leadName, opts.contactPhone, context);
       return { status: "no_route", ref: null, assigned: [], ownerId: null, alertOk: false, fallbackOk, alertSid: null, alertError: null };
+    }
+
+    // Archived routes: matched, then filed away. ERE stopped recruiting agents on
+    // 29 Jul 2026, so a recruitment applicant is not a lead anybody works — it goes
+    // straight to status 'archived' (out of every live view, still on the Suppressed
+    // page) with NO agent alert and NO recruiter alert.
+    //
+    // Deliberately NOT done by setting the route inactive: an inactive route falls
+    // through to the no_route safety net, which fires the fallback alert AND an ops
+    // "Lead not routed" mail — the exact noise this is meant to remove.
+    if (ARCHIVED_ROUTES.has(String(route.ref))) {
+      if (opts.conversationId) {
+        await db.from("conversations").update({
+          status: "archived", unread: false, suppressed_at: new Date().toISOString(),
+          source_ref: route.ref, routing_status: "archived_route",
+        }).eq("id", opts.conversationId);
+      }
+      return { status: "routed", ref: route.ref, assigned: [], ownerId: null, alertOk: true, fallbackOk: false, alertSid: null, alertError: null };
     }
 
     const ids: string[] = (route.agent_ids as string[]) || [];

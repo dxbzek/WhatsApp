@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
       // Only ACTIONABLE unread — a blocked/invalid contact lives in Suppressed,
       // not the inbox, so it must not inflate the sidebar badge.
       const { count, error } = await db.from("conversations").select("id", { count: "exact", head: true })
-        .eq("unread", true).eq("is_internal", false).not("status", "in", "(blocked,invalid)");
+        .eq("unread", true).eq("is_internal", false).not("status", "in", "(blocked,invalid,archived)");
       if (error) throw new Error(error.message);
       return NextResponse.json({ count: count ?? 0 });
     }
@@ -55,7 +55,7 @@ export async function GET(req: NextRequest) {
       const { data, error } = await db.from("conversations")
         .select("id, wa_phone, name, last_body, last_at, lead_status, unread")
         .eq("last_direction", "in").eq("is_internal", false)
-        .not("status", "in", "(blocked,invalid)")
+        .not("status", "in", "(blocked,invalid,archived)")
         .order("last_at", { ascending: false }).limit(limit);
       if (error) throw new Error(error.message);
       return NextResponse.json({ conversations: data || [] });
@@ -63,7 +63,10 @@ export async function GET(req: NextRequest) {
 
     if (view === "suppressed") {
       const { data, error } = await db.from("conversations").select("id, wa_phone, name, status, last_at, suppressed_at")
-        .eq("is_internal", false).in("status", ["blocked", "invalid"]).order("suppressed_at", { ascending: false, nullsFirst: false }).limit(1000);
+        // "archived" joins blocked/invalid here so an archived route (recruitment, 29 Jul
+        // 2026) is retrievable rather than invisible — it is out of every live view but
+        // still listed, with its own status label, on this page.
+        .eq("is_internal", false).in("status", ["blocked", "invalid", "archived"]).order("suppressed_at", { ascending: false, nullsFirst: false }).limit(1000);
       if (error) throw new Error(error.message);
       return NextResponse.json({ conversations: data || [] });
     }
@@ -79,7 +82,7 @@ export async function GET(req: NextRequest) {
       const { data, error } = await db.from("conversations")
         .select("id, wa_phone, name, lead_ref, lead_status, lead_stage, stage_updated_at, assigned_agent_id, assigned_at, source, source_ref, source_campaign_id, created_at")
         .eq("is_internal", false)
-        .not("status", "in", "(blocked,invalid)")
+        .not("status", "in", "(blocked,invalid,archived)")
         .or("replied.eq.true,lead_status.eq.hot,lead_status.eq.warm,assigned_agent_id.not.is.null,lead_stage.not.is.null,source.eq.meta_lead_form")
         .order("stage_updated_at", { ascending: false, nullsFirst: false })
         .limit(2000);
@@ -144,7 +147,7 @@ export async function GET(req: NextRequest) {
       // the person (delivered/read) OR they replied — and never blocked/invalid.
       let q = db.from("conversations").select("lead_status, pipedrive_lead_id, created_at")
         .eq("is_internal", false)
-        .not("status", "in", "(blocked,invalid)")
+        .not("status", "in", "(blocked,invalid,archived)")
         .or("replied.eq.true,last_status.in.(delivered,read)");
       if (from) q = q.gte("created_at", from);
       if (to) q = q.lte("created_at", to);

@@ -260,10 +260,12 @@ All of these are already in Pipedrive. You get this list once per lead, not on r
 // and has therefore reached nobody since Meta disabled the portfolio on 27 Jul.
 export type DailyReportInput = {
   date: string;                 // "29 Jul 2026"
-  newLeads: number;             // arrived in the last 24h
-  qualified: number;            // marked qualified in the last 24h
-  awaitingFirst: number;        // stock: never contacted
-  awaitingOutcome: number;      // stock: called at least once, still not moved on
+  newLeads: number;             // real enquiries that arrived in the last 24h
+  newPooled?: number;           // deals created into the telesales pool/batch, NOT enquiries
+  qualified: number;            // moved to Qualified or beyond in the last 24h
+  lost?: number;                // moved to Closed Lost in the last 24h
+  awaitingFirst: number;        // open, inside the window, nobody has completed an activity
+  awaitingOutcome: number;      // open, inside the window, called at least once, still not moved on
   perAgent: { name: string; waiting: number; oldestHours: number | null }[];
   olderBacklog?: number;        // uncalled leads older than the window (legacy telesales)
   windowDays?: number;          // how far back "waiting" counts
@@ -284,38 +286,80 @@ export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: str
   const pass = process.env.LEAD_SMTP_PASS || "";
   if (!pass) return { sent: [], error: "LEAD_SMTP_PASS not set" };
 
-  const stat = (label: string, value: number) =>
-    `<td style="padding:0 22px 0 0;vertical-align:top"><div style="font-size:26px;font-weight:600;color:#111">${value}</div>` +
-    `<div style="font-size:12px;color:#8a8a8a;text-transform:uppercase;letter-spacing:.06em">${esc(label)}</div></td>`;
+  const win = i.windowDays || 14;
+  const age = (h: number | null) => (!h ? "—" : h < 48 ? `${Math.round(h)}h` : `${Math.round(h / 24)}d`);
+
+  // A number on its own is not a report. Each figure carries the sentence that says what it
+  // counts, because the first version ("60 NEW TODAY / 18 QUALIFIED") read as a scoreboard
+  // nobody could act on: 27 of that 60 were telesales-pool rows, not enquiries, and neither
+  // "not contacted" nor "no outcome" said what separated them.
+  const stat = (value: number, label: string, note: string, tone = "#111") =>
+    `<td style="padding:0 26px 0 0;vertical-align:top">
+<div style="font-size:30px;line-height:1.1;font-weight:600;color:${tone}">${value}</div>
+<div style="font-size:13px;color:#111;margin-top:4px">${esc(label)}</div>
+<div style="font-size:12px;color:#8a8a8a;margin-top:1px">${esc(note)}</div></td>`;
+
+  const sectionLabel = (t: string) =>
+    `<p style="margin:0 0 10px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8a8a8a">${esc(t)}</p>`;
 
   // Sorted worst-first by the caller. An empty list is a REAL answer — say "nobody is
   // sitting on anything" rather than printing an empty table.
+  const th = (t: string, align = "left") =>
+    `<th align="${align}" style="padding:0 0 8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a;font-weight:400;border-bottom:1px solid #e6e6e6">${esc(t)}</th>`;
   const agentRows = i.perAgent.map((a) =>
-    `<tr><td style="padding:7px 16px 7px 0;font-size:15px;color:#111">${esc(a.name)}</td>` +
-    `<td style="padding:7px 16px 7px 0;font-size:15px;color:#111">${a.waiting}</td>` +
-    `<td style="padding:7px 0;font-size:13px;color:#6b6b6b">${a.oldestHours ? (a.oldestHours < 48 ? `oldest ${Math.round(a.oldestHours)}h` : `oldest ${Math.round(a.oldestHours / 24)}d`) : ""}</td></tr>`).join("");
+    `<tr><td style="padding:9px 0;font-size:15px;color:#111;border-bottom:1px solid #f2f2f2">${esc(a.name)}</td>` +
+    `<td align="right" style="padding:9px 0;font-size:15px;color:#111;border-bottom:1px solid #f2f2f2">${a.waiting}</td>` +
+    `<td align="right" style="padding:9px 0;font-size:14px;color:#6b6b6b;border-bottom:1px solid #f2f2f2">${esc(age(a.oldestHours))}</td></tr>`).join("");
 
-  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px">
-<p style="margin:0 0 4px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a">End of day</p>
-<h1 style="margin:0 0 20px;font-size:22px;font-weight:600;color:#111">Leads — ${esc(i.date)}</h1>
-<table style="border-collapse:collapse;margin-bottom:24px"><tr>
-${stat("new today", i.newLeads)}${stat("qualified", i.qualified)}${stat("not contacted", i.awaitingFirst)}${stat("no outcome", i.awaitingOutcome)}
+  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:620px;margin:0 auto;padding:28px 24px;color:#111">
+<p style="margin:0 0 4px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8a8a8a">End of day</p>
+<h1 style="margin:0 0 2px;font-size:24px;font-weight:600">Leads — ${esc(i.date)}</h1>
+<p style="margin:0 0 26px;font-size:14px;color:#6b6b6b">Everything below is live from Pipedrive, last 24 hours and the last ${win} days.</p>
+
+${sectionLabel("What came in and what moved")}
+<table style="border-collapse:collapse;margin:0 0 8px"><tr>
+${stat(i.newLeads, "new enquiries", "last 24h")}
+${stat(i.qualified, "moved forward", "reached Qualified or beyond")}
+${stat(i.lost || 0, "closed lost", "last 24h")}
 </tr></table>
-<p style="margin:0 0 6px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:#8a8a8a">Waiting, by agent</p>
-${agentRows
-      ? `<table style="border-collapse:collapse;width:100%">${agentRows}</table>`
-      : `<p style="margin:0;font-size:15px;color:#444">Nobody is sitting on an unactioned lead.</p>`}
-${i.olderBacklog
-      ? `<p style="margin:14px 0 0;font-size:13px;color:#8a8a8a">Plus ${i.olderBacklog} uncalled leads older than ${i.windowDays || 14} days, mostly legacy telesales. Not counted above.</p>`
-      : ""}
-<p style="margin:20px 0 0;font-size:13px;color:#6b6b6b;border-top:1px solid #e6e6e6;padding-top:14px">
-From Pipedrive. "Not contacted" means no completed activity on the deal. Agents are chased directly; this is the summary only.</p></div>`;
+${i.newPooled
+      ? `<p style="margin:0 0 26px;font-size:13px;color:#8a8a8a">${i.newPooled} more deals were created into the telesales pool today. Those are allocation, not enquiries, so they are not counted as new.</p>`
+      : `<div style="height:18px"></div>`}
 
-  const text = [`Leads — ${i.date}`, "",
-    `New today: ${i.newLeads}`, `Qualified: ${i.qualified}`,
-    `Not contacted: ${i.awaitingFirst}`, `No outcome: ${i.awaitingOutcome}`, "", "Waiting, by agent:",
-    ...(i.perAgent.length ? i.perAgent.map((a) => `- ${a.name}: ${a.waiting}`) : ["- nobody"]),
-    ...(i.olderBacklog ? ["", `Plus ${i.olderBacklog} uncalled leads older than ${i.windowDays || 14} days.`] : [])].join("\n");
+${sectionLabel(`Sitting open, last ${win} days`)}
+<table style="border-collapse:collapse;margin:0 0 8px"><tr>
+${stat(i.awaitingFirst, "never called", "no completed activity on the deal", i.awaitingFirst > 0 ? "#b4462a" : "#111")}
+${stat(i.awaitingOutcome, "called, still open", "at least one activity, no stage change")}
+</tr></table>
+<p style="margin:0 0 26px;font-size:13px;color:#8a8a8a">Both count open deals in New Lead, No Answer and Contact made. Stage alone is not the test: a card can be dragged to No Answer without anyone dialling, so this reads the activity log.</p>
+
+${sectionLabel("Never called, by owner")}
+${agentRows
+      ? `<table style="border-collapse:collapse;width:100%">
+<tr>${th("Owner")}${th("Leads", "right")}${th("Oldest", "right")}</tr>${agentRows}</table>`
+      : `<p style="margin:0;font-size:15px;color:#444">Nobody is sitting on an uncalled lead.</p>`}
+${i.olderBacklog
+      ? `<p style="margin:14px 0 0;font-size:13px;color:#8a8a8a">A further ${i.olderBacklog} uncalled leads are older than ${win} days, mostly legacy telesales rows. They are excluded above so the daily numbers stay actionable.</p>`
+      : ""}
+<p style="margin:26px 0 0;font-size:13px;color:#6b6b6b;border-top:1px solid #e6e6e6;padding-top:14px">
+Owners are chased directly by email. This is the summary only.</p></div>`;
+
+  const text = [
+    `Leads — ${i.date} (from Pipedrive)`, "",
+    "WHAT CAME IN AND WHAT MOVED (last 24h)",
+    `  ${i.newLeads} new enquiries`,
+    `  ${i.qualified} moved forward (Qualified or beyond)`,
+    `  ${i.lost || 0} closed lost`,
+    ...(i.newPooled ? [`  (${i.newPooled} more created into the telesales pool — allocation, not enquiries)`] : []),
+    "", `SITTING OPEN (last ${win} days, New Lead / No Answer / Contact made)`,
+    `  ${i.awaitingFirst} never called — no completed activity on the deal`,
+    `  ${i.awaitingOutcome} called at least once, still no stage change`,
+    "", "NEVER CALLED, BY OWNER",
+    ...(i.perAgent.length
+      ? i.perAgent.map((a) => `  ${a.name}: ${a.waiting} (oldest ${age(a.oldestHours)})`)
+      : ["  nobody"]),
+    ...(i.olderBacklog ? ["", `A further ${i.olderBacklog} uncalled leads are older than ${win} days, excluded above.`] : []),
+  ].join("\n");
 
   try {
     const transport = nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });

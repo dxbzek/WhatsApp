@@ -18,8 +18,13 @@ const PIPELINE_LEADS = 2;
 // Stage 63 (Leads Pool) and 64 (Telesales Batch) are deliberately absent: a pooled deal is
 // unassigned by design, so counting it as somebody "sitting on a lead" is wrong.
 const WAITING_STAGES: Record<number, string> = { 6: "New Lead", 61: "No Answer", 7: "Contact made" };
-// Reaching any of these is the lead being progressed, which is what "qualified" means here.
+// Reaching any of these means somebody moved the lead forward. Closed Won (19) is in here;
+// Closed Lost is counted separately, because a day of 20 losses is not a day of 20 wins.
 const PROGRESSED_STAGES = new Set([8, 9, 10, 11, 19]);
+const STAGE_CLOSED_LOST = 18;
+// Deals CREATED into these are the daily telesales allocation moving records around, not
+// somebody enquiring. Counting them as new leads doubled the headline on 29 Jul.
+const POOL_STAGES = new Set([63, 64]);
 // How far back a lead still counts as live for this report. Override with REPORT_WINDOW_DAYS.
 const MAX_AGE_DAYS = Number(process.env.REPORT_WINDOW_DAYS || 14);
 
@@ -58,9 +63,16 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
   const dayAgo = Date.now() - 86400_000;
 
   // Flow: what arrived and what moved forward in the last 24h. v2 because it is the only
-  // version that filters by pipeline, and neither number needs done_activities_count.
-  let newLeads = 0;
-  let qualified = 0;
+  // version that filters by pipeline, and none of these need done_activities_count.
+  //
+  // "New" is split on purpose. On 29 Jul the raw count was 60, but 27 of those were deals
+  // created straight into Telesales Batch / Leads Pool by the daily allocation — an internal
+  // bulk move, not somebody enquiring. Reporting 60 as new leads overstates inbound by ~2x
+  // and makes the day look twice as good as it was.
+  let newInbound = 0;
+  let newPooled = 0;
+  let progressed = 0;
+  let lost = 0;
   for (let page = 0, cursor = ""; page < 10; page++) {
     const params: Record<string, string> = {
       pipeline_id: String(PIPELINE_LEADS), limit: "100", sort_by: "update_time", sort_direction: "desc",
@@ -70,8 +82,14 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     const d: any = await pd("api/v2/deals", params);
     const batch: any[] = d?.data || [];
     for (const deal of batch) {
-      if (parseUtc(deal.add_time) >= dayAgo) newLeads++;
-      if (PROGRESSED_STAGES.has(Number(deal.stage_id)) && parseUtc(deal.stage_change_time) >= dayAgo) qualified++;
+      const stage = Number(deal.stage_id);
+      if (parseUtc(deal.add_time) >= dayAgo) {
+        if (POOL_STAGES.has(stage)) newPooled++; else newInbound++;
+      }
+      if (parseUtc(deal.stage_change_time) >= dayAgo) {
+        if (PROGRESSED_STAGES.has(stage)) progressed++;
+        else if (stage === STAGE_CLOSED_LOST) lost++;
+      }
     }
     cursor = d?.additional_data?.next_cursor || "";
     if (!cursor) break;
@@ -108,5 +126,9 @@ export async function collectDailyReport(): Promise<DailyReportInput> {
     .sort((a, b) => b.waiting - a.waiting);
 
   const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Dubai" });
-  return { date, newLeads, qualified, awaitingFirst: notContacted.length, awaitingOutcome, perAgent, olderBacklog, windowDays: MAX_AGE_DAYS };
+  return {
+    date, newLeads: newInbound, newPooled, qualified: progressed, lost,
+    awaitingFirst: notContacted.length, awaitingOutcome, perAgent,
+    olderBacklog, windowDays: MAX_AGE_DAYS,
+  };
 }

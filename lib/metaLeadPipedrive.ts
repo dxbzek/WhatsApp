@@ -160,7 +160,7 @@ export async function syncMetaLeadToPipedrive(opts: {
   sourceValue?: string;   // Source field, e.g. "WhatsApp Campaign"
   kind?: string;          // note heading, e.g. "WhatsApp campaign lead"
   titlePrefix?: string;   // deal title prefix, e.g. "WhatsApp"
-}): Promise<{ ok: boolean; skipped?: string; dealId?: number; error?: string }> {
+}): Promise<{ ok: boolean; skipped?: string; dealId?: number; error?: string; activityId?: number; activityError?: string }> {
   if (!clean(process.env.PIPEDRIVE_API_TOKEN)) return { ok: false, skipped: "pipedrive_unconfigured" };
   const e164 = clean(opts.e164);
   if (!e164) return { ok: false, skipped: "no_phone" };
@@ -242,7 +242,37 @@ export async function syncMetaLeadToPipedrive(opts: {
         headline, caption, adUrl, answers: opts.answers,
       }),
     });
-    return { ok: true, dealId };
+
+    // A call activity due in 2 hours, owned by the same agent as the deal.
+    //
+    // Why: on 27 Jul 2026 all 86 Meta deals had ZERO completed activities and 32 sat
+    // in New/No Answer for 3+ days. Nobody was ignoring a task — there was no task.
+    // An unworked lead was invisible until someone went looking. With this, it shows
+    // up overdue on the agent's board and in Pipedrive's own reminders, which is the
+    // difference between a policy and an enforced one.
+    //
+    // Best-effort on purpose: the deal already exists and matters more than its task,
+    // so a failure here is logged into the return value, never thrown.
+    let activityId: number | undefined;
+    try {
+      const due = new Date(Date.now() + 2 * 3600_000);           // Pipedrive expects UTC
+      const act: any = await pd("POST", "v1/activities", {}, {
+        subject: `Call ${displayName} — new ${clean(opts.sourceValue) || SOURCE_VALUE} lead`,
+        type: "call",
+        deal_id: dealId,
+        person_id: personId,
+        user_id: owner,
+        due_date: due.toISOString().slice(0, 10),
+        due_time: due.toISOString().slice(11, 16),
+        duration: "00:15",
+        note: `${e164}${clean(opts.detail) ? ` · ${clean(opts.detail)}` : ""}`,
+        done: false,
+      });
+      activityId = act?.data?.id;
+    } catch (e: any) {
+      return { ok: true, dealId, activityError: String(e?.message || e).slice(0, 120) };
+    }
+    return { ok: true, dealId, activityId };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e).slice(0, 200) };
   }

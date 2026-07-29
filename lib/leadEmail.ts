@@ -16,7 +16,9 @@ import nodemailer from "nodemailer";
 //   LEAD_SMTP_PORT  465
 //   LEAD_SMTP_USER  marketing@erehomes.ae
 //   LEAD_SMTP_PASS  Google App Password (Sensitive)
-//   LEAD_ALERT_CC   comma-separated always-copied addresses (default marketing@erehomes.ae)
+//   LEAD_ALERT_CC   copied on NEW-lead alerts (default marketing@erehomes.ae)
+//   NUDGE_ALERT_CC  copied on NUDGES: stale digest, outcome ask, escalation
+//                   (default matthew@erehomes.ae — the sales manager, NOT marketing@)
 //
 // With LEAD_SMTP_PASS unset this module sends NOTHING and says so in its return value. It
 // never pretends to have sent, and it never throws into a lead webhook: a failed alert must
@@ -49,6 +51,19 @@ function ccList(): string[] {
   // per line is how these actually get typed. Comma-only splitting silently produces a
   // single malformed recipient and the mail reaches nobody.
   return (process.env.LEAD_ALERT_CC || "marketing@erehomes.ae")
+    .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+// Who gets copied on NUDGES (stale digest, outcome ask, escalation) — a different
+// question from who gets copied on a NEW lead, which is what LEAD_ALERT_CC answers.
+// Carrying LEAD_ALERT_CC onto every chase put a copy of every agent's nudge into
+// marketing@, the inbox Zek reads: ~180 mails on 29 Jul 2026. So this has its OWN env
+// var and defaults to EMPTY — nudges go to the agent or their manager and nobody else.
+// Chasing agents is the sales manager's job, so the default here is MATTHEW, not
+// marketing@ — set NUDGE_ALERT_CC in Vercel to change or clear it (same
+// comma/semicolon/newline splitting as LEAD_ALERT_CC; set it to " " for nobody).
+function nudgeCcList(): string[] {
+  return (process.env.NUDGE_ALERT_CC || "matthew@erehomes.ae")
     .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
 }
 
@@ -152,7 +167,6 @@ export type DigestLead = {
 export type DigestInput = {
   kind: "stale" | "escalation";
   to: string[];
-  cc?: boolean;                 // copy the ops CC list (escalations only, by default)
   agentName: string;            // whose leads these are
   managerName?: string | null;  // escalation only
   leads: DigestLead[];
@@ -190,7 +204,7 @@ ${l.ref ? line("Ref", l.ref) : ""}
 
 export async function emailAgentLeadDigest(i: DigestInput): Promise<{ sent: string[]; error: string | null }> {
   if (i.leads.length === 0) return { sent: [], error: "no leads" };
-  const cc = i.cc === false ? [] : ccList().filter((a) => !i.to.includes(a));
+  const cc = nudgeCcList().filter((a) => !i.to.includes(a));
   if (i.to.length === 0 && cc.length === 0) return { sent: [], error: "no recipient has an email address" };
 
   const host = process.env.LEAD_SMTP_HOST || "smtp.gmail.com";
@@ -238,7 +252,7 @@ All of these are already in Pipedrive. You get this list once per lead, not on r
 }
 
 export async function emailAgentNudge(i: NudgeInput): Promise<{ sent: string[]; error: string | null }> {
-  const cc = ccList().filter((a) => !i.to.includes(a));
+  const cc = nudgeCcList().filter((a) => !i.to.includes(a));
   if (i.to.length === 0 && cc.length === 0) return { sent: [], error: "no recipient has an email address" };
 
   const host = process.env.LEAD_SMTP_HOST || "smtp.gmail.com";

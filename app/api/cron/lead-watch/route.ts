@@ -365,7 +365,6 @@ async function run(req: NextRequest) {
     const mail = await emailAgentLeadDigest({
       kind: "stale",
       to: [agent.email].filter(Boolean) as string[],
-      cc: false,
       agentName: agent.name,
       leads: group.map(toDigestLead),
     });

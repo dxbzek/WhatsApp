@@ -17,6 +17,7 @@ import nodemailer from "nodemailer";
 //   LEAD_SMTP_USER  marketing@erehomes.ae
 //   LEAD_SMTP_PASS  Google App Password (Sensitive)
 //   LEAD_ALERT_CC   copied on NEW-lead alerts (default marketing@erehomes.ae)
+//   DAILY_REPORT_TO end-of-day report recipients (default marketing@ + matthew@)
 //   NUDGE_ALERT_CC  copied on NUDGES: stale digest, outcome ask, escalation
 //                   (default matthew@erehomes.ae — the sales manager, NOT marketing@)
 //
@@ -268,7 +269,12 @@ export type DailyReportInput = {
 };
 
 export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: string[]; error: string | null }> {
-  const to = ccList();          // the marketing inbox — this report is its ONE daily mail
+  // marketing@ (this is its ONE daily mail) plus the sales manager, who acts on the
+  // per-agent list. Override with DAILY_REPORT_TO; falls back to LEAD_ALERT_CC's
+  // marketing inbox if that env is ever set to something empty.
+  const to = (process.env.DAILY_REPORT_TO || "marketing@erehomes.ae, matthew@erehomes.ae")
+    .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+  if (to.length === 0) to.push(...ccList());
   if (to.length === 0) return { sent: [], error: "no recipient" };
 
   const host = process.env.LEAD_SMTP_HOST || "smtp.gmail.com";

@@ -54,9 +54,12 @@ export type NudgeOutcome = { sid: string | null; emailed: boolean; error: string
 
 // Routes we still MATCH (so the lead is labelled and never hits the no-route alarm)
 // but no longer WORK: the conversation is archived on arrival and nobody is alerted.
-// "Recruitment" added 29 Jul 2026 — ERE is not hiring agents, and 115 applicants sitting
-// in the hot-lead sweep were generating nudges and manager escalations forever.
-const ARCHIVED_ROUTES = new Set<string>(["Recruitment"]);
+// "Recruitment" was added 29 Jul 2026 (ERE had stopped hiring) and REMOVED 05 Aug 2026
+// when hiring restarted. Leaving it here silently defeated the whole recruitment build:
+// the branch returns assigned: [] BEFORE the round-robin runs, so all 13 applicants that
+// day were owned by the fallback user (ERE Marketing) and neither recruiter was alerted.
+// If hiring pauses again, pause the CAMPAIGN — do not re-add the route here.
+const ARCHIVED_ROUTES = new Set<string>([]);
 
 // agents.email, resolved by NAME because that is what lead_events.assigned_agent
 // carries (it reads like an FK and is not one). Missing mailbox → dropped, and the

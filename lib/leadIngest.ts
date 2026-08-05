@@ -127,19 +127,25 @@ export async function ingestMetaLead(opts: {
   // retryable (retryPipedriveBacklog) instead of silently losing the lead.
   let pdResult: { ok: boolean; dealId?: number; skipped?: string; error?: string } | null = null;
   const isRecruitment = /recruit/i.test(detail) || /recruit/i.test(ref);
+
+  // Every lead reaches Pipedrive, recruitment included — applicants go to the
+  // Recruitment pipeline (9 / New Applicant) owned by the recruiter the route picked,
+  // property leads to Deals. Before 05 Aug 2026 recruitment was skipped entirely, so
+  // June's 306 paid applicants landed nowhere and none was ever called.
+  try {
+    pdResult = await syncMetaLeadToPipedrive({
+      name, e164, email, detail,
+      adId, adsetName: (opts.adsetName || "").trim(), adName,
+      previewUrl, assignedAgent: dist.assigned[0] ?? null,
+      answers: answerLine.length ? answers : undefined,
+      isRecruitment,
+    });
+  } catch (e: any) { pdResult = { ok: false, error: String(e?.message || e).slice(0, 120) }; }
+
   if (!isRecruitment) {
+    // The audience CRM stays property-only: an applicant must NEVER end up on an
+    // owner/seller send list. This is the one thing recruitment is still excluded from.
     try { await syncLeadToCrm({ name, e164, email, detail }); } catch { /* non-fatal */ }
-    // ...and into Pipedrive as a real deal owned by the same agent the route picked,
-    // so the sales pipeline sees the lead without anyone re-keying it. Recruitment
-    // applicants stay out: they are not a sales pipeline.
-    try {
-      pdResult = await syncMetaLeadToPipedrive({
-        name, e164, email, detail,
-        adId, adsetName: (opts.adsetName || "").trim(), adName,
-        previewUrl, assignedAgent: dist.assigned[0] ?? null,
-        answers: answerLine.length ? answers : undefined,
-      });
-    } catch (e: any) { pdResult = { ok: false, error: String(e?.message || e).slice(0, 120) }; }
 
     // Fire the AI caller at the fresh lead. OFF by default (AI_CALLER_AUTODIAL);
     // when disabled it only logs the intent. A dial must never break ingest, so

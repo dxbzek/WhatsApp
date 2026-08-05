@@ -11,7 +11,7 @@ import nodemailer from "nodemailer";
 // template-shaped (approved SIDs, 5 numbered vars, no newlines) and email is not. Keeping
 // them apart means the WhatsApp path can stay exactly as it is for the day a lane comes back.
 //
-// Config (Vercel env, mirrored in the gitignored .env.leadmail.local):
+// Config (Vercel env, mirrored in the gitignored Credentials/.env.leadmail.local):
 //   LEAD_SMTP_HOST  smtp.gmail.com
 //   LEAD_SMTP_PORT  465
 //   LEAD_SMTP_USER  marketing@erehomes.ae

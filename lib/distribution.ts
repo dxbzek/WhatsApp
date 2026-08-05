@@ -123,8 +123,10 @@ export async function reassignFromRoute(
     .from("agents")
     .select("id, name, wa_number")
     .in("id", ids)
-    .eq("active", true)
-    .not("wa_number", "is", null);
+    .eq("active", true);
+  // No wa_number filter: WhatsApp alerts are dead and lead alerts go by EMAIL, so a
+  // recruiter reachable only by email (Rochelle) must still be eligible for a reassign.
+  // Filtering on wa_number silently made such an agent invisible to the rotation.
   // Preserve the route's own agent order so round-robin stays stable across runs
   // instead of following whatever order Postgres happened to return.
   const ordered = ids
@@ -406,8 +408,11 @@ async function ccTrackers(
 // launched without a pool (24 Jul 2026: the live valuation broadcast had an empty pool,
 // so distributeLead returned before assigning OR pushing — seller leads vanished).
 // Env-overridable so the roster can change without a deploy.
+// Zenon removed 05 Aug 2026 (Zek): telesales is Joshua + Akombi. This default is a
+// SECOND copy of the roster that lead_routes also holds — leaving him here would have
+// quietly handed him any lead from a campaign with no agent_ids configured.
 const TELESALES_FALLBACK_IDS = (process.env.WHATSAPP_TELESALES_AGENT_IDS ||
-  "ddf13a56-1a8c-4b82-a33a-8944c043d607,edbda43c-bafe-4a0e-b9bc-0f33aba2d494,4689164c-14c5-4704-a5c8-5f5686a65e71")
+  "ddf13a56-1a8c-4b82-a33a-8944c043d607,edbda43c-bafe-4a0e-b9bc-0f33aba2d494")
   .split(",").map((s) => s.trim()).filter(Boolean);
 
 // Load active agents for the given ids, preserving the configured order.

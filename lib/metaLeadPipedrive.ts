@@ -15,6 +15,13 @@ import { crmEnrichForDeal } from "./crm";
 //   PIPEDRIVE_FALLBACK_USER_ID  deal owner when the routed agent has no mapping
 const PIPELINE_ID = 2;
 const STAGE_ID = 6;                                              // "New Lead"
+// Recruitment applicants are not a sales lead and must not sit in the Deals pipeline,
+// but they DO need a record with an owner — June 2026 proved the alternative: 306 paid
+// applicants arrived, none reached Pipedrive, and not one was ever contacted.
+// Pipeline 9 "Recruitment" / stage 65 "New Applicant", created 04 Aug 2026.
+const RECRUITMENT_PIPELINE_ID = 9;
+const RECRUITMENT_STAGE_ID = 65;
+export const RECRUITMENT_SOURCE = "Recruitment";
 const F_SOURCE = "be1b1fe6b64aad751a7a9649876a671db3f03215";     // Source (varchar)
 const F_AD_LINK = "2792c6f093bf199246857ed30572a12c931f886d";    // Meta Ad Inquiry
 const F_AD_CAPTION = "78341167f6364a09aefeac6652e3db3e38434ae8"; // Ad Caption
@@ -117,13 +124,12 @@ export async function retryPipedriveBacklog(limit = 10): Promise<{ retried: numb
 
   let created = 0;
   for (const r of rows as any[]) {
-    // Recruitment applicants are not a sales pipeline — mark them settled so they do not
-    // sit in the backlog forever being retried.
-    if ((r.matched_route || "") === "Recruitment") {
-      await db.from("lead_events").update({ pipedrive_status: "skipped_recruitment", pipedrive_attempts: MAX_ATTEMPTS }).eq("id", r.id);
-      continue;
-    }
+    // Recruitment applicants used to be dropped here ("skipped_recruitment"). They now
+    // go to the Recruitment pipeline instead — they were never junk, they just had
+    // nowhere to land, which is how 306 paid applicants went uncontacted in June 2026.
+    const isRec = (r.matched_route || "") === "Recruitment";
     const res = await syncMetaLeadToPipedrive({
+      isRecruitment: isRec,
       name: r.name === "New contact" ? "" : r.name,
       e164: "+" + String(r.wa_phone || "").replace("+", ""),
       detail: r.detail || undefined,
@@ -160,6 +166,9 @@ export async function syncMetaLeadToPipedrive(opts: {
   sourceValue?: string;   // Source field, e.g. "WhatsApp Campaign"
   kind?: string;          // note heading, e.g. "WhatsApp campaign lead"
   titlePrefix?: string;   // deal title prefix, e.g. "WhatsApp"
+  // Route an agent APPLICANT to the Recruitment pipeline instead of Deals. Set by
+  // leadIngest when the lead's route/ref is recruitment.
+  isRecruitment?: boolean;
 }): Promise<{ ok: boolean; skipped?: string; dealId?: number; error?: string; activityId?: number; activityError?: string }> {
   if (!clean(process.env.PIPEDRIVE_API_TOKEN)) return { ok: false, skipped: "pipedrive_unconfigured" };
   const e164 = clean(opts.e164);
@@ -213,18 +222,19 @@ export async function syncMetaLeadToPipedrive(opts: {
     }
     if (!personId) return { ok: false, error: "no person id" };
 
+    const isRec = opts.isRecruitment === true;
     const deal: any = await pd("POST", "api/v2/deals", {}, {
-      title: `${clean(opts.titlePrefix) || "Meta Ad"} — ${displayName}`,
+      title: `${clean(opts.titlePrefix) || (isRec ? "Applicant" : "Meta Ad")} — ${displayName}`,
       person_id: personId,
       owner_id: owner,
-      pipeline_id: PIPELINE_ID,
-      stage_id: STAGE_ID,
+      pipeline_id: isRec ? RECRUITMENT_PIPELINE_ID : PIPELINE_ID,
+      stage_id: isRec ? RECRUITMENT_STAGE_ID : STAGE_ID,
       // Pipedrive REJECTS an empty string on a text custom field ("Expected non-empty
       // 'string' ... use null to clear") and fails the whole deal with a 400. A Meta lead
       // always carries an ad link and caption; a WEBSITE lead never does, which is why
       // every website enquiry created a person and then no deal (25 Jul 2026). Omit them.
       custom_fields: {
-        [F_SOURCE]: clean(opts.sourceValue) || SOURCE_VALUE,
+        [F_SOURCE]: clean(opts.sourceValue) || (isRec ? RECRUITMENT_SOURCE : SOURCE_VALUE),
         ...(adUrl ? { [F_AD_LINK]: adUrl } : {}),
         ...(([headline, caption].filter(Boolean).join(" — ")) ?
           { [F_AD_CAPTION]: [headline, caption].filter(Boolean).join(" — ") } : {}),

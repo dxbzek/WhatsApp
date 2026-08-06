@@ -187,9 +187,13 @@ export async function ingestMetaLead(opts: {
     answers: answerLine.length ? answers : null,
     preview_url: previewUrl || null,
     pipedrive_deal_id: pdResult?.dealId ?? null,
-    pipedrive_status: isRecruitment ? "skipped_recruitment"
-      : pdResult ? (pdResult.ok ? "created" : (pdResult.skipped || pdResult.error || "failed")) : null,
-    pipedrive_attempts: isRecruitment ? 99 : (pdResult ? 1 : 0),
+    // Recruitment is NO LONGER skipped (05 Aug 2026) — record its real outcome like any
+    // other lead. The old `skipped_recruitment` / attempts 99 pair was left behind by the
+    // fix and lied twice: it reported a created applicant deal as skipped, and 99 attempts
+    // permanently excluded a genuinely FAILED recruitment create from retryPipedriveBacklog.
+    pipedrive_status: pdResult
+      ? (pdResult.ok ? "created" : (pdResult.skipped || pdResult.error || "failed")) : null,
+    pipedrive_attempts: pdResult ? 1 : 0,
   });
 
   return { ok: true, conversationId: conv.id, status: dist.status, assigned: dist.assigned, alert: alertStatus };

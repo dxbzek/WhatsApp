@@ -235,10 +235,11 @@ export async function syncMetaLeadToPipedrive(opts: {
       timeZone: "Asia/Dubai", day: "2-digit", month: "short", year: "numeric",
       hour: "2-digit", minute: "2-digit", hour12: true,
     }).formatToParts(new Date()).map((x) => [x.type, x.value]));
-    const acquiredAt = `${p.day} ${p.month} ${p.year} ${p.hour}:${p.minute} ${String(p.dayPeriod).toUpperCase()}`;
+    // Format locked by Zek 07 Aug 2026: "(META AD) Name - Time and Date" — time FIRST.
+    const acquiredAt = `${p.hour}:${p.minute} ${String(p.dayPeriod).toUpperCase()} ${p.day} ${p.month} ${p.year}`;
     const deal: any = await pd("POST", "api/v2/deals", {}, {
       title: isRec
-        ? `META AD — ${displayName} — ${acquiredAt}`
+        ? `(META AD) ${displayName} - ${acquiredAt}`
         : `${clean(opts.titlePrefix) || "Meta Ad"} — ${displayName}`,
       person_id: personId,
       owner_id: owner,

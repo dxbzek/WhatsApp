@@ -227,10 +227,15 @@ export async function syncMetaLeadToPipedrive(opts: {
     // it came in, on the CARD — the recruiter works the board, not the note, and needs to
     // see at a glance how stale an applicant is before ringing them. Dubai time,
     // DD Mon YYYY HH:MM, because Pipedrive's own add_time renders in the viewer's locale.
-    const acquiredAt = new Intl.DateTimeFormat("en-GB", {
+    // 12-hour with AM/PM (Zek, 07 Aug 2026). Assembled from parts rather than a locale
+    // string because every locale that gives 12-hour time also drags in its own date
+    // order and punctuation ("Aug 07, 2026, 10:01 am"), and the house format is
+    // DD Mon YYYY with an uppercase meridiem.
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
       timeZone: "Asia/Dubai", day: "2-digit", month: "short", year: "numeric",
-      hour: "2-digit", minute: "2-digit", hour12: false,
-    }).format(new Date()).replace(",", "");
+      hour: "2-digit", minute: "2-digit", hour12: true,
+    }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+    const acquiredAt = `${p.day} ${p.month} ${p.year} ${p.hour}:${p.minute} ${String(p.dayPeriod).toUpperCase()}`;
     const deal: any = await pd("POST", "api/v2/deals", {}, {
       title: isRec
         ? `META AD — ${displayName} — ${acquiredAt}`

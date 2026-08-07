@@ -232,11 +232,12 @@ export async function syncMetaLeadToPipedrive(opts: {
     // order and punctuation ("Aug 07, 2026, 10:01 am"), and the house format is
     // DD Mon YYYY with an uppercase meridiem.
     const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Dubai", day: "2-digit", month: "short", year: "numeric",
-      hour: "2-digit", minute: "2-digit", hour12: true,
+      timeZone: "Asia/Dubai", day: "numeric", month: "long", year: "numeric",
+      hour: "numeric", minute: "2-digit", hour12: true,
     }).formatToParts(new Date()).map((x) => [x.type, x.value]));
-    // Format locked by Zek 07 Aug 2026: "(META AD) Name - Time and Date" — time FIRST.
-    const acquiredAt = `${p.hour}:${p.minute} ${String(p.dayPeriod).toUpperCase()} ${p.day} ${p.month} ${p.year}`;
+    // Format locked by Zek 07 Aug 2026: "(META AD) Name - 12:38 PM | August 5, 2026".
+    // Time first, pipe, full month name, unpadded hour and day.
+    const acquiredAt = `${p.hour}:${p.minute} ${String(p.dayPeriod).toUpperCase()} | ${p.month} ${p.day}, ${p.year}`;
     const deal: any = await pd("POST", "api/v2/deals", {}, {
       title: isRec
         ? `(META AD) ${displayName} - ${acquiredAt}`

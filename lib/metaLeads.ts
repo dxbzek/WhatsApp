@@ -94,8 +94,35 @@ export async function listActiveForms(pageToken: string): Promise<{ id: string; 
     .map((f: any) => ({ id: String(f.id), name: String(f.name || "") }));
 }
 
+// A form's question KEY -> the question a human was actually asked.
+//
+// Meta's lead export carries only the key, so the note read "Based in: Yes" and
+// "Commission ok: No" — true, useless, and Zek asked "Why is it based in yes?" (07 Aug
+// 2026). The key is a slug we chose; the label is the sentence the applicant answered, so
+// pull it from the form itself rather than guessing or hard-coding a map that goes stale
+// the next time the form is rewritten. Cached per process: forms are immutable once live.
+const questionLabels = new Map<string, Record<string, string>>();
+async function formQuestionLabels(pageToken: string, formId: string): Promise<Record<string, string>> {
+  const hit = questionLabels.get(formId);
+  if (hit) return hit;
+  let map: Record<string, string> = {};
+  try {
+    const j = await graphGet(formId, { fields: "questions" }, pageToken);
+    for (const q of j.questions || []) {
+      const k = String(q.key || "").toLowerCase();
+      const label = String(q.label || "").trim();
+      if (k && label) map[k] = label;
+    }
+  } catch {
+    map = {};                      // a label lookup must never cost us the lead
+  }
+  questionLabels.set(formId, map);
+  return map;
+}
+
 // Read a form's most recent leads, flattened to the fields we route on.
 export async function fetchFormLeads(pageToken: string, formId: string, limit = 50): Promise<MetaLead[]> {
+  const labels = await formQuestionLabels(pageToken, formId);
   const j = await graphGet(
     `${formId}/leads`,
     { fields: "id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,field_data", limit: String(limit) },
@@ -120,7 +147,7 @@ export async function fetchFormLeads(pageToken: string, formId: string, limit = 
     const answers: Record<string, string> = {};
     for (const [k, v] of Object.entries(fd)) {
       if (CORE_FIELDS.has(k) || !v) continue;
-      answers[humanise(k)] = humanise(v);
+      answers[labels[k] || humanise(k)] = humanise(v);
     }
     return {
       id: String(l.id), created_time: l.created_time, name, phone, email, detail, listing,

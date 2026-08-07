@@ -223,8 +223,18 @@ export async function syncMetaLeadToPipedrive(opts: {
     if (!personId) return { ok: false, error: "no person id" };
 
     const isRec = opts.isRecruitment === true;
+    // Zek, 06 Aug 2026: a recruitment deal must say META AD and carry the date and time
+    // it came in, on the CARD — the recruiter works the board, not the note, and needs to
+    // see at a glance how stale an applicant is before ringing them. Dubai time,
+    // DD Mon YYYY HH:MM, because Pipedrive's own add_time renders in the viewer's locale.
+    const acquiredAt = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Dubai", day: "2-digit", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(new Date()).replace(",", "");
     const deal: any = await pd("POST", "api/v2/deals", {}, {
-      title: `${clean(opts.titlePrefix) || (isRec ? "Applicant" : "Meta Ad")} — ${displayName}`,
+      title: isRec
+        ? `META AD — ${displayName} — ${acquiredAt}`
+        : `${clean(opts.titlePrefix) || "Meta Ad"} — ${displayName}`,
       person_id: personId,
       owner_id: owner,
       pipeline_id: isRec ? RECRUITMENT_PIPELINE_ID : PIPELINE_ID,

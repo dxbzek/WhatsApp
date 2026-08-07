@@ -92,7 +92,9 @@ function noteHtml(o: {
     o.headline ? `<b>Ad headline:</b> ${o.headline}` : "",
     o.caption ? `<b>Ad caption:</b> ${o.caption}` : "",
     o.adUrl ? `Ad post: ${o.adUrl}` : "",
-    ...Object.entries(o.answers || {}).map(([k, v]) => `${k}: ${v}`),
+    // A key ("Based in") takes a colon; a full question ("Are you currently based in
+    // Dubai?") must not — "…Dubai?: Yes" reads like a typo.
+    ...Object.entries(o.answers || {}).map(([k, v]) => (/[?:]$/.test(k) ? `<b>${k}</b> ${v}` : `${k}: ${v}`)),
   ].filter(Boolean).join("<br>");
 }
 

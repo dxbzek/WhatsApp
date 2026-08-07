@@ -52,7 +52,7 @@ export async function ingestMetaLead(opts: {
   // visible character. Falls back to the headline for forms that ask nothing
   // beyond name/phone/email.
   const answers = opts.answers || {};
-  const answerLine = Object.entries(answers).map(([k, v]) => `${k}: ${v}`);
+  const answerLine = Object.entries(answers).map(([k, v]) => (/[?:]$/.test(k) ? `${k} ${v}` : `${k}: ${v}`));
   const summary = Object.values(answers).filter(Boolean).join(" · ");
   const preview = summary ? `New lead · ${summary}` : headline;
 

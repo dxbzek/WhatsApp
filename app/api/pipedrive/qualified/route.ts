@@ -4,7 +4,8 @@ import { supabaseAdmin } from "@/lib/supabase";
 export const dynamic = "force-dynamic";
 
 // Real-time Meta CAPI "Qualified Lead" fire, triggered by a Pipedrive webhook the moment
-// a pipeline-2 deal enters the Qualified stage (or beyond). Replaces the batch cron
+// a pipeline-2 deal enters the Qualified stage (or beyond), or a pipeline-9 recruitment deal
+// reaches Interview (or beyond) — two funnels, two event names. Replaces the batch cron
 // (meta_capi_qualified_pipedrive.py --send) — the qualify signal is a Pipedrive STAGE
 // CHANGE, so we wire the event instead of polling. See [[project_meta_lead_reporting]].
 //
@@ -29,6 +30,17 @@ export const dynamic = "force-dynamic";
 const QUALIFIED_STAGES = new Set([8, 9, 10, 11, 19]); // Qualified, Viewing, Offer Made/Accepted, Closed Won
 const PIPELINE_ID = 2;
 
+// Recruitment is the SECOND funnel on the same ad account and its deals live in pipeline 9,
+// so the property gate above can never match them and a hired applicant fired nothing to Meta.
+// Its qualified = the applicant is in the interview process or is to be interviewed (Zek,
+// 10 Aug 2026): Interview(67), Offer(68), Joined(69). New Applicant(65)/Screening(66) are
+// pre-interview, Rejected(71) is a no. It fires a DISTINCT event name so Ads Manager reports
+// the two funnels separately — blending them is the 06 Aug CPQL bug in another form.
+const RECRUIT_PIPELINE_ID = 9;
+const RECRUIT_QUALIFIED_STAGES = new Set([67, 68, 69]); // Interview, Offer, Joined
+const PROPERTY_EVENT = "ERE Qualified Lead";
+const RECRUIT_EVENT = "ERE Qualified Applicant";
+
 const clean = (v?: string | null) => (v || "").replace(/^﻿/, "").trim();
 const PIXEL = () => clean(process.env.META_CAPI_PIXEL_ID) || "2210707412649816";
 const TOKEN = () => clean(process.env.META_ADS_TOKEN) || clean(process.env.META_SYSTEM_TOKEN);
@@ -43,11 +55,11 @@ const LIVE = () => clean(process.env.CAPI_LIVE) === "1";
 // never attributed to the ad (that was the "why isn't it updating" bug). Event name
 // 'ERE Qualified Lead' is deliberately distinct so the 31 polluted 'Qualified Lead' events
 // (27 Jul mis-fire) can never be counted by the CRM lifecycle mapping. See memory.
-async function fireCapi(leadgenId: string, eventTime: number) {
+async function fireCapi(leadgenId: string, eventTime: number, eventName: string) {
   const payload = {
     data: [
       {
-        event_name: "ERE Qualified Lead",
+        event_name: eventName,
         event_time: eventTime,
         action_source: "system_generated",
         user_data: { lead_id: Number(leadgenId) },
@@ -94,9 +106,12 @@ export async function POST(req: NextRequest) {
   const pipelineId = Number(deal?.pipeline_id);
 
   // The gate that makes this cheap: 99% of company-wide deal edits stop here, no I/O.
-  if (!dealId || pipelineId !== PIPELINE_ID || !QUALIFIED_STAGES.has(stageId)) {
+  const isProperty = pipelineId === PIPELINE_ID && QUALIFIED_STAGES.has(stageId);
+  const isRecruit = pipelineId === RECRUIT_PIPELINE_ID && RECRUIT_QUALIFIED_STAGES.has(stageId);
+  if (!dealId || !(isProperty || isRecruit)) {
     return NextResponse.json({ ok: true, skipped: "not-qualified", dealId: dealId || null, stageId: stageId || null });
   }
+  const eventName = isRecruit ? RECRUIT_EVENT : PROPERTY_EVENT;
 
   const db = supabaseAdmin();
   const { data: rows, error } = await db
@@ -122,14 +137,14 @@ export async function POST(req: NextRequest) {
 
   if (!LIVE()) {
     console.log(
-      `[capi-qualified] DRY-RUN (CAPI_LIVE unset) — would fire ERE Qualified Lead: deal=${dealId} stage=${stageId} leadEvent=${le.id} leadgen=${leadgenId} name=${le.name || "?"}`
+      `[capi-qualified] DRY-RUN (CAPI_LIVE unset) — would fire ${eventName}: deal=${dealId} stage=${stageId} leadEvent=${le.id} leadgen=${leadgenId} name=${le.name || "?"}`
     );
     return NextResponse.json({ ok: true, dryRun: true, dealId, stageId, leadEventId: le.id });
   }
   if (!TOKEN()) return NextResponse.json({ ok: false, error: "no-meta-token" }, { status: 500 });
 
   try {
-    const r = await fireCapi(leadgenId, eventTime);
+    const r = await fireCapi(leadgenId, eventTime, eventName);
     if (!r.ok) {
       console.log(`[capi-qualified] FAIL deal=${dealId} leadEvent=${le.id} status=${r.status} received=${r.received}`);
       return NextResponse.json({ ok: false, error: "capi-failed", status: r.status }, { status: 502 });
@@ -138,8 +153,8 @@ export async function POST(req: NextRequest) {
       .from("lead_events")
       .update({ capi_prequalified_sent_at: new Date().toISOString() })
       .eq("id", le.id);
-    console.log(`[capi-qualified] OK fired Qualified Lead deal=${dealId} leadEvent=${le.id} name=${le.name || "?"}`);
-    return NextResponse.json({ ok: true, fired: true, dealId, leadEventId: le.id });
+    console.log(`[capi-qualified] OK fired ${eventName} deal=${dealId} leadEvent=${le.id} name=${le.name || "?"}`);
+    return NextResponse.json({ ok: true, fired: true, event: eventName, dealId, leadEventId: le.id });
   } catch (e: any) {
     console.log(`[capi-qualified] ERR deal=${dealId} leadEvent=${le.id}: ${String(e?.message || e).slice(0, 160)}`);
     return NextResponse.json({ ok: false, error: "exception" }, { status: 500 });

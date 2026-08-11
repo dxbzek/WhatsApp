@@ -171,6 +171,9 @@ export async function syncMetaLeadToPipedrive(opts: {
   // Route an agent APPLICANT to the Recruitment pipeline instead of Deals. Set by
   // leadIngest when the lead's route/ref is recruitment.
   isRecruitment?: boolean;
+  // The role a WEBSITE applicant applied for (from /careers/<slug>/). Goes into the deal
+  // title so the recruiter sees it on the card; Meta ingest never sets it.
+  recruitmentRole?: string;
 }): Promise<{ ok: boolean; skipped?: string; dealId?: number; error?: string; activityId?: number; activityError?: string }> {
   if (!clean(process.env.PIPEDRIVE_API_TOKEN)) return { ok: false, skipped: "pipedrive_unconfigured" };
   const e164 = clean(opts.e164);
@@ -241,8 +244,11 @@ export async function syncMetaLeadToPipedrive(opts: {
     // Time first, pipe, full month name, unpadded hour and day.
     const acquiredAt = `${p.hour}:${p.minute} ${String(p.dayPeriod).toUpperCase()} | ${p.month} ${p.day}, ${p.year}`;
     const deal: any = await pd("POST", "api/v2/deals", {}, {
+      // Recruitment cards keep the locked stamp format; the prefix says where the applicant
+      // came from ("(META AD)" for the ad ingest, "(WEBSITE)" from /careers/), and a website
+      // applicant also carries the role applied for so the board answers "for what?" at a glance.
       title: isRec
-        ? `(META AD) ${displayName} - ${acquiredAt}`
+        ? `${clean(opts.titlePrefix) || "(META AD)"} ${displayName}${clean(opts.recruitmentRole) ? ` - ${clean(opts.recruitmentRole)}` : ""} - ${acquiredAt}`
         : `${clean(opts.titlePrefix) || "Meta Ad"} — ${displayName}`,
       person_id: personId,
       owner_id: owner,

@@ -42,7 +42,7 @@ function Login() {
       <form onSubmit={submit} className="login-card">
         <div className="login-brand">
           <img className="login-logo-img" src="/ere-logo-black.png" alt="ERE Homes" />
-          <div className="lb-s">WhatsApp Console</div>
+          <div className="lb-s">Command Centre</div>
         </div>
 
         <div className="field">

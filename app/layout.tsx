@@ -2,7 +2,7 @@
 import "./globals.css";
 import Shell from "./shell";
 
-export const metadata = { title: "ERE Homes · WhatsApp Console", description: "ERE Homes WhatsApp inbox, templates, campaigns & billing" };
+export const metadata = { title: "ERE Homes · Command Centre", description: "Every inquiry, every channel, one page — plus WhatsApp inbox, templates, campaigns & billing" };
 
 // viewport-fit=cover lets us pad against the notch/home-indicator via env(safe-area-inset-*).
 export const viewport = { width: "device-width", initialScale: 1, viewportFit: "cover" as const };

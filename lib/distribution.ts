@@ -3,6 +3,7 @@ import { sendWhatsApp, sendTemplate, getContentMedia } from "@/lib/twilio";
 import { ensureLeadRef } from "@/lib/leadRef";
 import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
 import { emailLeadAlert, emailAgentNudge } from "@/lib/leadEmail";
+import { commissionDeclined } from "@/lib/recruitScreen";
 
 // Unified agent lead-alert template on the UTILITY subaccount (category UTILITY,
 // so it is exempt from Meta's per-recipient MARKETING throttle that silently drops
@@ -678,7 +679,15 @@ export async function distributeMetaLead(opts: {
     // the matched route ref or the ad/campaign name, same test as leadIngest.
     const isRecruit = /recruit/i.test(String(route.ref)) || /recruit/i.test(opts.detail || "");
     const recruitSource = [campaign || (route.label && String(route.label).trim()) || String(route.ref), opts.email && opts.email.trim(), (opts.previewUrl || "").trim() ? `See the ad: ${opts.previewUrl!.trim()}` : ""].filter(Boolean).join(" · ");
-    const results = isRecruit
+    // Answered NO to commission-only: the deal goes straight to Rejected (see
+    // metaLeadPipedrive) and NOBODY is pinged. The round-robin still picks the owner, so
+    // the record is attributed and the routing status stays "routed" — the alerts are
+    // synthesised as delivered on purpose, because an empty result set would trip the
+    // alert_failed safety net and fire the very notification this is suppressing.
+    const screenedOut = isRecruit && commissionDeclined(opts.answers);
+    const results = screenedOut
+      ? targets.map((t) => ({ id: t.id, name: t.name, wa: t.wa_number, ok: true, sid: null, error: null }))
+      : isRecruit
       ? await alertRecruiters(targets, leadName, opts.contactPhone, recruitSource)
       // `place` = the specific property, named in the one-tap reply opener.
       // previewUrl rides along so the opener also carries the ad itself.
@@ -702,7 +711,7 @@ export async function distributeMetaLead(opts: {
 
     // CC the global lead-gen tracker(s) with a copy of every lead, deduped — for
     // both sales and recruitment leads, so the monitor sees 100% of them.
-    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, isRecruit ? `Recruitment · ${recruitSource}` : enquiry, "Meta");
+    await ccTrackers(db, targets.map((t) => t.wa_number), opts.conversationId, leadRef, leadName, opts.contactPhone, isRecruit ? `Recruitment${screenedOut ? " · AUTO-REJECTED (said no to commission-only)" : ""} · ${recruitSource}` : enquiry, "Meta");
 
     // Agent(s) chosen but no alert got through -> safety net so it is not silent.
     if (!alertOk) {

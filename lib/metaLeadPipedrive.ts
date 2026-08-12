@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "./supabase";
 import { crmEnrichForDeal } from "./crm";
+import { commissionDeclined, RECRUITMENT_REJECTED_STAGE_ID, AUTO_REJECT_NOTE } from "./recruitScreen";
 
 // Mirror a Meta ad lead into Pipedrive the moment it arrives: person (matched on
 // PHONE, the only reliable key in this CRM — 13 emails across 77k records), a deal
@@ -228,6 +229,12 @@ export async function syncMetaLeadToPipedrive(opts: {
     if (!personId) return { ok: false, error: "no person id" };
 
     const isRec = opts.isRecruitment === true;
+    // An applicant who answered NO to commission-only lands straight in Rejected and
+    // gets no call task — the deal still exists (we paid for the lead and the count has
+    // to stay honest), it just never reaches the recruiter's to-do list. Stage, not Lost
+    // status: a lost deal is hidden from the board and would never show in the Rejected
+    // column, which is exactly where Zek asked for it.
+    const autoRejected = isRec && commissionDeclined(opts.answers);
     // Zek, 06 Aug 2026: a recruitment deal must say META AD and carry the date and time
     // it came in, on the CARD — the recruiter works the board, not the note, and needs to
     // see at a glance how stale an applicant is before ringing them. Dubai time,
@@ -253,7 +260,7 @@ export async function syncMetaLeadToPipedrive(opts: {
       person_id: personId,
       owner_id: owner,
       pipeline_id: isRec ? RECRUITMENT_PIPELINE_ID : PIPELINE_ID,
-      stage_id: isRec ? RECRUITMENT_STAGE_ID : STAGE_ID,
+      stage_id: isRec ? (autoRejected ? RECRUITMENT_REJECTED_STAGE_ID : RECRUITMENT_STAGE_ID) : STAGE_ID,
       // Pipedrive REJECTS an empty string on a text custom field ("Expected non-empty
       // 'string' ... use null to clear") and fails the whole deal with a 400. A Meta lead
       // always carries an ad link and caption; a WEBSITE lead never does, which is why
@@ -271,12 +278,16 @@ export async function syncMetaLeadToPipedrive(opts: {
 
     await pd("POST", "v1/notes", {}, {
       deal_id: dealId,
-      content: noteHtml({
+      content: (autoRejected ? `${AUTO_REJECT_NOTE}<br><br>` : "") + noteHtml({
         name: displayName, e164, kind: clean(opts.kind),
         detail: clean(opts.detail), adsetName: clean(opts.adsetName), adName: clean(opts.adName),
         headline, caption, adUrl, answers: opts.answers,
       }),
     });
+
+    // No call task for someone who ruled themselves out — the task is the thing that
+    // costs the recruiter time, and an overdue call on a rejected applicant is noise.
+    if (autoRejected) return { ok: true, dealId };
 
     // A call activity due in 2 hours, owned by the same agent as the deal.
     //

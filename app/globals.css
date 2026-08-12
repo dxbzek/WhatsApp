@@ -593,3 +593,53 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 .agent-chip.on{border-color:var(--blue);background:var(--blue-tint);color:var(--blue);}
 .agent-chip .ac-dot{width:15px;height:15px;border-radius:50%;border:1.5px solid var(--border-2);display:grid;place-items:center;font-size:9.5px;line-height:1;background:var(--surface);color:transparent;flex-shrink:0;}
 .agent-chip.on .ac-dot{border-color:var(--blue);background:var(--blue);color:#fff;}
+
+/* ── Command Centre (hub.erehomes.ae) ─────────────────────────────────────
+   The one page: four tiles, the live inbound lead list, the source split.
+   Sized with clamp/grid so it holds from a 360px phone to an ultrawide — the
+   lead list becomes a stacked card below 760px rather than a squeezed table,
+   because a horizontally-scrolling lead list is a lead list nobody reads. */
+.hub-err{border-color:var(--red-border);background:var(--red-bg);color:var(--red-ink);font-size:13px;}
+.hub-empty{padding:26px 4px;text-align:center;color:var(--ink-3);font-size:13px;}
+.hub-note{margin-top:14px;padding-top:12px;border-top:1px solid var(--border-soft);font-size:11.5px;color:var(--ink-3);line-height:1.55;}
+
+.hub-rows{display:flex;flex-direction:column;}
+.hub-row{display:grid;grid-template-columns:10px minmax(0,1.5fr) minmax(0,1.4fr) minmax(0,.9fr) 46px 84px;
+  align-items:center;gap:12px;padding:11px 8px;border-bottom:1px solid var(--border-soft);
+  font-size:13px;color:var(--ink);transition:background .12s;}
+.hub-row:last-child{border-bottom:0;}
+.hub-row:hover{background:var(--hover);}
+.hub-row .hr-dot{width:8px;height:8px;border-radius:50%;background:var(--border-2);}
+.hub-row.new .hr-dot{background:var(--blue);}
+.hub-row.warn .hr-dot{background:var(--amber-dot);}
+.hub-row.bad .hr-dot{background:var(--red);}
+.hub-row .hr-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hub-row .hr-src{display:flex;gap:5px;flex-wrap:wrap;min-width:0;}
+.hub-row .hr-tag{font-size:11px;font-weight:600;color:var(--ink-2);background:var(--chip);
+  border:1px solid var(--border);border-radius:20px;padding:2px 9px;white-space:nowrap;}
+.hub-row .hr-owner{font-size:12px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hub-row .hr-age{font-size:12px;color:var(--ink-3);text-align:right;}
+.hub-row .hr-state{font-size:11.5px;font-weight:700;text-align:right;color:var(--ink-3);}
+.hub-row.new .hr-state,.hub-row.warn .hr-state{color:var(--amber-ink);}
+.hub-row.bad .hr-state{color:var(--red-ink);}
+
+.hub-srcs{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:10px;}
+.hub-src{border:1px solid var(--border);border-radius:var(--r);padding:12px 13px;background:var(--surface-2);}
+.hub-src .hs-n{font-size:21px;font-weight:700;letter-spacing:-.02em;line-height:1;}
+.hub-src .hs-l{font-size:11.5px;color:var(--ink-3);margin-top:5px;}
+
+@media (max-width:760px){
+  /* Stack each lead into its own block: name and state on one line, source,
+     owner and age underneath. Nothing scrolls sideways. */
+  .hub-row{grid-template-columns:10px minmax(0,1fr) auto;grid-template-areas:
+    "dot name state" ". src src" ". owner age";row-gap:5px;padding:13px 6px;}
+  .hub-row .hr-dot{grid-area:dot;align-self:start;margin-top:5px;}
+  .hub-row .hr-name{grid-area:name;}
+  .hub-row .hr-state{grid-area:state;}
+  .hub-row .hr-src{grid-area:src;}
+  .hub-row .hr-owner{grid-area:owner;}
+  .hub-row .hr-age{grid-area:age;text-align:right;}
+}
+@media (max-width:560px){
+  .kpis.k4{grid-template-columns:repeat(2,1fr);}
+}

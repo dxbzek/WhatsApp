@@ -8,7 +8,10 @@ import { formatPhone } from "@/lib/format";
 import { useLive } from "@/lib/useLive";
 
 const NAV = [
-  { id: "Dashboard", href: "/", icon: IC.dash },
+  // Command Centre is the front door: every channel's inquiries on one page.
+  // The WhatsApp dashboard that used to sit at "/" now lives at /whatsapp.
+  { id: "Command Centre", href: "/", icon: IC.dash },
+  { id: "WhatsApp", href: "/whatsapp", icon: IC.insights },
   { id: "Inbox", href: "/inbox", icon: IC.inbox },
   { id: "Leads", href: "/leads", icon: IC.users },
   { id: "Templates", href: "/templates", icon: IC.tmpl },
@@ -22,7 +25,8 @@ const NAV = [
 ];
 
 const CRUMB: Record<string, string[]> = {
-  "/": ["Overview"],
+  "/": ["Command Centre"],
+  "/whatsapp": ["WhatsApp", "Overview"],
   "/inbox": ["Conversations"],
   "/leads": ["Lead Status"],
   "/templates": ["Content Template Builder", "Templates"],
@@ -35,7 +39,7 @@ const CRUMB: Record<string, string[]> = {
   "/billing": ["Account", "Billing"],
 };
 const PAGE_TITLE: Record<string, string> = {
-  "/": "Dashboard", "/inbox": "Inbox", "/leads": "Lead Status", "/templates": "Templates",
+  "/": "Command Centre", "/whatsapp": "WhatsApp", "/inbox": "Inbox", "/leads": "Lead Status", "/templates": "Templates",
   "/campaigns": "Campaigns", "/automation": "Automation", "/insights": "Insights",
   "/suppressed": "Suppressed", "/sender-health": "Sender health", "/logs": "Logs", "/billing": "Billing",
 };

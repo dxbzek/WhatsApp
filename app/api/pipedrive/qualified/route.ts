@@ -33,11 +33,12 @@ const PIPELINE_ID = 2;
 // Recruitment is the SECOND funnel on the same ad account and its deals live in pipeline 9,
 // so the property gate above can never match them and a hired applicant fired nothing to Meta.
 // Its qualified = the applicant is in the interview process or is to be interviewed (Zek,
-// 10 Aug 2026): Interview(67), Offer(68), Joined(69). New Applicant(65)/Screening(66) are
-// pre-interview, Rejected(71) is a no. It fires a DISTINCT event name so Ads Manager reports
-// the two funnels separately — blending them is the 06 Aug CPQL bug in another form.
+// 10 Aug 2026): Interview(67), Offer Sent(68), Offer Signed(82), Joined(69). New
+// Applicant(65)/Screening(66) are pre-interview, Rejected(71) is a no. It fires a DISTINCT
+// event name so Ads Manager reports the two funnels separately — blending them is the 06 Aug
+// CPQL bug in another form. 12 Aug 2026: Offer(68) renamed "Offer Sent", 82 "Offer Signed" added.
 const RECRUIT_PIPELINE_ID = 9;
-const RECRUIT_QUALIFIED_STAGES = new Set([67, 68, 69]); // Interview, Offer, Joined
+const RECRUIT_QUALIFIED_STAGES = new Set([67, 68, 82, 69]); // Interview → Joined
 const PROPERTY_EVENT = "ERE Qualified Lead";
 const RECRUIT_EVENT = "ERE Qualified Applicant";
 

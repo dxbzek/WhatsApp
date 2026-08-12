@@ -7,22 +7,37 @@ import { type Sender } from "@/lib/fixtures";
 import { formatPhone } from "@/lib/format";
 import { useLive } from "@/lib/useLive";
 
-const NAV = [
-  // Command Centre is the front door: every channel's inquiries on one page.
-  // The WhatsApp dashboard that used to sit at "/" now lives at /whatsapp.
-  { id: "Command Centre", href: "/", icon: IC.dash },
-  { id: "WhatsApp", href: "/whatsapp", icon: IC.insights },
-  { id: "Inbox", href: "/inbox", icon: IC.inbox },
-  { id: "Leads", href: "/leads", icon: IC.users },
-  { id: "Templates", href: "/templates", icon: IC.tmpl },
-  { id: "Campaigns", href: "/campaigns", icon: IC.camp },
-  { id: "Automation", href: "/automation", icon: IC.bolt },
-  { id: "Insights", href: "/insights", icon: IC.insights },
-  { id: "Suppressed", href: "/suppressed", icon: IC.ban },
-  { id: "Sender health", href: "/sender-health", icon: IC.phone },
-  { id: "Logs", href: "/logs", icon: IC.clock },
-  { id: "Billing", href: "/billing", icon: IC.billing },
+// Two sections, deliberately. This app is the ERE Command Centre with WhatsApp
+// as ONE of its channels — not a Twilio console with an extra page bolted on.
+// Everything Twilio-specific (the sender switcher, sub-account admin, sender
+// health) belongs under WhatsApp and is hidden everywhere else.
+const NAV_GROUPS: { section: string; items: { id: string; href: string; icon: React.ReactNode }[] }[] = [
+  {
+    section: "Overview",
+    items: [{ id: "Command Centre", href: "/", icon: IC.dash }],
+  },
+  {
+    section: "WhatsApp",
+    items: [
+      { id: "Overview", href: "/whatsapp", icon: IC.dash },
+      { id: "Inbox", href: "/inbox", icon: IC.inbox },
+      { id: "Leads", href: "/leads", icon: IC.users },
+      { id: "Templates", href: "/templates", icon: IC.tmpl },
+      { id: "Campaigns", href: "/campaigns", icon: IC.camp },
+      { id: "Automation", href: "/automation", icon: IC.bolt },
+      { id: "Insights", href: "/insights", icon: IC.insights },
+      { id: "Suppressed", href: "/suppressed", icon: IC.ban },
+      { id: "Sender health", href: "/sender-health", icon: IC.phone },
+      { id: "Logs", href: "/logs", icon: IC.clock },
+      { id: "Billing", href: "/billing", icon: IC.billing },
+    ],
+  },
 ];
+const NAV = NAV_GROUPS.flatMap((g) => g.items);
+
+// Routes that are genuinely WhatsApp/Twilio. The sender switcher only makes
+// sense on these — on the Command Centre "sending as +971…" is meaningless.
+const WA_ROUTES = new Set(NAV_GROUPS[1].items.map((i) => i.href));
 
 const CRUMB: Record<string, string[]> = {
   "/": ["Command Centre"],
@@ -185,6 +200,8 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
   // that holds the balance — badge any sender whose lane we know.
   const isSub = (id: string) => (!!mktNumber && id === mktNumber) || (!!utilNumber && id === utilNumber);
   const onSub = isSub(sender.id);
+  // The sender switcher and Twilio admin belong to the WhatsApp screens only.
+  const onWhatsApp = WA_ROUTES.has(path);
 
   return (
     <aside className={`sidebar ${!mounted ? "pre-mount" : open ? "" : "collapsed"}`}>
@@ -193,6 +210,9 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
         <button className="side-toggle" onClick={onClose} title="Hide sidebar" aria-label="Hide sidebar"><Icon d={IC.cleft} s={18} /></button>
       </div>
 
+      {/* Sender switcher: WhatsApp screens only. It is Twilio plumbing, and on
+          the Command Centre it made the whole app read as a messaging tool. */}
+      {onWhatsApp && (
       <div className="side-acct-wrap">
         {acctOpen && <div className="acct-scrim" onClick={() => setAcctOpen(false)} />}
         <button className={`side-acct ${acctOpen ? "on" : ""}`} onClick={() => setAcctOpen((o) => !o)}>
@@ -222,19 +242,24 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
           </div>
         )}
       </div>
+      )}
 
-      <div className="side-sec">Messaging</div>
-      <nav className="side-nav">
-        {NAV.map((n) => (
-          <Link key={n.id} href={n.href} onClick={closeOnNav} className={`nav-item ${n.href === path ? "active" : ""}`}>
-            <span className="ic"><Icon d={n.icon} s={18} /></span>{n.id}
-            {n.id === "Inbox" && unread > 0 && <span className="nb">{unread}</span>}
-          </Link>
-        ))}
-      </nav>
+      {NAV_GROUPS.map((g) => (
+        <div key={g.section}>
+          <div className="side-sec">{g.section}</div>
+          <nav className="side-nav">
+            {g.items.map((n) => (
+              <Link key={n.href} href={n.href} onClick={closeOnNav} className={`nav-item ${n.href === path ? "active" : ""}`}>
+                <span className="ic"><Icon d={n.icon} s={18} /></span>{n.id}
+                {n.id === "Inbox" && unread > 0 && <span className="nb">{unread}</span>}
+              </Link>
+            ))}
+          </nav>
+        </div>
+      ))}
 
       <div className="side-foot">
-        <a href="https://www.twilio.com/docs/whatsapp" target="_blank" rel="noreferrer" className="side-help"><Icon d={IC.help} s={17} />Docs &amp; support</a>
+        <span className="side-help" style={{ cursor: "default" }}>ERE Homes · Command Centre</span>
       </div>
     </aside>
   );
@@ -278,7 +303,7 @@ function TopBar({ path, navOpen, onMenu }: { path: string; navOpen: boolean; onM
     <header className="topbar">
       {!navOpen && <button className="icon-btn" onClick={onMenu} title="Show sidebar" aria-label="Show sidebar"><Icon d={IC.menu} s={18} /></button>}
       <div className="crumb">
-        <span>Messaging</span>
+        <span>ERE Homes</span>
         {crumbs.map((c, i) => (
           <span key={i} style={{ display: "contents" }}>
             <span className="sep">/</span>
@@ -288,20 +313,20 @@ function TopBar({ path, navOpen, onMenu }: { path: string; navOpen: boolean; onM
       </div>
       <div className="top-search">
         <Icon d={IC.search} s={16} />
-        <input ref={searchRef} id="om-search" placeholder="Search resources, SID, docs…" onKeyDown={onSearchKey} />
+        <input ref={searchRef} id="om-search" placeholder="Search conversations, leads, numbers…" onKeyDown={onSearchKey} />
         {combo && <kbd>{combo}</kbd>}
       </div>
       <button className="icon-btn" title="Turn on lead alerts" aria-label="Turn on lead alerts" onClick={enableAlerts}><Icon d={IC.bell} s={18} /><span className="ping" /></button>
-      <a className="icon-btn" href="https://www.twilio.com/docs/whatsapp" target="_blank" rel="noreferrer" title="Help" aria-label="Help"><Icon d={IC.help} s={18} /></a>
       <div className="top-avatar">
-        <button className="avatar-trigger" onClick={() => setMenuOpen((o) => !o)} title="Account menu" aria-label="Account menu" aria-haspopup="menu" aria-expanded={menuOpen}><Avatar name="Karim Rahimi" size={30} /></button>
+        {/* The signed-in account, not a hardcoded name. "Karim Rahimi" was
+            sample data left in the chrome and read as a real user. */}
+        <button className="avatar-trigger" onClick={() => setMenuOpen((o) => !o)} title="Account menu" aria-label="Account menu" aria-haspopup="menu" aria-expanded={menuOpen}><Avatar name="ERE Homes" size={30} /></button>
         {menuOpen && (
           <>
             <div className="acct-scrim" onClick={() => setMenuOpen(false)} />
             <div className="avatar-menu">
-              <div className="am-head"><div className="am-name">Karim Rahimi</div><div className="am-mail">marketing@erehomes.ae</div></div>
+              <div className="am-head"><div className="am-name">ERE Homes</div><div className="am-mail">marketing@erehomes.ae</div></div>
               <button className="am-item" onClick={() => { setMenuOpen(false); enableAlerts(); }}><Icon d={IC.bell} s={16} />Lead alerts</button>
-              <a className="am-item" href="https://www.twilio.com/docs/whatsapp" target="_blank" rel="noreferrer"><Icon d={IC.help} s={16} />Docs &amp; support</a>
               <button className="am-item danger" onClick={logout}><Icon d={IC.logout} s={16} />Sign out</button>
             </div>
           </>

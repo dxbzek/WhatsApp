@@ -208,6 +208,15 @@ export function normalizePhone(raw: string): string | null {
   if (s.startsWith("00")) s = "+" + s.slice(2);
   if (s.startsWith("0") && s.length === 10) return "+971" + s.slice(1); // UAE local mobile
   if (!s.startsWith("+")) s = "+" + s;
+  // TRUNK PREFIX AFTER THE COUNTRY CODE. A form that prefills "+971" and a person
+  // who types their number the way they say it out loud ("050...") produce
+  // "+9710508359399": country code, then the national trunk 0, then the number.
+  // It passes every length check below and is simply not dialable. Hit 10 Aug 2026
+  // on a website property-viewing lead - Joshua rang it, got nothing, wrote "not
+  // valid number" and closed the deal Lost. The lead was real; the digits were fine.
+  // UAE mobiles are +971 followed by NINE digits starting 5, so +971 followed by
+  // 0 and nine more is unambiguous.
+  if (/^\+9710\d{9}$/.test(s)) s = "+971" + s.slice(5);
   const digits = s.replace("+", "");
   if (digits.length < 8 || digits.length > 15) return null;
   return s;

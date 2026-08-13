@@ -604,7 +604,7 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 .hub-note{margin-top:14px;padding-top:12px;border-top:1px solid var(--border-soft);font-size:11.5px;color:var(--ink-3);line-height:1.55;}
 
 .hub-rows{display:flex;flex-direction:column;}
-.hub-row{display:grid;grid-template-columns:10px minmax(0,1.5fr) minmax(0,1.4fr) minmax(0,.9fr) 46px 84px;
+.hub-row{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1.3fr) minmax(0,.8fr) auto;
   align-items:center;gap:12px;padding:11px 8px;border-bottom:1px solid var(--border-soft);
   font-size:13px;color:var(--ink);transition:background .12s;}
 .hub-row:last-child{border-bottom:0;}
@@ -654,3 +654,47 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 .nav-sub-toggle.open .nav-chev{transform:rotate(180deg);}
 .nav-item.nav-sub{padding-left:30px;font-size:12.5px;opacity:.88;}
 .nav-item.nav-sub.active{opacity:1;}
+
+/* ── Command Centre: two lists, colour by channel ────────────────────────
+   "Untouched" printed on every row of one long list made the word meaningless.
+   Urgency is now the SHAPE of the page — a lead is either in "Waiting for a
+   call" or it is not — and the colour is spent on the channel instead, which
+   is the thing worth scanning down a column. */
+.hub-count{display:inline-block;margin-left:8px;font-size:11.5px;font-weight:700;
+  padding:2px 8px;border-radius:20px;background:var(--chip);color:var(--ink-2);}
+.hub-count.bad{background:var(--red-bg);color:var(--red-ink);}
+.hub-clear{display:flex;align-items:center;justify-content:center;gap:9px;
+  padding:26px 4px;color:var(--ink-3);font-size:13px;}
+.hub-clear .hub-tick{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;
+  background:var(--green-bg);color:var(--green-ink);font-size:12px;font-weight:700;}
+.kpi .kv.kv-na{font-size:16px;font-weight:600;color:var(--ink-3);letter-spacing:0;padding-top:7px;}
+
+/* Waiting rows get a left rule that deepens with the wait. */
+.hub-row.new{box-shadow:inset 3px 0 0 var(--blue);}
+.hub-row.warn{box-shadow:inset 3px 0 0 var(--amber-dot);}
+.hub-row.bad{box-shadow:inset 3px 0 0 var(--red);}
+.hub-row.new .hr-age,.hub-row.warn .hr-age{color:var(--amber-ink);font-weight:600;}
+.hub-row.bad .hr-age{color:var(--red-ink);font-weight:700;}
+.hub-row .hr-qual{display:inline-block;margin-left:9px;font-size:10.5px;font-weight:700;
+  color:var(--green-ink);background:var(--green-bg);border:1px solid var(--green-border);
+  border-radius:20px;padding:1px 8px;vertical-align:1px;}
+.hub-row .hr-name{display:flex;align-items:center;gap:0;}
+
+/* Channel colours. */
+.hr-tag.t-meta{background:#eef2ff;border-color:#c7d2fe;color:#3730a3;}
+.hr-tag.t-pf{background:#ecfdf5;border-color:#a7f3d0;color:#065f46;}
+.hr-tag.t-bayut{background:#fff7ed;border-color:#fed7aa;color:#9a3412;}
+.hr-tag.t-web{background:#f0f9ff;border-color:#bae6fd;color:#075985;}
+.hr-tag.t-wa{background:#f0fdf4;border-color:#bbf7d0;color:#166534;}
+.hr-tag.t-ig{background:#fdf2f8;border-color:#fbcfe8;color:#9d174d;}
+.hr-tag.t-ai{background:#f5f3ff;border-color:#ddd6fe;color:#5b21b6;}
+.hr-tag.t-call{background:#f8fafc;border-color:#e2e8f0;color:#334155;}
+
+@media (max-width:760px){
+  .hub-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:
+    "name age" "src src" "owner owner";row-gap:5px;}
+  .hub-row .hr-name{grid-area:name;}
+  .hub-row .hr-src{grid-area:src;}
+  .hub-row .hr-owner{grid-area:owner;}
+  .hub-row .hr-age{grid-area:age;text-align:right;}
+}

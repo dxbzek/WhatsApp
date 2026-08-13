@@ -20,16 +20,16 @@ const NAV_GROUPS: { section: string; items: { id: string; href: string; icon: Re
     section: "WhatsApp",
     items: [
       { id: "Overview", href: "/whatsapp", icon: IC.dash },
-      { id: "Inbox", href: "/inbox", icon: IC.inbox },
-      { id: "Leads", href: "/leads", icon: IC.users },
-      { id: "Templates", href: "/templates", icon: IC.tmpl },
-      { id: "Campaigns", href: "/campaigns", icon: IC.camp },
-      { id: "Automation", href: "/automation", icon: IC.bolt },
-      { id: "Insights", href: "/insights", icon: IC.insights },
-      { id: "Suppressed", href: "/suppressed", icon: IC.ban },
-      { id: "Sender health", href: "/sender-health", icon: IC.phone },
-      { id: "Logs", href: "/logs", icon: IC.clock },
-      { id: "Billing", href: "/billing", icon: IC.billing },
+      { id: "Inbox", href: "/whatsapp/inbox", icon: IC.inbox },
+      { id: "Leads", href: "/whatsapp/leads", icon: IC.users },
+      { id: "Templates", href: "/whatsapp/templates", icon: IC.tmpl },
+      { id: "Campaigns", href: "/whatsapp/campaigns", icon: IC.camp },
+      { id: "Automation", href: "/whatsapp/automation", icon: IC.bolt },
+      { id: "Insights", href: "/whatsapp/insights", icon: IC.insights },
+      { id: "Suppressed", href: "/whatsapp/suppressed", icon: IC.ban },
+      { id: "Sender health", href: "/whatsapp/sender-health", icon: IC.phone },
+      { id: "Logs", href: "/whatsapp/logs", icon: IC.clock },
+      { id: "Billing", href: "/whatsapp/billing", icon: IC.billing },
     ],
   },
 ];
@@ -39,24 +39,29 @@ const NAV = NAV_GROUPS.flatMap((g) => g.items);
 // sense on these — on the Command Centre "sending as +971…" is meaningless.
 const WA_ROUTES = new Set(NAV_GROUPS[1].items.map((i) => i.href));
 
+// The trail under the "ERE Homes" root. Every WhatsApp screen names WhatsApp
+// first, so the URL and the breadcrumb say the same thing.
 const CRUMB: Record<string, string[]> = {
   "/": ["Command Centre"],
   "/whatsapp": ["WhatsApp", "Overview"],
-  "/inbox": ["Conversations"],
-  "/leads": ["Lead Status"],
-  "/templates": ["Content Template Builder", "Templates"],
-  "/campaigns": ["Broadcasts"],
-  "/automation": ["Automation"],
-  "/insights": ["Analytics"],
-  "/suppressed": ["Suppressed contacts"],
-  "/sender-health": ["Sender health"],
-  "/logs": ["Activity log"],
-  "/billing": ["Account", "Billing"],
+  "/whatsapp/inbox": ["WhatsApp", "Inbox"],
+  "/whatsapp/leads": ["WhatsApp", "Lead status"],
+  "/whatsapp/templates": ["WhatsApp", "Templates"],
+  "/whatsapp/campaigns": ["WhatsApp", "Campaigns"],
+  "/whatsapp/automation": ["WhatsApp", "Automation"],
+  "/whatsapp/insights": ["WhatsApp", "Insights"],
+  "/whatsapp/suppressed": ["WhatsApp", "Suppressed contacts"],
+  "/whatsapp/sender-health": ["WhatsApp", "Sender health"],
+  "/whatsapp/logs": ["WhatsApp", "Activity log"],
+  "/whatsapp/billing": ["WhatsApp", "Billing"],
 };
 const PAGE_TITLE: Record<string, string> = {
-  "/": "Command Centre", "/whatsapp": "WhatsApp", "/inbox": "Inbox", "/leads": "Lead Status", "/templates": "Templates",
-  "/campaigns": "Campaigns", "/automation": "Automation", "/insights": "Insights",
-  "/suppressed": "Suppressed", "/sender-health": "Sender health", "/logs": "Logs", "/billing": "Billing",
+  "/": "Command Centre", "/whatsapp": "WhatsApp",
+  "/whatsapp/inbox": "Inbox", "/whatsapp/leads": "Lead status",
+  "/whatsapp/templates": "Templates", "/whatsapp/campaigns": "Campaigns",
+  "/whatsapp/automation": "Automation", "/whatsapp/insights": "Insights",
+  "/whatsapp/suppressed": "Suppressed", "/whatsapp/sender-health": "Sender health",
+  "/whatsapp/logs": "Logs", "/whatsapp/billing": "Billing",
 };
 
 const initials = (s: string) => s.replace(/[^a-zA-Z ]/g, "").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
@@ -83,16 +88,14 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     localStorage.setItem("om_nav", navOpen ? "1" : "0");
   }, [navOpen]);
 
-  // Reflect the current section in the tab title.
+  // Reflect the current section in the tab title. Resolved by longest matching
+  // nav href, so a deep page (/whatsapp/campaigns/history) still titles as
+  // "Campaigns" rather than falling through to a generic label.
   useEffect(() => {
-    const base = path.startsWith("/inbox") ? "Inbox"
-      : path.startsWith("/leads") ? "Lead Status"
-      : path.startsWith("/templates") ? "Templates"
-      : path.startsWith("/campaigns") ? "Campaigns"
-      : path.startsWith("/insights") ? "Insights"
-      : path.startsWith("/billing") ? "Billing"
-      : PAGE_TITLE[path] || "Console";
-    document.title = `ERE Homes · ${base}`;
+    const match = NAV
+      .filter((n) => (n.href === "/" ? path === "/" : path.startsWith(n.href)))
+      .sort((a, b) => b.href.length - a.href.length)[0];
+    document.title = `ERE Homes · ${PAGE_TITLE[match?.href || path] || "Command Centre"}`;
   }, [path]);
 
   const isMobile = vw <= 900;
@@ -100,8 +103,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
   if (isLogin) return <>{children}</>;
 
-  // Resolve the active top-level route key for crumbs/active state.
-  const activeKey = NAV.find((n) => (n.href === "/" ? path === "/" : path.startsWith(n.href)))?.href || "/";
+  // Resolve the active route key for crumbs/active state — LONGEST match wins.
+  // A plain .find() returned "/whatsapp" for "/whatsapp/inbox" (it is listed
+  // first and is a prefix of every sibling), so the sidebar highlighted
+  // Overview on every WhatsApp screen and the breadcrumb named the wrong page.
+  const activeKey = NAV
+    .filter((n) => (n.href === "/" ? path === "/" : path.startsWith(n.href)))
+    .sort((a, b) => b.href.length - a.href.length)[0]?.href || "/";
 
   return (
     <div className="app">
@@ -296,7 +304,7 @@ function TopBar({ path, navOpen, onMenu }: { path: string; navOpen: boolean; onM
     window.location.href = "/login";
   }
   function onSearchKey(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") { const q = (e.target as HTMLInputElement).value.trim(); router.push(q ? `/inbox?q=${encodeURIComponent(q)}` : "/inbox"); }
+    if (e.key === "Enter") { const q = (e.target as HTMLInputElement).value.trim(); router.push(q ? `/whatsapp/inbox?q=${encodeURIComponent(q)}` : "/whatsapp/inbox"); }
   }
 
   return (

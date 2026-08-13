@@ -198,7 +198,7 @@ export default function Campaigns() {
     const tick = setInterval(() => {
       setRedirectIn((n) => {
         if (n === null) return null;
-        if (n <= 1) { clearInterval(tick); router.push("/campaigns/history"); return 0; }
+        if (n <= 1) { clearInterval(tick); router.push("/whatsapp/campaigns/history"); return 0; }
         return n - 1;
       });
     }, 1000);

@@ -36,6 +36,16 @@ export const QUALIFIED_STAGES = new Set([8, 9, 10, 11, 19]);
 // Recruitment equivalent: Interview / Offer / Joined.
 export const QUALIFIED_STAGES_RECRUITMENT = new Set([67, 68, 69]);
 
+// Checked BEFORE the inbound list, because these titles contain inbound-looking
+// words. The AI dialler rings OUR OWN list, so an "AI Caller no answer" row is
+// an outbound call that failed, not somebody contacting us. 257 of them were
+// created in one batch on 13 Aug 2026 and read as 257 fresh untouched leads —
+// the tile said 270 leads / 244 untouched on a day with 14 real inquiries.
+const OUTBOUND_PATTERNS: [string, RegExp][] = [
+  ["AI caller no answer", /\bai\s*call(er)?\b[^|]*\bno\s*answer\b|\bno\s*answer\b[^|]*\bai\s*call(er)?\b/i],
+  ["AI caller voicemail", /\bai\s*call(er)?\b[^|]*\b(voicemail|machine)\b/i],
+];
+
 // Ordered; first match wins. Derived from live deal titles on 12 Aug 2026.
 const INBOUND_PATTERNS: [string, RegExp][] = [
   ["Bayut", /^\s*bayut\b/i],
@@ -80,6 +90,11 @@ export function classifyDeal(deal: any): LeadClass {
   const title = String(deal?.title || "");
   const src = sourceField(deal);
 
+  // Outbound is tested FIRST and beats even the Source field: a row can carry
+  // Source="AI Caller" and still be a call we placed that nobody answered.
+  for (const [label, rx] of OUTBOUND_PATTERNS) {
+    if (rx.test(title)) return { kind: "BULK", source: label };
+  }
   if (src) {
     // "PSI Damac Hills" / "PSI Chelsea Residences" are batch labels, not sources.
     if (/^psi\b/i.test(src)) return { kind: "BULK", source: "Telesales batch" };

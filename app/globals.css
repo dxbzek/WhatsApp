@@ -643,3 +643,14 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 @media (max-width:560px){
   .kpis.k4{grid-template-columns:repeat(2,1fr);}
 }
+
+/* ── Collapsible per-channel Setup group ─────────────────────────────────
+   Templates, suppressed contacts, sender health, logs and billing are things
+   you configure or check, not the day's work. Folding them keeps each channel
+   reading as a workplace rather than a technical console, and the same shape
+   repeats per channel as SMS and others are added. */
+.nav-sub-toggle{width:100%;text-align:left;cursor:pointer;}
+.nav-sub-toggle .nav-chev{margin-left:auto;display:inline-flex;transition:transform .15s;opacity:.65;}
+.nav-sub-toggle.open .nav-chev{transform:rotate(180deg);}
+.nav-item.nav-sub{padding-left:30px;font-size:12.5px;opacity:.88;}
+.nav-item.nav-sub.active{opacity:1;}

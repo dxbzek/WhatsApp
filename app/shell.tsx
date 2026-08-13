@@ -11,7 +11,18 @@ import { useLive } from "@/lib/useLive";
 // as ONE of its channels — not a Twilio console with an extra page bolted on.
 // Everything Twilio-specific (the sender switcher, sub-account admin, sender
 // health) belongs under WhatsApp and is hidden everywhere else.
-const NAV_GROUPS: { section: string; items: { id: string; href: string; icon: React.ReactNode }[] }[] = [
+// CHANNELS, not pages. WhatsApp is one channel of the Command Centre and SMS is
+// coming, so the nav is built from a per-channel shape rather than a flat list:
+// adding SMS is a new entry here plus its pages under /sms/*, not a refactor.
+//
+// Each channel splits its screens in two. `items` is the day's work. `setup` is
+// what you open when something needs configuring or checking — templates,
+// suppressed contacts, sender health, logs, billing. Left in one list those
+// five made the sidebar read as a technical console rather than a workplace.
+type NavItem = { id: string; href: string; icon: React.ReactNode };
+type NavGroup = { section: string; items: NavItem[]; setup?: NavItem[] };
+
+const NAV_GROUPS: NavGroup[] = [
   {
     section: "Overview",
     items: [{ id: "Command Centre", href: "/", icon: IC.dash }],
@@ -22,22 +33,27 @@ const NAV_GROUPS: { section: string; items: { id: string; href: string; icon: Re
       { id: "Overview", href: "/whatsapp", icon: IC.dash },
       { id: "Inbox", href: "/whatsapp/inbox", icon: IC.inbox },
       { id: "Leads", href: "/whatsapp/leads", icon: IC.users },
-      { id: "Templates", href: "/whatsapp/templates", icon: IC.tmpl },
       { id: "Campaigns", href: "/whatsapp/campaigns", icon: IC.camp },
       { id: "Automation", href: "/whatsapp/automation", icon: IC.bolt },
       { id: "Insights", href: "/whatsapp/insights", icon: IC.insights },
+    ],
+    setup: [
+      { id: "Templates", href: "/whatsapp/templates", icon: IC.tmpl },
       { id: "Suppressed", href: "/whatsapp/suppressed", icon: IC.ban },
       { id: "Sender health", href: "/whatsapp/sender-health", icon: IC.phone },
       { id: "Logs", href: "/whatsapp/logs", icon: IC.clock },
       { id: "Billing", href: "/whatsapp/billing", icon: IC.billing },
     ],
   },
+  // SMS goes here when its pages exist. Deliberately NOT listed yet: a nav item
+  // that leads nowhere is the same lie as a screen showing sample data.
 ];
-const NAV = NAV_GROUPS.flatMap((g) => g.items);
+const NAV = NAV_GROUPS.flatMap((g) => [...g.items, ...(g.setup || [])]);
 
 // Routes that are genuinely WhatsApp/Twilio. The sender switcher only makes
 // sense on these — on the Command Centre "sending as +971…" is meaningless.
-const WA_ROUTES = new Set(NAV_GROUPS[1].items.map((i) => i.href));
+// Derived from the path prefix so a new WhatsApp page is covered automatically.
+const WA_ROUTES = new Set(NAV.filter((i) => i.href.startsWith("/whatsapp")).map((i) => i.href));
 
 // The trail under the "ERE Homes" root. Every WhatsApp screen names WhatsApp
 // first, so the URL and the breadcrumb say the same thing.
@@ -126,6 +142,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 /* ── Sidebar ── */
 function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path: string; open: boolean; mounted: boolean; isMobile: boolean; onClose: () => void; closeOnNav: () => void }) {
   const [acctOpen, setAcctOpen] = useState(false);
+  // Per-section open state for the collapsible Setup lists. Undefined means
+  // "not chosen yet", which falls back to opening only on a setup page.
+  const [openSetup, setOpenSetup] = useState<Record<string, boolean>>({});
   // Empty until /api/senders answers. Never seeded with sample numbers — the
   // switcher must only ever show WhatsApp numbers we actually own.
   const [senders, setSenders] = useState<Sender[]>([]);
@@ -252,19 +271,42 @@ function Sidebar({ path, open, mounted, isMobile, onClose, closeOnNav }: { path:
       </div>
       )}
 
-      {NAV_GROUPS.map((g) => (
-        <div key={g.section}>
-          <div className="side-sec">{g.section}</div>
-          <nav className="side-nav">
-            {g.items.map((n) => (
-              <Link key={n.href} href={n.href} onClick={closeOnNav} className={`nav-item ${n.href === path ? "active" : ""}`}>
-                <span className="ic"><Icon d={n.icon} s={18} /></span>{n.id}
-                {n.id === "Inbox" && unread > 0 && <span className="nb">{unread}</span>}
-              </Link>
-            ))}
-          </nav>
-        </div>
-      ))}
+      {NAV_GROUPS.map((g) => {
+        // Setup opens automatically when you are already on one of its pages,
+        // so the sidebar never hides the screen you are looking at.
+        const onSetupPage = (g.setup || []).some((i) => i.href === path);
+        const setupOpen = openSetup[g.section] ?? onSetupPage;
+        return (
+          <div key={g.section}>
+            <div className="side-sec">{g.section}</div>
+            <nav className="side-nav">
+              {g.items.map((n) => (
+                <Link key={n.href} href={n.href} onClick={closeOnNav} className={`nav-item ${n.href === path ? "active" : ""}`}>
+                  <span className="ic"><Icon d={n.icon} s={18} /></span>{n.id}
+                  {n.id === "Inbox" && unread > 0 && <span className="nb">{unread}</span>}
+                </Link>
+              ))}
+              {g.setup && (
+                <>
+                  <button
+                    className={`nav-item nav-sub-toggle ${setupOpen ? "open" : ""}`}
+                    onClick={() => setOpenSetup((s) => ({ ...s, [g.section]: !setupOpen }))}
+                    aria-expanded={setupOpen}
+                  >
+                    <span className="ic"><Icon d={IC.dots} s={18} /></span>Setup
+                    <span className="nav-chev"><Icon d={IC.cdown} s={14} /></span>
+                  </button>
+                  {setupOpen && g.setup.map((n) => (
+                    <Link key={n.href} href={n.href} onClick={closeOnNav} className={`nav-item nav-sub ${n.href === path ? "active" : ""}`}>
+                      <span className="ic"><Icon d={n.icon} s={16} /></span>{n.id}
+                    </Link>
+                  ))}
+                </>
+              )}
+            </nav>
+          </div>
+        );
+      })}
 
       <div className="side-foot">
         <span className="side-help" style={{ cursor: "default" }}>ERE Homes · Command Centre</span>

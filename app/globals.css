@@ -609,19 +609,12 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
   font-size:13px;color:var(--ink);transition:background .12s;}
 .hub-row:last-child{border-bottom:0;}
 .hub-row:hover{background:var(--hover);}
-.hub-row .hr-dot{width:8px;height:8px;border-radius:50%;background:var(--border-2);}
-.hub-row.new .hr-dot{background:var(--blue);}
-.hub-row.warn .hr-dot{background:var(--amber-dot);}
-.hub-row.bad .hr-dot{background:var(--red);}
 .hub-row .hr-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .hub-row .hr-src{display:flex;gap:5px;flex-wrap:wrap;min-width:0;}
 .hub-row .hr-tag{font-size:11px;font-weight:600;color:var(--ink-2);background:var(--chip);
   border:1px solid var(--border);border-radius:20px;padding:2px 9px;white-space:nowrap;}
 .hub-row .hr-owner{font-size:12px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .hub-row .hr-age{font-size:12px;color:var(--ink-3);text-align:right;}
-.hub-row .hr-state{font-size:11.5px;font-weight:700;text-align:right;color:var(--ink-3);}
-.hub-row.new .hr-state,.hub-row.warn .hr-state{color:var(--amber-ink);}
-.hub-row.bad .hr-state{color:var(--red-ink);}
 
 .hub-srcs{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:10px;}
 .hub-src{border:1px solid var(--border);border-radius:var(--r);padding:12px 13px;background:var(--surface-2);}
@@ -631,14 +624,6 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
 @media (max-width:760px){
   /* Stack each lead into its own block: name and state on one line, source,
      owner and age underneath. Nothing scrolls sideways. */
-  .hub-row{grid-template-columns:10px minmax(0,1fr) auto;grid-template-areas:
-    "dot name state" ". src src" ". owner age";row-gap:5px;padding:13px 6px;}
-  .hub-row .hr-dot{grid-area:dot;align-self:start;margin-top:5px;}
-  .hub-row .hr-name{grid-area:name;}
-  .hub-row .hr-state{grid-area:state;}
-  .hub-row .hr-src{grid-area:src;}
-  .hub-row .hr-owner{grid-area:owner;}
-  .hub-row .hr-age{grid-area:age;text-align:right;}
 }
 @media (max-width:560px){
   .kpis.k4{grid-template-columns:repeat(2,1fr);}
@@ -669,10 +654,10 @@ select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg
   background:var(--green-bg);color:var(--green-ink);font-size:12px;font-weight:700;}
 .kpi .kv.kv-na{font-size:16px;font-weight:600;color:var(--ink-3);letter-spacing:0;padding-top:7px;}
 
-/* Waiting rows get a left rule that deepens with the wait. */
-.hub-row.new{box-shadow:inset 3px 0 0 var(--blue);}
-.hub-row.warn{box-shadow:inset 3px 0 0 var(--amber-dot);}
-.hub-row.bad{box-shadow:inset 3px 0 0 var(--red);}
+/* The wait time alone carries the escalation — it is already the thing being
+   read, and it grows redder and heavier as the lead ages. An accent rule down
+   the side of every row repeated that in a second place and made each row look
+   like a card. One signal, in the column people actually scan. */
 .hub-row.new .hr-age,.hub-row.warn .hr-age{color:var(--amber-ink);font-weight:600;}
 .hub-row.bad .hr-age{color:var(--red-ink);font-weight:700;}
 .hub-row .hr-qual{display:inline-block;margin-left:9px;font-size:10.5px;font-weight:700;

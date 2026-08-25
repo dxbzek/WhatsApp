@@ -120,15 +120,37 @@ async function humanNotedDeals(since: Date): Promise<Set<number>> {
   return ids;
 }
 
+/** Calendar date in Dubai, YYYY-MM-DD.
+ *
+ *  The ad account's own timezone is Asia/Dubai (read live 25 Aug 2026), so a
+ *  date built from a UTC ISO string asks Meta for the WRONG DAY for the four
+ *  hours either side of midnight: the "today" window starts at 20:00 UTC the
+ *  previous day, whose ISO date is yesterday, so the Spend tile silently
+ *  carried a second day of spend. */
+const dubaiDate = (d: Date) =>
+  new Date(d.getTime() + 4 * 3600_000).toISOString().slice(0, 10);
+
 /** Meta spend for the window. Returns null when unavailable — never 0, because
- *  a zero reads as "we spent nothing" and that is a different fact. */
-async function metaSpend(since: Date): Promise<number | null> {
-  const token = clean(process.env.META_ADS_TOKEN) || clean(process.env.META_SYSTEM_TOKEN);
-  const act = clean(process.env.META_AD_ACCOUNT_ID);
+ *  a zero reads as "we spent nothing" and that is a different fact.
+ *
+ *  `reason` says WHY it is null, so a dead tile can be acted on instead of
+ *  merely read: "Not connected" and "Meta refused the call" need different
+ *  fixes and must not look the same. */
+async function metaSpend(since: Date): Promise<{ spend: number | null; reason: string | null }> {
+  const token = clean(process.env.META_ADS_TOKEN) || clean(process.env.META_SYSTEM_TOKEN)
+    || clean(process.env.META_ACCESS_TOKEN);
+  // The account id is stored WITHOUT the act_ prefix in our credential files,
+  // and Graph needs it: `/575575818246181/insights` 400s, `/act_575…` returns
+  // the row. Measured 25 Aug 2026 — the bare id is why the tile read "Not
+  // connected" every day while the account was really spending AED 118 that
+  // morning. Normalise rather than trust however the env happens to be typed.
+  const raw = clean(process.env.META_AD_ACCOUNT_ID);
+  const act = raw ? `act_${raw.replace(/^act_/, "")}` : "";
   const v = clean(process.env.META_API_VERSION) || "v21.0";
-  if (!token || !act) return null;
-  const until = new Date().toISOString().slice(0, 10);
-  const from = since.toISOString().slice(0, 10);
+  if (!token) return { spend: null, reason: "no Meta ads token set" };
+  if (!act) return { spend: null, reason: "no Meta ad account id set" };
+  const until = dubaiDate(new Date());
+  const from = dubaiDate(since);
   const q = new URLSearchParams({
     fields: "spend",
     time_range: JSON.stringify({ since: from, until }),
@@ -137,13 +159,15 @@ async function metaSpend(since: Date): Promise<number | null> {
   try {
     const res = await fetch(`https://graph.facebook.com/${v}/${act}/insights?${q}`,
       { cache: "no-store" });
-    if (!res.ok) return null;
+    // Never echo the URL or the body: both carry the token.
+    if (!res.ok) return { spend: null, reason: `Meta returned ${res.status}` };
     const j = await res.json();
     const rows: any[] = j?.data || [];
-    if (!rows.length) return 0; // a real zero: the account reported and spent nothing
-    return rows.reduce((s, r) => s + Number(r.spend || 0), 0);
+    // a real zero: the account reported and spent nothing
+    if (!rows.length) return { spend: 0, reason: null };
+    return { spend: rows.reduce((s, r) => s + Number(r.spend || 0), 0), reason: null };
   } catch {
-    return null; // unreachable is NOT zero
+    return { spend: null, reason: "Meta unreachable" }; // unreachable is NOT zero
   }
 }
 
@@ -161,7 +185,7 @@ export async function GET(req: NextRequest) {
     const win = (req.nextUrl.searchParams.get("window") || "today") as Win;
     const since = windowStart(win);
 
-    const [{ deals, truncated }, spend, humanNotes] = await Promise.all([
+    const [{ deals, truncated }, money, humanNotes] = await Promise.all([
       dealsSince(since),
       metaSpend(since),
       humanNotedDeals(since),
@@ -237,10 +261,16 @@ export async function GET(req: NextRequest) {
         leads,
         untouched,
         // null spend renders as a dash, never as 0.
-        spend: spend === null ? null : Math.round(spend * 100) / 100,
+        spend: money.spend === null ? null : Math.round(money.spend * 100) / 100,
+        spendReason: money.reason,
         qualified,
-        cpl: spend && leads ? Math.round((spend / leads) * 100) / 100 : null,
-        cpql: spend && qualified ? Math.round((spend / qualified) * 100) / 100 : null,
+        // Explicit null checks, not truthiness: a real AED 0 spend day with
+        // leads on it has a cost per lead of 0, and `spend && …` reported that
+        // honest zero as "no data".
+        cpl: money.spend !== null && leads > 0
+          ? Math.round((money.spend / leads) * 100) / 100 : null,
+        cpql: money.spend !== null && qualified > 0
+          ? Math.round((money.spend / qualified) * 100) / 100 : null,
       },
       bySource,
       // Said out loud, always. An excluded count that is never printed is how a

@@ -22,6 +22,7 @@ type Overview = {
   window: string; since: string; generatedAt: string;
   tiles: {
     leads: number; untouched: number; spend: number | null;
+    spendReason?: string | null;
     qualified: number; cpl: number | null; cpql: number | null;
   };
   bySource: Record<string, number>;
@@ -174,12 +175,22 @@ export default function Hub() {
               ? "Not connected"
               : <>{aed(t.spend)} <span style={{ fontSize: 14, fontWeight: 600 }}>AED</span></>}
           </div>
-          <div className="ks">{t?.cpl ? `${aed(t.cpl)} AED per lead` : "Meta ads"}</div>
+          {/* When the spend is dead the sub-line says WHY, so the tile is
+              something to act on rather than a shrug. */}
+          <div className="ks">
+            {t?.spend === null || t?.spend === undefined
+              ? (t?.spendReason || "Meta ads")
+              : t?.cpl !== null && t?.cpl !== undefined
+                ? `${aed(t.cpl)} AED per lead` : "Meta ads"}
+          </div>
         </div>
         <div className="kpi">
           <div className="kl">Qualified</div>
           <div className="kv">{loading && !data ? "—" : dash(t?.qualified)}</div>
-          <div className="ks">{t?.cpql ? `CPQL ${aed(t.cpql)} AED` : "stage Qualified or beyond"}</div>
+          <div className="ks">
+            {t?.cpql !== null && t?.cpql !== undefined
+              ? `${aed(t.cpql)} AED per qualified lead` : "stage Qualified or beyond"}
+          </div>
         </div>
       </div>
 

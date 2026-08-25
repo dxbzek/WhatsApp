@@ -44,6 +44,13 @@ export const QUALIFIED_STAGES_RECRUITMENT = new Set([67, 68, 69]);
 const OUTBOUND_PATTERNS: [string, RegExp][] = [
   ["AI caller no answer", /\bai\s*call(er)?\b[^|]*\bno\s*answer\b|\bno\s*answer\b[^|]*\bai\s*call(er)?\b/i],
   ["AI caller voicemail", /\bai\s*call(er)?\b[^|]*\b(voicemail|machine)\b/i],
+  // RENTAL SLIP rows are HISTORIC tenancies typed in from the PM book, not
+  // people contacting us — one of them is even titled "(CANCELLED, vacant)".
+  // 18 of them landed in a 7-day window on 25 Aug 2026 and every one sat in
+  // "Waiting for a call", sending the desk after year-old rental paperwork.
+  // They are matched here, ABOVE the Source field, because the backfill stamped
+  // its own note into that field and the field is otherwise trusted first.
+  ["Rental slip backfill", /^\s*rental\s*slip\b/i],
 ];
 
 // Ordered; first match wins. Derived from live deal titles on 12 Aug 2026.
@@ -85,6 +92,33 @@ export function sourceField(deal: any): string {
   return "";
 }
 
+/**
+ * Fold a free-text Source value onto the channel name the page already uses.
+ *
+ * The field is typed by hand as well as by our code, so it arrives carrying
+ * notes: "Property Finder (per Ibrahim, 19 Aug 2026)" became its own bucket in
+ * the "Where they came from" panel and split one channel across two tiles, 56
+ * against 17. A trailing parenthetical is a comment, never a channel. Anything
+ * that still does not match a known channel is left exactly as typed — that is
+ * the whitelist rule, and a new channel must stay visible rather than be folded
+ * into a neighbour.
+ */
+export function canonicalSource(raw: string): string {
+  const s = raw.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  const k = s.toLowerCase();
+  if (/^(pf|property\s*finder)\b/.test(k)) return "Property Finder";
+  if (/^bayut\b/.test(k)) return "Bayut";
+  if (/^meta\b|^facebook\b|^fb\b/.test(k)) return "Meta Ad";
+  if (/^website\b|^web\b|erehomes\.ae/.test(k)) return "Website";
+  // Exact only. "WhatsApp Campaign" is a reply to a broadcast WE sent and must
+  // keep its own name — folding it into inbound WhatsApp would credit our own
+  // outbound list as an organic channel.
+  if (/^whatsapp( lead| inbound)?$/.test(k)) return "WhatsApp";
+  if (/^instagram\b|^ig\b|manychat/.test(k)) return "Instagram DM";
+  if (/^ai\s*call/.test(k)) return "AI Caller";
+  return s || raw;
+}
+
 /** Classify one deal into an inbound source, a bulk load, or unclassified. */
 export function classifyDeal(deal: any): LeadClass {
   const title = String(deal?.title || "");
@@ -98,7 +132,7 @@ export function classifyDeal(deal: any): LeadClass {
   if (src) {
     // "PSI Damac Hills" / "PSI Chelsea Residences" are batch labels, not sources.
     if (/^psi\b/i.test(src)) return { kind: "BULK", source: "Telesales batch" };
-    return { kind: "INBOUND", source: src };
+    return { kind: "INBOUND", source: canonicalSource(src) };
   }
   for (const [label, rx] of INBOUND_PATTERNS) {
     if (rx.test(title)) return { kind: "INBOUND", source: label };

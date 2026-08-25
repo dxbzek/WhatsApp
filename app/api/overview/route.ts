@@ -144,7 +144,11 @@ async function metaSpend(since: Date): Promise<{ spend: number | null; reason: s
   // the row. Measured 25 Aug 2026 — the bare id is why the tile read "Not
   // connected" every day while the account was really spending AED 118 that
   // morning. Normalise rather than trust however the env happens to be typed.
-  const raw = clean(process.env.META_AD_ACCOUNT_ID);
+  // Defaulted, not required. An ad ACCOUNT ID is an identifier, not a
+  // credential (the token is the credential), and leaving it to an env var that
+  // may never have been set is one more way for the tile to die quietly. The
+  // env still wins if ERE ever moves accounts.
+  const raw = clean(process.env.META_AD_ACCOUNT_ID) || "575575818246181";
   const act = raw ? `act_${raw.replace(/^act_/, "")}` : "";
   const v = clean(process.env.META_API_VERSION) || "v21.0";
   if (!token) return { spend: null, reason: "no Meta ads token set" };

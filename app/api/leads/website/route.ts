@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
 import { normalizePhone } from "@/lib/leadIngest";
 import { emailLeadAlert } from "@/lib/leadEmail";
+import { classifyEnquiry } from "@/lib/leadSpam";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,9 +19,8 @@ export const dynamic = "force-dynamic";
 // neither is a submission with no way to reach the person back.
 //   WEBSITE_LEAD_SECRET  shared with the site's gitignored _pipedrive.php
 
-// Intents that are NOT a property enquiry. Checked against the intent AND the message, since
-// the form's intent select is optional on some pages.
-const NOT_A_LEAD = /\b(job|career|vacanc|hiring|recruit|cv|resume|internship|partnership|collaborat|invoice|supplier|vendor|sponsor|seo|marketing services|web design|backlink)\b/i;
+// What counts as "not a property enquiry" now lives in lib/leadSpam.ts, which scores a
+// submission instead of matching one flat word list, and records every rejection.
 
 // Round-robin across the same telesales pool the Meta + WhatsApp routes use, so website
 // leads are shared out rather than piling on one person. Falls back to the env owner.
@@ -57,8 +57,17 @@ export async function POST(req: NextRequest) {
   const page = String(b.page || b.path || "").trim();
   const listing = String(b.listing || "").trim();
 
-  if (NOT_A_LEAD.test(`${interest} ${message}`)) {
-    return NextResponse.json({ ok: true, skipped: "not_a_property_enquiry" });
+  // Not a property enquiry (a vendor pitch, a job application, an SEO offer). No deal, no
+  // alert, nobody's time — but it is KEPT in site_lead_spam with the reasons it was judged
+  // on, so a wrong call can be seen and rescued rather than vanishing.
+  const verdict = classifyEnquiry({ interest, message, email });
+  if (verdict.spam) {
+    await supabaseAdmin().from("site_lead_spam").insert({
+      name: name || null, phone: phone || null, email: email || null,
+      interest: interest || null, page: page || null, listing: listing || null,
+      message: message || null, reasons: verdict.reasons, score: verdict.score,
+    });
+    return NextResponse.json({ ok: true, skipped: "not_a_property_enquiry", reasons: verdict.reasons });
   }
 
   // Assign first, then alert, then create the deal. The alert is sent BEFORE the

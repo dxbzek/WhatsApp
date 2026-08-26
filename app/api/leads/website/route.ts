@@ -4,6 +4,7 @@ import { syncMetaLeadToPipedrive } from "@/lib/metaLeadPipedrive";
 import { normalizePhone } from "@/lib/leadIngest";
 import { emailLeadAlert } from "@/lib/leadEmail";
 import { classifyEnquiry } from "@/lib/leadSpam";
+import { routeCareersApplication } from "@/lib/careersLead";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -57,11 +58,27 @@ export async function POST(req: NextRequest) {
   const page = String(b.page || b.path || "").trim();
   const listing = String(b.listing || "").trim();
 
-  // Not a property enquiry (a vendor pitch, a job application, an SEO offer). No deal, no
-  // alert, nobody's time — but it is KEPT in site_lead_spam with the reasons it was judged
-  // on, so a wrong call can be seen and rescued rather than vanishing.
   const verdict = classifyEnquiry({ interest, message, email });
-  if (verdict.spam) {
+
+  // Somebody asking for a JOB, typed into the general contact box rather than the careers
+  // form. Zek, 26 Aug 2026: "Job applications should be direct to recruitment" — so it takes
+  // the identical path a /careers/ submission takes: pipeline 9, a recruiter, never the
+  // sales desk. It used to be binned here.
+  if (verdict.kind === "career") {
+    // The intent select holds a PROPERTY intent ("Selling", "Investing"); it is not the role
+    // applied for, and putting it on a recruitment card reads as nonsense.
+    const role = /^(buying|selling|renting|investing|valuation|viewing|property management|leasing)$/i.test(interest) ? "" : interest;
+    const res = await routeCareersApplication({
+      name, email, phone, role, message, page: page || "website form",
+      sourceValue: "Website Careers",
+    });
+    return NextResponse.json({ ...res.body, routed: "recruitment", reasons: verdict.reasons }, { status: res.status });
+  }
+
+  // Somebody selling us something (a vendor pitch, an SEO offer). No deal, no alert,
+  // nobody's time — but it is KEPT in site_lead_spam with the reasons it was judged on, so
+  // a wrong call can be seen and rescued rather than vanishing.
+  if (verdict.kind === "spam") {
     await supabaseAdmin().from("site_lead_spam").insert({
       name: name || null, phone: phone || null, email: email || null,
       interest: interest || null, page: page || null, listing: listing || null,

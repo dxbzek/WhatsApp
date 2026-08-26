@@ -261,6 +261,16 @@ export async function syncMetaLeadToPipedrive(opts: {
       owner_id: owner,
       pipeline_id: isRec ? RECRUITMENT_PIPELINE_ID : PIPELINE_ID,
       stage_id: isRec ? (autoRejected ? RECRUITMENT_REJECTED_STAGE_ID : RECRUITMENT_STAGE_ID) : STAGE_ID,
+      // RECRUITMENT IS A SHARED BOARD, SALES IS NOT. Passing no `visible_to` lets
+      // Pipedrive apply the account default, which is 1 ("Owner & followers") — correct
+      // for a sales lead, where only the claimer should reach the phone, and wrong for
+      // an applicant. All 156 recruitment deals were created private, so Fadilah could
+      // not see Rochelle's 54 applicants, Rochelle could not see Fadilah's 80, and both
+      // recruiters are non-admin so neither board showed the other's. Zek hit it on
+      // 17 Aug 2026: "Why arent they on the new applicant? I didnt saw them". Set it
+      // explicitly here rather than changing the ACCOUNT default, which would also
+      // expose every sales lead and break the claim design in pipedrive-claim-sync.
+      ...(isRec ? { visible_to: 3 } : {}),
       // Pipedrive REJECTS an empty string on a text custom field ("Expected non-empty
       // 'string' ... use null to clear") and fails the whole deal with a 400. A Meta lead
       // always carries an ad link and caption; a WEBSITE lead never does, which is why

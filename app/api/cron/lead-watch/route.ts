@@ -296,8 +296,11 @@ async function runDailyDigest(db: ReturnType<typeof supabaseAdmin>): Promise<boo
   const now = new Date();
   // Dubai has no DST, but read the day and time in the zone anyway rather than offsetting by
   // hand — a hand-rolled +4 breaks the moment this runs from a differently-configured host.
+  // Sunday only. Saturday was added back on 27 Aug 2026 when this absorbed the telesales
+  // daily report, which ran Mon-SAT — the desk works Saturdays, and merging the two mails
+  // must not quietly take a day of reporting away from them.
   const weekday = now.toLocaleDateString("en-GB", { weekday: "short", timeZone: "Asia/Dubai" });
-  if (weekday === "Sat" || weekday === "Sun") return false;
+  if (weekday === "Sun") return false;
   const [h, m] = now.toLocaleTimeString("en-GB", { hour12: false, timeZone: "Asia/Dubai" }).split(":").map(Number);
   if (h * 60 + m < DIGEST_MINUTE_DUBAI) return false;
   const dateKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" });

@@ -9,7 +9,7 @@ import { verifySession, COOKIE } from "@/lib/auth";
 //  - /api/pipedrive/qualified : Pipedrive stage-change webhook -> Meta CAPI (self-secured by
 //    PIPEDRIVE_WEBHOOK_SECRET). Only this one path, NOT the /api/pipedrive/ push/status routes
 //    which are UI-called and must stay session-gated.
-const PUBLIC_API = ["/api/auth/", "/api/twilio/", "/api/cron/", "/api/leads/", "/api/pipedrive/qualified"];
+const PUBLIC_API = ["/api/auth/", "/api/twilio/", "/api/cron/", "/api/leads/", "/api/subscribe/", "/api/pipedrive/qualified"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

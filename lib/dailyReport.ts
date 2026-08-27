@@ -59,6 +59,39 @@ async function openWaitingDeals(): Promise<Deal[]> {
   return out;
 }
 
+// The sales board exactly as it reads left to right in Pipedrive, so the email and the
+// pipeline never disagree about what exists or what order it is in. Carried over from the
+// telesales daily report (Supabase fn `telesales-daily-report`), which this report replaced
+// on 27 Aug 2026 — two mails 15 minutes apart, both reading pipeline 2, was the noise Zek
+// asked to cut. Losing the board would have been a cut without a replacement.
+const BOARD: [string, number][] = [
+  ["New Lead", 6], ["No Answer", 61], ["Contact made", 7], ["Qualified", 8],
+  ["Viewing Scheduled", 9], ["Offer Made", 10], ["Offer Accepted", 11],
+  ["Closed Won", 19], ["Closed Lost", 18], ["Leads Pool", 63], ["Telesales Batch", 64],
+];
+
+// How many OPEN deals sit in each stage right now. One paged v2 read of the whole
+// pipeline rather than one call per stage: v1's per-stage paging is 11 round trips for
+// the same answer. Closed Won / Closed Lost are terminal, so they hold nothing open and
+// simply come back 0 — the renderer drops empty rows rather than printing them as zeros.
+async function boardCounts(): Promise<{ stage: string; held: number }[]> {
+  const held = new Map<number, number>();
+  for (let page = 0, cursor = ""; page < 60; page++) {
+    const params: Record<string, string> = {
+      pipeline_id: String(PIPELINE_LEADS), status: "open", limit: "500",
+    };
+    if (cursor) params.cursor = cursor;
+    const d: any = await pd("api/v2/deals", params);
+    for (const deal of (d?.data || []) as any[]) {
+      const s = Number(deal.stage_id);
+      held.set(s, (held.get(s) || 0) + 1);
+    }
+    cursor = d?.additional_data?.next_cursor || "";
+    if (!cursor) break;
+  }
+  return BOARD.map(([stage, id]) => ({ stage, held: held.get(id) || 0 }));
+}
+
 // Where today's enquiries came from. Classified off the deal TITLE because that is what
 // every creator writes consistently: `origin` is "API" or "Marketplace" depending on which
 // Make scenario fired, so it separates nothing. Verified against a full day of live titles
@@ -276,6 +309,7 @@ export async function collectDailyReport(range: ReportRange = {}): Promise<Daily
 
   // Stock: who is sitting on what, right now. done_activities_count is the honest signal —
   // an agent can drag a card to No Answer without ever dialling, so stage alone lies.
+  const board = await boardCounts();
   const deals = await openWaitingDeals();
   const uncalled = deals.filter((d) => (d.done_activities_count || 0) === 0);
   const awaitingOutcome = deals.length - uncalled.length;
@@ -370,7 +404,7 @@ export async function collectDailyReport(range: ReportRange = {}): Promise<Daily
   const days = Math.max(1, Math.round((until - dayAgo) / 86400_000));
   return {
     date, days, newLeads: newInbound, newPooled, qualified: progressed, lost,
-    awaitingFirst: notContacted.length, awaitingOutcome, perAgent,
+    awaitingFirst: notContacted.length, awaitingOutcome, perAgent, board,
     uncalledToday: perAgent.reduce((n, r) => n + r.uncalledToday, 0),
     olderBacklog, windowDays: MAX_AGE_DAYS,
     weekAvgNew,

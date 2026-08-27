@@ -67,6 +67,21 @@ function nudgeCcList(): string[] {
     .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
 }
 
+// Who gets copied on a NEW-lead alert that DID reach an agent. Defaults to NOBODY.
+// Zek, 27 Aug 2026: one copy of every lead landing in marketing@ on top of two daily
+// reports was too much mail — "this needs to be trimmed like in one report only". The
+// leads still appear, by name, in the 17:30 daily report, so nothing is lost by not
+// mailing them twice. Deliberately its OWN env var rather than blanking LEAD_ALERT_CC,
+// which is still the fallback recipient for the chase list and the daily report.
+//
+// This does NOT apply when no agent has a mailbox: emailLeadAlert falls back to
+// ccList() in that case, so an unroutable lead is still seen by a human rather than
+// silently dropped.
+function newLeadCcList(): string[] {
+  return (process.env.NEW_LEAD_CC || "")
+    .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+}
+
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -292,6 +307,9 @@ export type DailyReportInput = {
   }[];
   olderBacklog?: number;        // uncalled leads older than the window (legacy telesales)
   windowDays?: number;          // how far back "waiting" counts
+  // Open deals per stage, board order. Came from the separate telesales daily report,
+  // folded in here 27 Aug 2026 when that second mail was switched off.
+  board?: { stage: string; held: number }[];
 };
 
 // Rendering lives on its own so `scripts/send-daily-report-sample.ts --html` can write the
@@ -348,6 +366,14 @@ export function renderDailyReport(i: DailyReportInput): { html: string; text: st
     tot(String(i.awaitingFirst), true) + `<td></td></tr>`;
 
   const sourceLine = (i.sources || []).map((s) => `${esc(s.name)} ${s.count}`).join(" &middot; ");
+
+  // The board, from the telesales daily report this one absorbed on 27 Aug 2026. Empty
+  // stages are dropped rather than printed as zeros: Closed Won and Closed Lost are
+  // terminal, so an open-deal count for them is always 0 and says nothing.
+  const boardRows = (i.board || []).filter((b) => b.held).map((b, idx) =>
+    `<tr style="background:${idx % 2 === 0 ? "#FFFFFF" : "#FBFAF7"};">` +
+    `<td style="padding:10px 12px;border-bottom:1px solid ${LINE};font:400 14px ${A};color:${INK};">${esc(b.stage)}</td>` +
+    `<td style="padding:10px 12px;border-bottom:1px solid ${LINE};font:700 14px ${A};color:${DARK};text-align:right;">${b.held}</td></tr>`).join("");
   const worked = (i.callsToday || 0) + (i.notesToday || 0);
 
   // One sentence, worst true thing first. This line decides whether the rest gets read, so
@@ -392,6 +418,15 @@ export function renderDailyReport(i: DailyReportInput): { html: string; text: st
     <div style="font:700 12px ${A};color:${DARK};text-transform:uppercase;letter-spacing:.1em;border-bottom:2px solid ${GOLD};padding-bottom:7px;">Where they came from</div>
     <div style="font:400 14px/1.7 ${A};color:${INK};margin-top:10px;">${sourceLine}</div>
   </td></tr>` : ""}
+  ${boardRows ? `<tr><td style="padding:22px 30px 4px;">
+    <div style="font:700 12px ${A};color:${DARK};text-transform:uppercase;letter-spacing:.1em;border-bottom:2px solid ${GOLD};padding-bottom:7px;">The board right now</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;border-collapse:collapse;">
+      <tr style="background:${DARK};">
+        <td style="padding:9px 12px;font:700 11px ${A};color:#FFF;text-transform:uppercase;letter-spacing:.05em;">Stage</td>
+        <td style="padding:9px 12px;font:700 11px ${A};color:${GOLD};text-transform:uppercase;letter-spacing:.05em;text-align:right;">Open deals</td></tr>
+      ${boardRows}
+    </table>
+  </td></tr>` : ""}
   <tr><td style="padding:20px 30px 8px;">
     <div style="font:400 12px/1.7 ${A};color:${MUTE};">
       <strong style="color:${INK};">Worked</strong> = calls plus notes logged in this period. Some reps log a call, others write a note, so both count.<br>
@@ -424,6 +459,11 @@ export function renderDailyReport(i: DailyReportInput): { html: string; text: st
       lpad(String(sum("lost")), 6) + lpad(String(i.awaitingFirst), 10),
     "",
     ...(sourceLine ? [`Where today's ${i.newLeads} came from: ${sourceLine.replace(/<[^>]+>/g, "")}`, ""] : []),
+    ...((i.board || []).some((b) => b.held)
+      ? ["The board right now:",
+         ...(i.board || []).filter((b) => b.held).map((b) => `  ${pad(b.stage, 20)}${lpad(String(b.held), 6)}`),
+         ""]
+      : []),
     `Never called = open in New Lead / No Answer / Contact made with no completed activity.`,
     `Calls and Notes are both counted: some reps log a call activity, others write a note. Both at 0 is the finding.`,
     `1st = median minutes from the lead landing to the first completed activity.`,
@@ -441,12 +481,21 @@ export function renderDailyReportHtml(i: DailyReportInput): string {
 }
 
 export async function emailDailyReport(i: DailyReportInput): Promise<{ sent: string[]; error: string | null }> {
-  // marketing@ (this is its ONE daily mail) plus the sales manager, who acts on the
-  // per-agent list. Override with DAILY_REPORT_TO; falls back to LEAD_ALERT_CC's
-  // marketing inbox if that env is ever set to something empty.
-  // Matthew is deliberately NOT here (Zek, 29 Jul 2026: "do not send to Matthew for now").
-  // Put him back by setting DAILY_REPORT_TO rather than editing this default.
-  const to = (process.env.DAILY_REPORT_TO || "marketing@erehomes.ae")
+  // Everyone who used to get the separate telesales daily report, plus marketing@. This
+  // is now the ONE daily mail: the telesales report (Supabase fn `telesales-daily-report`)
+  // was switched off on 27 Aug 2026 and its board folded in above, so this list has to
+  // carry its readers or the desk quietly loses a report it was using.
+  //
+  // Read from DAILY_REPORT_RECIPIENTS, deliberately a NEW env name. The old
+  // DAILY_REPORT_TO is set on Vercel to marketing@ alone, and no Vercel API token exists
+  // in this repo — editing the default under a name that already has a stored value would
+  // have shipped a change that does nothing. Set DAILY_REPORT_RECIPIENTS to override.
+  // The five below are the exact TELESALES_REPORT_TO list off the retired function
+  // (see memory project_telesales_daily_report), NOT addresses guessed from a name:
+  // Gmail's SMTP answers 250 to any @erehomes.ae recipient, real or not, so a guessed
+  // address fails silently as an async bounce nobody reads.
+  const to = (process.env.DAILY_REPORT_RECIPIENTS ||
+      "marketing@erehomes.ae, telesales@erehomes.ae, matthew@erehomes.ae, zek@erehomes.ae, akf@erehomes.ae, kyle@erehomes.ae")
     .split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
   if (to.length === 0) to.push(...ccList());
   if (to.length === 0) return { sent: [], error: "no recipient" };
@@ -538,7 +587,10 @@ ${digits.length >= 8 ? `<div style="margin-bottom:18px"><a href="https://wa.me/$
 export async function emailLeadAlert(i: LeadEmailInput): Promise<LeadEmailResult> {
   const to = i.recipients.map((r) => (r.email || "").trim()).filter(Boolean);
   const skipped = i.recipients.filter((r) => !(r.email || "").trim()).map((r) => r.name);
-  const cc = ccList().filter((a) => !to.includes(a));
+  // An alert that reached an agent copies nobody (see newLeadCcList). One that reached
+  // NO agent still copies marketing@, or the lead would be sent to an empty recipient
+  // list and lost with a cheerful "ok" — the exact silent-drop shape the honeypot bug had.
+  const cc = (to.length ? newLeadCcList() : ccList()).filter((a) => !to.includes(a));
   if (to.length === 0 && cc.length === 0) {
     return { sent: [], skipped, error: "no recipient has an email address" };
   }

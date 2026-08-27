@@ -14,6 +14,36 @@ import { commissionDeclined, RECRUITMENT_REJECTED_STAGE_ID, AUTO_REJECT_NOTE } f
 // Pipedrive hiccup must never fail lead routing or the agent's WhatsApp alert.
 //   PIPEDRIVE_API_TOKEN         company token (already used by lib/pipedrive.ts)
 //   PIPEDRIVE_FALLBACK_USER_ID  deal owner when the routed agent has no mapping
+//
+// MIGRATION KILL SWITCH (Zek, 27 Aug 2026: "Let's stop Meta Ads, Website Inquiries,
+// Careers application and WhatsApp Console"). ERE is moving off Pipedrive to Bitrix24,
+// so this function — the ONLY thing that creates a Pipedrive person/deal/note from an
+// inbound lead, on all four of those paths — is now OFF unless PIPEDRIVE_LEAD_WRITES
+// is exactly "1".
+//
+// A NEW env name deliberately, not a flip of an existing one: `PIPEDRIVE_API_TOKEN` is
+// already set on Vercel and is still needed by every READ path (daily report, chase
+// list, overview), and a default cannot win against a value that already exists on the
+// host. Nothing sets PIPEDRIVE_LEAD_WRITES anywhere, so the writes stop the moment this
+// deploys, with no dashboard change and nothing to remember to undo.
+//
+// Where those leads live instead, verified live 27 Aug 2026 before this was switched off:
+//   Meta ads      -> Bitrix's own Meta Lead Ads connector (SOURCE_ID REPEAT_SALE ==
+//                    "Meta Ads"), still arriving the same day; `_bitrix_meta_leads_enrich.py`
+//                    fixes their titles and adds the ad context every 10 minutes.
+//   Website       -> written to Bitrix in REAL TIME by the site's own PHP handler
+//                    (Website/cms/build.py, `if (!$is_career && ... BITRIX_WEBHOOK)`),
+//                    in parallel with this, since the migration started.
+//   Careers       -> the same PHP handler now writes the applicant straight to the Bitrix
+//                    Recruitment smart process (1074 / pipeline 30), added in the SAME
+//                    change as this switch. It used to reach Bitrix only by being mirrored
+//                    OUT of Pipedrive by `_bitrix_recruitment_sync.py`, which is why that
+//                    script must not be the only path once this is off.
+//   WhatsApp      -> NO Bitrix equivalent exists. A campaign-reply lead now lives only in
+//                    the console (`conversations` + `lead_events`) and the lead-gen tracker
+//                    copy. Flagged to Zek; build a Bitrix writer before that path matters
+//                    again (WhatsApp sending has been Meta-restricted since 27 Jul 2026).
+const LEAD_WRITES_ENABLED = () => clean(process.env.PIPEDRIVE_LEAD_WRITES) === "1";
 const PIPELINE_ID = 2;
 const STAGE_ID = 6;                                              // "New Lead"
 // Recruitment applicants are not a sales lead and must not sit in the Deals pipeline,
@@ -111,6 +141,11 @@ const MAX_ATTEMPTS = 8;
 const RETRY_WINDOW_DAYS = 7;
 
 export async function retryPipedriveBacklog(limit = 10): Promise<{ retried: number; created: number }> {
+  // Off with the writer it retries. Returning BEFORE the claim matters: letting it run
+  // would walk the same rows every 2 minutes and burn all 8 attempts against a guard
+  // that can never pass, so the day Pipedrive writes are turned back on the genuine
+  // backlog would already be permanently disqualified.
+  if (!LEAD_WRITES_ENABLED()) return { retried: 0, created: 0 };
   if (!clean(process.env.PIPEDRIVE_API_TOKEN)) return { retried: 0, created: 0 };
   const db = supabaseAdmin();
   const since = new Date(Date.now() - RETRY_WINDOW_DAYS * 86400_000).toISOString();
@@ -176,6 +211,11 @@ export async function syncMetaLeadToPipedrive(opts: {
   // title so the recruiter sees it on the card; Meta ingest never sets it.
   recruitmentRole?: string;
 }): Promise<{ ok: boolean; skipped?: string; dealId?: number; error?: string; activityId?: number; activityError?: string }> {
+  // The single gate for all four inbound paths — Meta ads, website enquiries, careers
+  // applications and WhatsApp campaign replies all reach Pipedrive through here and
+  // nowhere else. Its own status string, never "failed": a disabled write is a decision,
+  // and a report that cannot tell the two apart turns a migration into an incident.
+  if (!LEAD_WRITES_ENABLED()) return { ok: false, skipped: "pipedrive_writes_disabled" };
   if (!clean(process.env.PIPEDRIVE_API_TOKEN)) return { ok: false, skipped: "pipedrive_unconfigured" };
   const e164 = clean(opts.e164);
   if (!e164) return { ok: false, skipped: "no_phone" };

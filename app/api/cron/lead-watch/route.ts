@@ -292,7 +292,12 @@ async function runOpsWatch(db: ReturnType<typeof supabaseAdmin>): Promise<{ unde
 // would fire the 17:00 pass. Any later pass still sends — the ops_log claim keeps it to one
 // mail a day — so a missed 17:30 tick means a late report, never a lost one.
 const DIGEST_MINUTE_DUBAI = 17 * 60 + 30;
+// OFF since 01 Sep 2026 (Zek: "Stop this reporting"). New env name on purpose: the old
+// DAILY_REPORT_* vars already carry values on Vercel, so a flipped default there would be
+// inert. Set DAILY_LEAD_REPORT=on to bring the mail back.
+const DAILY_REPORT_ON = (process.env.DAILY_LEAD_REPORT || "off").toLowerCase() === "on";
 async function runDailyDigest(db: ReturnType<typeof supabaseAdmin>): Promise<boolean> {
+  if (!DAILY_REPORT_ON) return false;
   const now = new Date();
   // Dubai has no DST, but read the day and time in the zone anyway rather than offsetting by
   // hand — a hand-rolled +4 breaks the moment this runs from a differently-configured host.
